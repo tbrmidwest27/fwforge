@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fwforge"
+version = "0.4.0"
+description = "Open firewall config converter: third-party configs in, clean FortiOS CLI out. Transparent alternative to FortiConverter."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+fwforge = "fwforge.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["fwforge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

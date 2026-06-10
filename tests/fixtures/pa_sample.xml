@@ -1,0 +1,290 @@
+<config version="11.0.0" urldb="paloaltonetworks">
+  <devices>
+    <entry name="localhost.localdomain">
+      <deviceconfig>
+        <system>
+          <hostname>pa-lab</hostname>
+        </system>
+      </deviceconfig>
+      <network>
+        <interface>
+          <ethernet>
+            <entry name="ethernet1/1">
+              <layer3>
+                <ip>
+                  <entry name="203.0.113.2/29"/>
+                </ip>
+              </layer3>
+              <comment>wan uplink</comment>
+            </entry>
+            <entry name="ethernet1/2">
+              <layer3>
+                <ip>
+                  <entry name="10.1.0.1/16"/>
+                </ip>
+                <units>
+                  <entry name="ethernet1/2.30">
+                    <tag>30</tag>
+                    <ip>
+                      <entry name="192.168.30.1/24"/>
+                    </ip>
+                  </entry>
+                </units>
+              </layer3>
+            </entry>
+            <entry name="ethernet1/3">
+              <layer2/>
+            </entry>
+          </ethernet>
+        </interface>
+        <virtual-router>
+          <entry name="default">
+            <routing-table>
+              <ip>
+                <static-route>
+                  <entry name="default-route">
+                    <destination>0.0.0.0/0</destination>
+                    <interface>ethernet1/1</interface>
+                    <nexthop>
+                      <ip-address>203.0.113.1</ip-address>
+                    </nexthop>
+                  </entry>
+                  <entry name="lab-net">
+                    <destination>10.9.0.0/16</destination>
+                    <nexthop>
+                      <ip-address>10.1.0.254</ip-address>
+                    </nexthop>
+                  </entry>
+                </static-route>
+              </ip>
+            </routing-table>
+          </entry>
+        </virtual-router>
+      </network>
+      <vsys>
+        <entry name="vsys1">
+          <zone>
+            <entry name="untrust">
+              <network>
+                <layer3>
+                  <member>ethernet1/1</member>
+                </layer3>
+              </network>
+            </entry>
+            <entry name="trust">
+              <network>
+                <layer3>
+                  <member>ethernet1/2</member>
+                  <member>ethernet1/2.30</member>
+                </layer3>
+              </network>
+            </entry>
+          </zone>
+          <address>
+            <entry name="WEBSRV">
+              <ip-netmask>10.1.1.10/32</ip-netmask>
+              <description>web box</description>
+            </entry>
+            <entry name="LAN">
+              <ip-netmask>10.1.0.0/16</ip-netmask>
+            </entry>
+            <entry name="POOL">
+              <ip-range>10.1.5.10-10.1.5.50</ip-range>
+            </entry>
+            <entry name="UPDATES">
+              <fqdn>updates.example.com</fqdn>
+            </entry>
+            <entry name="WEB-PUB">
+              <ip-netmask>203.0.113.10/32</ip-netmask>
+            </entry>
+          </address>
+          <address-group>
+            <entry name="SERVERS">
+              <static>
+                <member>WEBSRV</member>
+                <member>POOL</member>
+              </static>
+            </entry>
+          </address-group>
+          <service>
+            <entry name="tcp-8443">
+              <protocol>
+                <tcp>
+                  <port>8443</port>
+                </tcp>
+              </protocol>
+            </entry>
+            <entry name="web-ports">
+              <protocol>
+                <tcp>
+                  <port>80,8000-8080</port>
+                </tcp>
+              </protocol>
+            </entry>
+            <entry name="syslog-hiport">
+              <protocol>
+                <udp>
+                  <port>514</port>
+                  <source-port>1024-65535</source-port>
+                </udp>
+              </protocol>
+            </entry>
+          </service>
+          <service-group>
+            <entry name="WEB-ALL">
+              <members>
+                <member>tcp-8443</member>
+                <member>web-ports</member>
+              </members>
+            </entry>
+          </service-group>
+          <tag>
+            <entry name="prod">
+              <color>color1</color>
+            </entry>
+          </tag>
+          <rulebase>
+            <security>
+              <rules>
+                <entry name="Allow Web">
+                  <from>
+                    <member>untrust</member>
+                  </from>
+                  <to>
+                    <member>trust</member>
+                  </to>
+                  <source>
+                    <member>any</member>
+                  </source>
+                  <destination>
+                    <member>WEBSRV</member>
+                  </destination>
+                  <application>
+                    <member>any</member>
+                  </application>
+                  <service>
+                    <member>WEB-ALL</member>
+                  </service>
+                  <action>allow</action>
+                </entry>
+                <entry name="Out Web">
+                  <from>
+                    <member>trust</member>
+                  </from>
+                  <to>
+                    <member>untrust</member>
+                  </to>
+                  <source>
+                    <member>LAN</member>
+                  </source>
+                  <destination>
+                    <member>any</member>
+                  </destination>
+                  <application>
+                    <member>web-browsing</member>
+                    <member>ssl</member>
+                  </application>
+                  <service>
+                    <member>application-default</member>
+                  </service>
+                  <action>allow</action>
+                  <log-end>yes</log-end>
+                </entry>
+                <entry name="Not Updates">
+                  <from>
+                    <member>trust</member>
+                  </from>
+                  <to>
+                    <member>untrust</member>
+                  </to>
+                  <source>
+                    <member>any</member>
+                  </source>
+                  <destination>
+                    <member>UPDATES</member>
+                  </destination>
+                  <negate-destination>yes</negate-destination>
+                  <application>
+                    <member>any</member>
+                  </application>
+                  <service>
+                    <member>service-https</member>
+                  </service>
+                  <action>allow</action>
+                </entry>
+                <entry name="Block Rest">
+                  <from>
+                    <member>any</member>
+                  </from>
+                  <to>
+                    <member>any</member>
+                  </to>
+                  <source>
+                    <member>any</member>
+                  </source>
+                  <destination>
+                    <member>any</member>
+                  </destination>
+                  <application>
+                    <member>any</member>
+                  </application>
+                  <service>
+                    <member>any</member>
+                  </service>
+                  <action>deny</action>
+                  <disabled>yes</disabled>
+                  <description>catch all</description>
+                </entry>
+              </rules>
+            </security>
+            <nat>
+              <rules>
+                <entry name="outbound-pat">
+                  <from>
+                    <member>trust</member>
+                  </from>
+                  <to>
+                    <member>untrust</member>
+                  </to>
+                  <source>
+                    <member>LAN</member>
+                  </source>
+                  <destination>
+                    <member>any</member>
+                  </destination>
+                  <service>any</service>
+                  <source-translation>
+                    <dynamic-ip-and-port>
+                      <interface-address>
+                        <interface>ethernet1/1</interface>
+                      </interface-address>
+                    </dynamic-ip-and-port>
+                  </source-translation>
+                </entry>
+                <entry name="web-dnat">
+                  <from>
+                    <member>untrust</member>
+                  </from>
+                  <to>
+                    <member>untrust</member>
+                  </to>
+                  <source>
+                    <member>any</member>
+                  </source>
+                  <destination>
+                    <member>WEB-PUB</member>
+                  </destination>
+                  <service>service-https</service>
+                  <destination-translation>
+                    <translated-address>10.1.1.10</translated-address>
+                    <translated-port>8443</translated-port>
+                  </destination-translation>
+                </entry>
+              </rules>
+            </nat>
+          </rulebase>
+        </entry>
+      </vsys>
+    </entry>
+  </devices>
+</config>

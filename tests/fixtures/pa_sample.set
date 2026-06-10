@@ -1,0 +1,38 @@
+set deviceconfig system hostname pa-lab
+set network interface ethernet ethernet1/1 layer3 ip 203.0.113.2/29
+set network interface ethernet ethernet1/1 comment "wan uplink"
+set network interface ethernet ethernet1/2 layer3 ip 10.1.0.1/16
+set network interface ethernet ethernet1/2 layer3 units ethernet1/2.30 tag 30
+set network interface ethernet ethernet1/2 layer3 units ethernet1/2.30 ip 192.168.30.1/24
+set network virtual-router default routing-table ip static-route default-route destination 0.0.0.0/0
+set network virtual-router default routing-table ip static-route default-route interface ethernet1/1
+set network virtual-router default routing-table ip static-route default-route nexthop ip-address 203.0.113.1
+set network virtual-router default routing-table ip static-route lab-net destination 10.9.0.0/16
+set network virtual-router default routing-table ip static-route lab-net nexthop ip-address 10.1.0.254
+set zone untrust network layer3 ethernet1/1
+set zone trust network layer3 [ ethernet1/2 ethernet1/2.30 ]
+set address WEBSRV ip-netmask 10.1.1.10/32
+set address WEBSRV description "web box"
+set address LAN ip-netmask 10.1.0.0/16
+set address WEB-PUB ip-netmask 203.0.113.10/32
+set service tcp-8443 protocol tcp port 8443
+set rulebase security rules "Allow Web" from untrust
+set rulebase security rules "Allow Web" to trust
+set rulebase security rules "Allow Web" source any
+set rulebase security rules "Allow Web" destination WEBSRV
+set rulebase security rules "Allow Web" application any
+set rulebase security rules "Allow Web" service tcp-8443
+set rulebase security rules "Allow Web" action allow
+set rulebase security rules "Out Web" from trust
+set rulebase security rules "Out Web" to untrust
+set rulebase security rules "Out Web" source LAN
+set rulebase security rules "Out Web" destination any
+set rulebase security rules "Out Web" application [ web-browsing ssl ]
+set rulebase security rules "Out Web" service application-default
+set rulebase security rules "Out Web" action allow
+set rulebase nat rules outbound-pat from trust
+set rulebase nat rules outbound-pat to untrust
+set rulebase nat rules outbound-pat source LAN
+set rulebase nat rules outbound-pat destination any
+set rulebase nat rules outbound-pat service any
+set rulebase nat rules outbound-pat source-translation dynamic-ip-and-port interface-address interface ethernet1/1

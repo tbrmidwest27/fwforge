@@ -1,0 +1,116 @@
+# fwforge roadmap — beating FortiConverter where it's weak
+
+Competitive notes researched June 2026 (FortiConverter Tool 7.4.1 /
+Service 25.1.0, installed copy inspected + docs + Fortinet community).
+
+## What we learned about FortiConverter
+
+**Architecture** (from the installed copy): Django 5.2 + React web UI +
+PostgreSQL 16, but the actual conversion logic is a closed compiled
+`ConversionEngine.exe` (~14 MB) plus a commercial license-activation
+library. The Python layer is just the wrapper. Vendor knowledge ships as
+flat mapping files (Cisco/Check Point/Palo Alto/Juniper service + app-ID
+tables).
+
+**Pricing**: Tool = $3,995/yr subscription (unlimited conversions, 1 yr).
+Service = one-time per-device SKU, ~$50 (desktop models) to ~$5,000
+(high-end), human-assisted with ~2-business-day turnaround, US-Pacific
+business hours. FortiGate→FortiGate became free June 2025 — but runs
+through Fortinet's cloud and requires consenting to data-use terms.
+Trial mode deliberately disables CLI output.
+
+**Documented/confirmed weaknesses** (each one is a fwforge feature):
+
+| # | FortiConverter behavior | fwforge answer | status |
+|---|---|---|---|
+| 1 | Falls back to `dstintf any` when routing info is missing (admitted in docs) | route table built from source config (static + connected), longest-prefix-match per policy destination; `any` only when genuinely ambiguous, always reported | **shipped v1** |
+| 2 | Warnings buried as comments in config-all.txt | first-class report (md + JSON) with severity + file:line provenance; nonzero exit code on errors | **shipped v1** |
+| 3 | Twice-NAT unsupported; NAT-merge path documented to crash | flagged loudly as errors (conversion of common twice-NAT idioms = v2) | flag shipped; convert v2 |
+| 4 | Black-box engine — no way to see why output is what it is | open source, deterministic output, per-line provenance in JSON report | **shipped v1** |
+| 5 | Converts everything 1:1 incl. unreferenced objects (only an opt-in discard); no duplicate/shadow analysis | hygiene pass: duplicate objects, duplicate/shadowed policies, any/any/ALL rules, unreferenced objects — reported; `--prune` / `--merge-dupes` later | analysis shipped; auto-fix v2 |
+| 6 | FGT→FGT free path = config uploaded to Fortinet cloud | fully local lossless tree migration | **shipped v1** |
+| 7 | Windows-only, heavyweight install (PG16 + Django), online license checks | single zero-dependency Python package | **shipped v1** |
+| 8 | Port operators it can't express get approximated | non-convertible operators (`neq`) emit the policy disabled + review comment — never silently broader | **shipped v1** |
+| 9 | VPN conversion weak (GlobalProtect unsupported; EZVPN → any/any; Check Point VPN needs manual post-fix) | v2 target: ASA crypto-map / tunnel-group → FortiOS phase1/phase2-interface | not started |
+| 10 | REST-API import to FortiGate reports success while incomplete | future: verify-after-apply against a live lab FortiGate (we own real hardware: 601F/121G lab) | not started |
+
+**What FortiConverter does well — don't lose these**: huge vendor breadth
+(16+ sources), interface-mapping import/export, VDOM mapping,
+hardware→software switch rewrites, tuning UI (interface-pair split, rule
+include/exclude), plain diffable CLI output, SSL-VPN→IPsec migration
+assistant.
+
+**Open-source landscape**: effectively empty. DirectFire_Converter stalled
+("very early development"); Palo Alto Expedition EOL'd Dec 2024 (then hit
+by exploited CVEs); remaining GitHub scripts are object-level partials.
+A maintained open converter has no real competition.
+
+## Build order
+
+### v1 (done)
+- [x] IR model with per-object source provenance
+- [x] Cisco ASA parser (objects, groups, ACLs, object NAT, routes)
+- [x] FortiOS lossless tree parser/serializer (multiline cert values,
+      nested blocks)
+- [x] Reference-aware interface renaming for FortiOS→FortiOS migration
+- [x] Route-based dstintf inference
+- [x] Conservative built-in service mapping
+- [x] Name sanitization to FortiOS limits with reference remapping
+- [x] Hygiene analysis (dupes, shadows, any/any/ALL, unreferenced)
+- [x] md + JSON reports with coverage %; sample portmap generation
+- [x] CLI: detect / inspect / convert; 23 tests
+
+### v2 — shipped 2026-06-10
+- [x] Migration plan files (`[portmap]` / `[zone …]` / `[sdwan …]`) +
+      `fwforge plan` scaffolder
+- [x] Zone refactor: create/extend zones, policy/central-SNAT rewrite with
+      token dedup, duplicate-policy merge, same-zone flagging, leftover
+      audit
+- [x] SD-WAN refactor: members + gateways harvested from removed default
+      routes, sdwan-zone route creation, health checks, policy rewrite,
+      audit
+- [x] `--target-platform`: rewrite #config-version platform code
+- [x] Post-rename leftover scan (caught a real miss: SSL-VPN
+      source-interface; FortiSwitch/FortiExtender names correctly skipped)
+- [x] Real-config proof: live 601F backup (46k lines, FortiOS 8.0)
+      converted to 701G port naming — see migrations/601f-to-701g/
+
+### v0.3 — shipped 2026-06-10
+- [x] **Multi-VDOM support**: VDOM scopes parsed (`config global` /
+      `config vdom` bodies), zone & SD-WAN refactors derive the owning
+      VDOM from member interfaces (optional `vdom =` assertion), sections
+      and route conversion land inside the right VDOM, cross-VDOM members
+      rejected. Proven against the real Top Router 121G config
+      (73k lines, Management/root/FGSP): lossless roundtrip, 0 warnings.
+
+### v0.4 — shipped 2026-06-10
+- [x] **Palo Alto parser** (the gap Expedition's EOL left open): XML and
+      `display set` formats normalized into one tree (expat with line
+      provenance, entity declarations rejected); zones → FortiOS zones;
+      negate flags; NAT (interface PAT / bi-directional static / DNAT →
+      VIP); predefined services; route egress inference; App-ID and
+      application-default flagged loudly, converted on service match.
+
+### next
+- [ ] **Load the converted config on the actual 701G** when the hardware
+      arrives: restore, then `diag debug config-error-log read`; verify
+      the FG7H1G platform code from a native 701G backup first
+- [ ] ASA twice-NAT: the common idioms (identity NAT, source-static +
+      destination-static pairs) → central-SNAT / VIP combinations
+- [ ] ASA crypto map / tunnel-group → FortiOS IPsec phase1/2-interface
+- [ ] `--prune` (drop unreferenced) and `--merge-dupes` (collapse duplicate
+      objects, rewrite references)
+- [ ] Policy merge: adjacent ACEs sharing src/dst/action → one policy with
+      multiple services (counter FortiConverter's 1:1 rule bloat)
+- [ ] VDOM-aware FortiOS tree migration (601F multi-VDOM → 121G)
+
+### v3 — differentiators
+- [ ] Verify-after-apply: push to a lab FortiGate VDOM via REST, diff
+      intended vs accepted config, report what the FortiGate rejected
+      (counters FortiConverter's silent-incomplete-import problem)
+- [ ] Palo Alto parser (set-format + XML) — Expedition's EOL left PAN→FGT
+      with no open tooling at all
+- [ ] Annotated review mode: interleave source lines as comments above each
+      emitted block for side-by-side review
+- [ ] Tiny local web UI for the interface-mapping step (the one genuinely
+      good part of FortiConverter's UX)
