@@ -41,6 +41,20 @@
     <label>source FortiOS
       <input type="text" name="source_os" value="{{ meta.source_os }}" size="6">
     </label>
+    <label>VDOM mode
+      <select name="vdom_mode">
+        <option value="keep" selected>keep as-is</option>
+        <option value="multi">wrap into multi-VDOM</option>
+        <option value="single">flatten to non-VDOM</option>
+      </select>
+    </label>
+    <label>VDOM name
+      <input type="text" name="vdom_name" value="root" size="8">
+    </label>
+    <label style="align-self:center;margin-top:1rem">
+      <input type="checkbox" name="vdom_scope_only" value="1">
+      scope-only (drop globals)
+    </label>
     {% endif %}
   </div>
   {% if meta.vendor == "fortios" %}

@@ -26,7 +26,7 @@ Tracks every FortiConverter capability that is NOT "another source vendor".
 | Interface-mapping import/export | ✅ done — plan files + GUI grid |
 | GUI workflow | ✅ done — local Flask, + live diff & artifact scan |
 | VDOM mapping (config lands in right VDOM) | ✅ done (multi-VDOM aware) |
-| non-VDOM ↔ VDOM **mode** conversion | ⏳ todo — wrap/unwrap flat ↔ `config vdom` |
+| non-VDOM ↔ VDOM **mode** conversion | ✅ done — `--vdom-mode multi/single`, scope-split, `--vdom-scope-only` for safe load into existing box |
 | Hardware-switch → software-switch conversion | ⏳ todo — when target lacks hw switch |
 | Merge into an existing target config | ⏳ todo — source + target backup, no overlap |
 | SSL-VPN → IPsec migration assistant | ⏳ todo (we *detect* the removal; FC *converts* it) |
@@ -166,8 +166,16 @@ A maintained open converter has no real competition.
       (their Interface Pair View Split), `--only`/`--exclude` (rule
       include/exclude). Cross-vendor path; wired into CLI + GUI checkboxes.
 
+### v0.9 — shipped 2026-06-10
+- [x] **non-VDOM ↔ VDOM mode conversion** (transforms/vdommode.py):
+      wrap a flat config into config global + config vdom/edit <name>
+      (scope-split curated from FortiOS docs; ambiguous roots flagged),
+      flatten a single-VDOM config, `--vdom-scope-only` to drop globals
+      for safe load into an existing box. Runs first in the migrate
+      pipeline so all downstream transforms see the target structure.
+      CLI flags + GUI select.
+
 ### next (parity matrix ⏳ items, fleet-first order)
-- [ ] non-VDOM ↔ VDOM **mode** conversion (wrap/unwrap)
 - [ ] hardware-switch → software-switch conversion
 - [ ] SSL-VPN → IPsec migration assistant (8.0 dropped SSL-VPN tunnel mode)
 - [ ] merge-into-existing-target-config

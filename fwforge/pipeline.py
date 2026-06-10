@@ -13,7 +13,8 @@ from .model import FirewallConfig
 from .parsers import CROSS_PARSERS, fortios_tree
 from .report import Report
 from .transforms import names as names_tf
-from .transforms import optimize, portmap, sdwan, tree_refs, versiondelta, zones
+from .transforms import optimize, portmap, sdwan, tree_refs, versiondelta
+from .transforms import vdommode, zones
 from .transforms import routes as routes_tf
 from .transforms import tuning as tuning_tf
 from .transforms.plan import MigrationPlan
@@ -71,7 +72,9 @@ def run_cross(text: str, vendor: str, src_name: str,
 def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 target: str = "7.4", source_os: str | None = None,
                 target_platform: str | None = None,
-                want_normalized: bool = False) -> ConversionResult:
+                want_normalized: bool = False, vdom_mode: str = "keep",
+                vdom_name: str = "root",
+                vdom_scope_only: bool = False) -> ConversionResult:
     """FortiOS -> FortiOS lossless tree migration. Raises PlanError."""
     report = Report()
     report.meta = {
@@ -82,6 +85,17 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
     tree = fortios_tree.parse_config(text, src_name)
     for w in tree.warnings:
         report.add("warn", "parse", w)
+
+    # VDOM-mode conversion runs first so every downstream transform and the
+    # version scan see the target structure
+    if vdom_mode in ("multi", "single"):
+        vstats = vdommode.apply(tree, vdom_mode, report, vdom_name,
+                                vdom_scope_only)
+        if vstats.get("converted"):
+            report.meta["vdom_mode"] = (
+                f"-> {'multi' if vdom_mode == 'multi' else 'single'}-VDOM"
+                + (f" (VDOM '{vstats.get('vdom_name', vdom_name)}')"
+                   if vdom_mode == 'multi' else ""))
 
     if target_platform:
         for child in tree.children:

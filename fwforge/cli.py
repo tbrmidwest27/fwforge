@@ -141,7 +141,10 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
         result = pipeline.run_migrate(
             text, src_path, plan, target=args.fortios,
             source_os=getattr(args, "source_os", None),
-            target_platform=getattr(args, "target_platform", None))
+            target_platform=getattr(args, "target_platform", None),
+            vdom_mode=getattr(args, "vdom_mode", "keep"),
+            vdom_name=getattr(args, "vdom_name", "root"),
+            vdom_scope_only=getattr(args, "vdom_scope_only", False))
     except PlanError as e:
         print(f"plan error: {e}", file=sys.stderr)
         return 2
@@ -164,7 +167,7 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
         print(f"interface renames: {report.meta.get('interface_renames', 0)} "
               f"edits, {report.meta.get('reference_rewrites', 0)} "
               "references rewritten")
-    for key in ("zones_created", "sdwan_members_added",
+    for key in ("vdom_mode", "zones_created", "sdwan_members_added",
                 "default_routes_converted", "policies_merged",
                 "fortios_versions", "upgrade_artifacts",
                 "upgrade_auto_fixed"):
@@ -261,6 +264,18 @@ def main(argv: list[str] | None = None) -> int:
                    help="rewrite the #config-version platform code for the "
                         "target model (e.g. FG7H1G) so the device accepts "
                         "the restore")
+    p.add_argument("--vdom-mode", default="keep",
+                   choices=["keep", "multi", "single"],
+                   help="convert VDOM mode: 'multi' wraps a flat config "
+                        "into config global + config vdom; 'single' "
+                        "flattens a one-VDOM config (FortiOS migration)")
+    p.add_argument("--vdom-name", default="root",
+                   help="VDOM name to wrap into with --vdom-mode multi "
+                        "(default root)")
+    p.add_argument("--vdom-scope-only", action="store_true",
+                   help="with --vdom-mode multi, drop global-scope sections "
+                        "so the output loads into an existing VDOM without "
+                        "overwriting the box's global config")
     p.add_argument("--mode", default="auto",
                    choices=["auto", "cross", "migrate"])
     tune = p.add_argument_group("tuning (cross-vendor conversions)")

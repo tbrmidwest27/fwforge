@@ -228,6 +228,10 @@ def create_app() -> Flask:
                     or None,
                     target_platform=request.form.get(
                         "target_platform", "").strip() or None,
+                    vdom_mode=request.form.get("vdom_mode", "keep"),
+                    vdom_name=request.form.get("vdom_name", "root").strip()
+                    or "root",
+                    vdom_scope_only=bool(request.form.get("vdom_scope_only")),
                     want_normalized=True)
             else:
                 mapping = {}

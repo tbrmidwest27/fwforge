@@ -68,6 +68,31 @@ other devices. After renaming, a leftover scan reports every remaining
 old-name token so nothing slips through. `--target-platform FG7H1G`
 rewrites the `#config-version` header so the target model accepts the file.
 
+### VDOM-mode conversion
+
+Change a FortiOS config's VDOM mode during migration (e.g. a flat 601F
+config onto a multi-VDOM 121G):
+
+```
+# wrap a flat config into config global + config vdom/edit CUSTOMER-A
+python -m fwforge convert flat.conf --vdom-mode multi --vdom-name CUSTOMER-A
+
+# load into an existing multi-VDOM box WITHOUT overwriting its globals
+python -m fwforge convert flat.conf --vdom-mode multi --vdom-name CUSTOMER-A --vdom-scope-only
+
+# flatten a single-VDOM config back to non-VDOM form
+python -m fwforge convert onevdom.conf --vdom-mode single
+```
+
+fwforge sorts sections by FortiOS scope — `system global/interface/admin/
+ha/npu/dns/ntp` to `config global`, and `firewall`/`router`/`vpn`/`user`
+plus per-VDOM `system settings/zone/sdwan/dhcp` into the VDOM — assigns
+interfaces to the VDOM, sets `vdom-mode multi-vdom`, and flips the
+`config-version` header. Ambiguous roots (log, certificates) default to
+global and are flagged. `--vdom-scope-only` drops global scope so the
+output merges into an existing VDOM safely. Flattening refuses a config
+with 2+ VDOMs (a flat config holds one).
+
 ### Version-upgrade artifact scan
 
 When a FortiGate-to-FortiGate migration also jumps FortiOS versions, the
