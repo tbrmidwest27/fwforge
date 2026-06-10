@@ -26,7 +26,7 @@ from .parsers import CROSS_PARSERS, detect_vendor
 from .parsers import fortios_tree
 from .report import Report
 from .transforms import names as names_tf
-from .transforms import optimize, portmap, sdwan, tree_refs, zones
+from .transforms import optimize, portmap, sdwan, tree_refs, versiondelta, zones
 from .transforms import routes as routes_tf
 from .transforms.plan import MigrationPlan, PlanError, load_plan, scaffold
 
@@ -174,6 +174,33 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
         report.add("info", "vdom",
                    f"multi-VDOM config; scopes: {', '.join(scopes)}")
 
+    # FortiOS version-jump artifact scan
+    src_ver = (versiondelta.parse_version(args.source_os)
+               if getattr(args, "source_os", None)
+               else versiondelta.source_version_from_header(tree))
+    tgt_ver = versiondelta.parse_version(args.fortios)
+    if src_ver is None:
+        report.add("info", "upgrade",
+                   "source FortiOS version not detected in the config "
+                   "header — upgrade-artifact scan skipped (pass "
+                   "--source-os X.Y)")
+    elif tgt_ver is None:
+        report.add("info", "upgrade",
+                   f"target version '{args.fortios}' not understood — "
+                   "upgrade-artifact scan skipped")
+    elif tgt_ver < src_ver:
+        report.add("warn", "upgrade",
+                   f"target FortiOS {args.fortios} is OLDER than the "
+                   f"source ({src_ver[0]}.{src_ver[1]}) — downgrades are "
+                   "not analyzed; new-syntax artifacts may be rejected")
+    else:
+        vstats = versiondelta.scan(tree, src_ver, tgt_ver, report)
+        report.meta["fortios_versions"] = (
+            f"{src_ver[0]}.{src_ver[1]} -> {tgt_ver[0]}.{tgt_ver[1]}")
+        if tgt_ver > src_ver:
+            report.meta["upgrade_artifacts"] = vstats["artifacts"]
+            report.meta["upgrade_auto_fixed"] = vstats["auto_fixed"]
+
     if plan.zones or plan.sdwan:
         moved: set[str] = set()
         try:
@@ -220,7 +247,9 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
               f"edits, {report.meta.get('reference_rewrites', 0)} "
               "references rewritten")
     for key in ("zones_created", "sdwan_members_added",
-                "default_routes_converted", "policies_merged"):
+                "default_routes_converted", "policies_merged",
+                "fortios_versions", "upgrade_artifacts",
+                "upgrade_auto_fixed"):
         if key in report.meta:
             print(f"{key.replace('_', ' ')}: {report.meta[key]}")
     errors, warns = report.count("error"), report.count("warn")
@@ -299,6 +328,9 @@ def main(argv: list[str] | None = None) -> int:
                    choices=["auto", "cisco-asa", "paloalto", "fortios"])
     p.add_argument("--fortios", default="7.4",
                    help="target FortiOS version (default 7.4)")
+    p.add_argument("--source-os",
+                   help="source FortiOS version override (normally read "
+                        "from the #config-version header)")
     p.add_argument("--map", help="interface map file (source = target)")
     p.add_argument("--plan",
                    help="migration plan file ([portmap] / [zone x] / "

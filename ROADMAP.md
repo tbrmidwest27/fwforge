@@ -91,10 +91,25 @@ A maintained open converter has no real competition.
       VIP); predefined services; route egress inference; App-ID and
       application-default flagged loudly, converted on service match.
 
+### v0.5 — shipped 2026-06-10
+- [x] **FortiOS version-upgrade artifact scan** for FGT→FGT migrations
+      that jump versions: source version auto-read from #config-version,
+      target from --fortios. Detects removed features (7.6 SSL-VPN, 8.0
+      gui-dashboard/intra-vap-privacy), auto-fixes safe renames
+      (hw-model→hw-version, virtual-wan-link→sdwan), and — the invisible
+      class — default flips where the config relied on an old default
+      (8.0 IPsec DH groups, hairpin allow-traffic-redirect, inline IPS).
+      Rule table curated from Fortinet release notes; extend in
+      transforms/versiondelta.py as versions land.
+
 ### next
 - [ ] **Load the converted config on the actual 701G** when the hardware
       arrives: restore, then `diag debug config-error-log read`; verify
       the FG7H1G platform code from a native 701G backup first
+- [ ] **Local web GUI** (Flask, same stack as the financials app):
+      upload/pick config → auto-detect → interface-mapping grid →
+      plan editor (zones/SD-WAN) → run → report viewer + before/after
+      diff. CLI stays the engine; the GUI is a thin layer over it.
 - [ ] ASA twice-NAT: the common idioms (identity NAT, source-static +
       destination-static pairs) → central-SNAT / VIP combinations
 - [ ] ASA crypto map / tunnel-group → FortiOS IPsec phase1/2-interface

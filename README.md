@@ -68,6 +68,33 @@ other devices. After renaming, a leftover scan reports every remaining
 old-name token so nothing slips through. `--target-platform FG7H1G`
 rewrites the `#config-version` header so the target model accepts the file.
 
+### Version-upgrade artifact scan
+
+When a FortiGate-to-FortiGate migration also jumps FortiOS versions, the
+scanner reports what the version change leaves behind. Source version is
+read from the `#config-version` header automatically; target comes from
+`--fortios`:
+
+```
+python -m fwforge convert old-box.conf --fortios 8.0 --plan m.plan
+```
+
+Three artifact classes, each in the report with severity and the affected
+entry names:
+
+- **removed features** — dropped silently by the new firmware on load
+  (7.6: SSL-VPN; 8.0: `gui-dashboard` under admin, `intra-vap-privacy`)
+- **renames** — safe ones auto-fixed and noted (`hw-model`→`hw-version`,
+  `virtual-wan-link`→`sdwan`)
+- **default flips** — the invisible class: settings the config never
+  wrote because it relied on the old default (8.0 changed IPsec DH groups
+  14/5→20/21, hairpin `allow-traffic-redirect`, inline IPS enforcement).
+  No text diff can show these; only a rule base can.
+
+The rule table (`transforms/versiondelta.py`) is curated from Fortinet's
+release-notes "Changes in CLI / default behavior" pages — deliberately
+conservative; extend it as versions land.
+
 ### Migration plans: zones and SD-WAN refactors
 
 Beyond renames, a migration can *restructure*. `fwforge plan <config>`
