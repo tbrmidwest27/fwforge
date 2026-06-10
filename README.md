@@ -152,6 +152,20 @@ Built-in FortiOS services are reused only on **exact** semantic match:
 exists to prevent. Non-convertible port operators (`neq`) emit the policy
 **disabled** with a review comment instead of a broader rule.
 
+## Web UI
+
+```
+python -m pip install flask    # the only optional dependency
+python -m fwforge gui          # opens http://127.0.0.1:4848
+```
+
+A thin local Flask layer over the same pipeline the CLI uses (no logic of
+its own): load a config (upload or local path) → auto-detect → interface
+mapping grid with VDOM badges → zone / SD-WAN builders → convert → result
+page with severity-grouped findings, upgrade artifacts, downloads
+(config / report.md / report.json / diff.patch) and a colorized
+before/after diff. Binds to localhost; configs never leave the machine.
+
 ## Development
 
 ```

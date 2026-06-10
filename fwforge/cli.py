@@ -3,7 +3,11 @@
     fwforge detect  <config>
     fwforge inspect <config>
     fwforge convert <config> [-o outdir] [--vendor auto] [--fortios 7.4]
-                              [--map portmap] [--mode auto|cross|migrate]
+                              [--map portmap] [--plan planfile]
+                              [--mode auto|cross|migrate]
+                              [--source-os X.Y] [--target-platform FG7H1G]
+    fwforge plan    <config>  [-o file]
+    fwforge gui     [--host 127.0.0.1] [--port 4848] [--no-browser]
 
 convert writes:
     <name>.fos.conf      paste-able FortiOS CLI script
@@ -19,15 +23,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__
-from .emit import fortios as fortios_emit
-from .model import FirewallConfig
+from . import __version__, pipeline
 from .parsers import CROSS_PARSERS, detect_vendor
 from .parsers import fortios_tree
 from .report import Report
-from .transforms import names as names_tf
-from .transforms import optimize, portmap, sdwan, tree_refs, versiondelta, zones
-from .transforms import routes as routes_tf
+from .transforms import portmap
 from .transforms.plan import MigrationPlan, PlanError, load_plan, scaffold
 
 
@@ -65,199 +65,6 @@ def cmd_inspect(args) -> int:
     return 2
 
 
-def _convert_cross(text: str, src_path: str, args, outdir: Path,
-                   vendor: str) -> int:
-    report = Report()
-    report.meta = {
-        "tool": f"fwforge {__version__}",
-        "source": src_path,
-        "mode": "cross-vendor",
-        "target": f"FortiOS {args.fortios}",
-    }
-    cfg: FirewallConfig = CROSS_PARSERS[vendor](text, src_path)
-    report.absorb_parser_findings(cfg)
-    report.meta["source_vendor"] = cfg.vendor
-    report.meta["source_hostname"] = cfg.hostname
-
-    mapping = portmap.load_map(args.map) if args.map else {}
-    unmapped = portmap.apply_ir(cfg, mapping, report)
-    names_tf.apply(cfg, report)
-    routes_tf.infer_dst_zones(cfg, report)
-    optimize.analyze(cfg, report)
-    out_text = fortios_emit.emit(cfg, report, target=args.fortios)
-
-    base = outdir / (Path(src_path).stem)
-    (base.with_suffix(".fos.conf")).write_text(out_text, encoding="utf-8")
-    (base.with_suffix(".report.md")).write_text(
-        report.to_markdown(cfg, text), encoding="utf-8")
-    (base.with_suffix(".report.json")).write_text(
-        report.to_json(cfg), encoding="utf-8")
-    if unmapped:
-        (base.with_suffix(".portmap")).write_text(
-            portmap.sample_map(unmapped), encoding="utf-8")
-
-    errors, warns = report.count("error"), report.count("warn")
-    print(f"wrote {base.with_suffix('.fos.conf')}")
-    print(f"policies: {len(cfg.policies)}  addresses: {len(cfg.addresses)}  "
-          f"services: {len(cfg.services)}  vips: {len(cfg.vips)}")
-    print(f"report: {errors} errors, {warns} warnings, "
-          f"{len(cfg.unparsed)} unconverted lines "
-          f"-> {base.with_suffix('.report.md')}")
-    if unmapped:
-        print(f"ACTION: fill in {base.with_suffix('.portmap')} and re-run "
-              f"with --map")
-    return 1 if errors else 0
-
-
-def _load_migration_plan(args) -> MigrationPlan:
-    plan = load_plan(args.plan) if args.plan else MigrationPlan()
-    if args.map:
-        plan.portmap.update(portmap.load_map(args.map))
-        plan.translate_members()
-    return plan
-
-
-def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
-    report = Report()
-    report.meta = {
-        "tool": f"fwforge {__version__}",
-        "source": src_path,
-        "mode": "fortios-migrate (lossless tree)",
-    }
-    tree = fortios_tree.parse_config(text, src_path)
-    for w in tree.warnings:
-        report.add("warn", "parse", w)
-
-    try:
-        plan = _load_migration_plan(args)
-    except PlanError as e:
-        print(f"plan error: {e}", file=sys.stderr)
-        return 2
-
-    if getattr(args, "target_platform", None):
-        for child in tree.children:
-            if isinstance(child, fortios_tree.CommentLine) \
-                    and child.text.startswith("#config-version="):
-                old = child.text[len("#config-version="):].split("-", 1)
-                child.text = (f"#config-version={args.target_platform}"
-                              + (f"-{old[1]}" if len(old) > 1 else ""))
-                report.add(
-                    "warn", "platform",
-                    f"config-version platform rewritten {old[0]} -> "
-                    f"{args.target_platform}. VERIFY this platform code "
-                    "against a backup taken from the actual target device "
-                    "before restoring — a mismatch makes the FortiGate "
-                    "reject the file.")
-                break
-
-    if plan.portmap:
-        stats = portmap.apply_tree(tree, plan.portmap)
-        report.meta["interface_renames"] = stats["edits"]
-        report.meta["reference_rewrites"] = stats["values"]
-        for attr, n in sorted(stats["by_attr"].items()):
-            report.add("info", "portmap", f"rewrote {n} reference(s) in "
-                                          f"'set {attr}'")
-        portmap.leftover_scan(tree, plan.portmap, report)
-    elif not (plan.zones or plan.sdwan):
-        sample = portmap.sample_map(portmap.tree_interface_names(tree))
-        (outdir / (Path(src_path).stem + ".portmap")).write_text(
-            sample, encoding="utf-8")
-        report.add(
-            "warn", "portmap",
-            "no --map/--plan given: config normalized but interfaces "
-            "unchanged; a sample portmap file was written",
-        )
-
-    if tree_refs.is_multi_vdom(tree):
-        scopes = [n for n, _ in fortios_tree.vdom_scopes(tree)]
-        report.meta["vdoms"] = ", ".join(s for s in scopes if s != "global")
-        report.add("info", "vdom",
-                   f"multi-VDOM config; scopes: {', '.join(scopes)}")
-
-    # FortiOS version-jump artifact scan
-    src_ver = (versiondelta.parse_version(args.source_os)
-               if getattr(args, "source_os", None)
-               else versiondelta.source_version_from_header(tree))
-    tgt_ver = versiondelta.parse_version(args.fortios)
-    if src_ver is None:
-        report.add("info", "upgrade",
-                   "source FortiOS version not detected in the config "
-                   "header — upgrade-artifact scan skipped (pass "
-                   "--source-os X.Y)")
-    elif tgt_ver is None:
-        report.add("info", "upgrade",
-                   f"target version '{args.fortios}' not understood — "
-                   "upgrade-artifact scan skipped")
-    elif tgt_ver < src_ver:
-        report.add("warn", "upgrade",
-                   f"target FortiOS {args.fortios} is OLDER than the "
-                   f"source ({src_ver[0]}.{src_ver[1]}) — downgrades are "
-                   "not analyzed; new-syntax artifacts may be rejected")
-    else:
-        vstats = versiondelta.scan(tree, src_ver, tgt_ver, report)
-        report.meta["fortios_versions"] = (
-            f"{src_ver[0]}.{src_ver[1]} -> {tgt_ver[0]}.{tgt_ver[1]}")
-        if tgt_ver > src_ver:
-            report.meta["upgrade_artifacts"] = vstats["artifacts"]
-            report.meta["upgrade_auto_fixed"] = vstats["auto_fixed"]
-
-    if plan.zones or plan.sdwan:
-        moved: set[str] = set()
-        try:
-            if plan.zones:
-                zstats = zones.apply_zones(tree, plan.zones, report)
-                report.meta["zones_created"] = zstats["zones"]
-                moved |= set(zstats["mapping"])
-            if plan.sdwan:
-                sstats = sdwan.apply_sdwan(tree, plan.sdwan, report)
-                report.meta["sdwan_members_added"] = sstats["members_added"]
-                report.meta["default_routes_converted"] = \
-                    sstats["routes_converted"]
-                moved_sdwan = set(sstats["mapping"])
-        except PlanError as e:
-            print(f"plan error: {e}", file=sys.stderr)
-            return 2
-        merged = tree_refs.dedup_policies(tree, report)
-        if merged:
-            report.meta["policies_merged"] = merged
-        if plan.zones:
-            tree_refs.audit_leftovers(
-                tree, moved,
-                tree_refs.BASE_ALLOWED | tree_refs.ZONE_EXTRA_ALLOWED,
-                report, "zones")
-        if plan.sdwan:
-            tree_refs.audit_leftovers(
-                tree, moved_sdwan,
-                tree_refs.BASE_ALLOWED | tree_refs.SDWAN_EXTRA_ALLOWED,
-                report, "sdwan")
-
-    out_text = fortios_tree.serialize(tree)
-    base = outdir / (Path(src_path).stem)
-    (base.with_suffix(".fos.conf")).write_text(out_text, encoding="utf-8")
-    (base.with_suffix(".report.md")).write_text(
-        report.to_markdown(), encoding="utf-8")
-    (base.with_suffix(".report.json")).write_text(
-        report.to_json(), encoding="utf-8")
-
-    inv = fortios_tree.section_inventory(tree)
-    print(f"wrote {base.with_suffix('.fos.conf')} "
-          f"({len(inv)} sections preserved)")
-    if plan.portmap:
-        print(f"interface renames: {report.meta.get('interface_renames', 0)} "
-              f"edits, {report.meta.get('reference_rewrites', 0)} "
-              "references rewritten")
-    for key in ("zones_created", "sdwan_members_added",
-                "default_routes_converted", "policies_merged",
-                "fortios_versions", "upgrade_artifacts",
-                "upgrade_auto_fixed"):
-        if key in report.meta:
-            print(f"{key.replace('_', ' ')}: {report.meta[key]}")
-    errors, warns = report.count("error"), report.count("warn")
-    print(f"report: {errors} errors, {warns} warnings "
-          f"-> {base.with_suffix('.report.md')}")
-    return 1 if errors else 0
-
-
 def cmd_plan(args) -> int:
     text = _read(args.config)
     vendor, _ = detect_vendor(text)
@@ -273,6 +80,86 @@ def cmd_plan(args) -> int:
     print(f"wrote {out} ({len(interfaces)} interfaces) - edit it, then run "
           f"convert --plan {out}")
     return 0
+
+
+def _load_migration_plan(args) -> MigrationPlan:
+    plan = load_plan(args.plan) if args.plan else MigrationPlan()
+    if args.map:
+        plan.portmap.update(portmap.load_map(args.map))
+        plan.translate_members()
+    return plan
+
+
+def _convert_cross(text: str, src_path: str, args, outdir: Path,
+                   vendor: str) -> int:
+    mapping = portmap.load_map(args.map) if args.map else {}
+    result = pipeline.run_cross(text, vendor, src_path, mapping,
+                                target=args.fortios)
+    report, cfg = result.report, result.cfg
+
+    base = outdir / (Path(src_path).stem)
+    (base.with_suffix(".fos.conf")).write_text(result.out_text,
+                                               encoding="utf-8")
+    (base.with_suffix(".report.md")).write_text(
+        report.to_markdown(cfg, text), encoding="utf-8")
+    (base.with_suffix(".report.json")).write_text(
+        report.to_json(cfg), encoding="utf-8")
+    if result.sample_portmap:
+        (base.with_suffix(".portmap")).write_text(
+            result.sample_portmap, encoding="utf-8")
+
+    errors, warns = report.count("error"), report.count("warn")
+    print(f"wrote {base.with_suffix('.fos.conf')}")
+    print(f"policies: {len(cfg.policies)}  addresses: {len(cfg.addresses)}  "
+          f"services: {len(cfg.services)}  vips: {len(cfg.vips)}")
+    print(f"report: {errors} errors, {warns} warnings, "
+          f"{len(cfg.unparsed)} unconverted lines "
+          f"-> {base.with_suffix('.report.md')}")
+    if result.unmapped:
+        print(f"ACTION: fill in {base.with_suffix('.portmap')} and re-run "
+              f"with --map")
+    return result.exit_code
+
+
+def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
+    try:
+        plan = _load_migration_plan(args)
+        result = pipeline.run_migrate(
+            text, src_path, plan, target=args.fortios,
+            source_os=getattr(args, "source_os", None),
+            target_platform=getattr(args, "target_platform", None))
+    except PlanError as e:
+        print(f"plan error: {e}", file=sys.stderr)
+        return 2
+    report = result.report
+
+    base = outdir / (Path(src_path).stem)
+    (base.with_suffix(".fos.conf")).write_text(result.out_text,
+                                               encoding="utf-8")
+    (base.with_suffix(".report.md")).write_text(
+        report.to_markdown(), encoding="utf-8")
+    (base.with_suffix(".report.json")).write_text(
+        report.to_json(), encoding="utf-8")
+    if result.sample_portmap:
+        (outdir / (Path(src_path).stem + ".portmap")).write_text(
+            result.sample_portmap, encoding="utf-8")
+
+    print(f"wrote {base.with_suffix('.fos.conf')} "
+          f"({result.section_count} sections preserved)")
+    if plan.portmap:
+        print(f"interface renames: {report.meta.get('interface_renames', 0)} "
+              f"edits, {report.meta.get('reference_rewrites', 0)} "
+              "references rewritten")
+    for key in ("zones_created", "sdwan_members_added",
+                "default_routes_converted", "policies_merged",
+                "fortios_versions", "upgrade_artifacts",
+                "upgrade_auto_fixed"):
+        if key in report.meta:
+            print(f"{key.replace('_', ' ')}: {report.meta[key]}")
+    errors, warns = report.count("error"), report.count("warn")
+    print(f"report: {errors} errors, {warns} warnings "
+          f"-> {base.with_suffix('.report.md')}")
+    return result.exit_code
 
 
 def cmd_convert(args) -> int:
@@ -302,6 +189,24 @@ def cmd_convert(args) -> int:
         return _convert_cross(text, args.config, args, outdir, vendor)
     print(f"no cross-vendor parser for '{vendor}' yet", file=sys.stderr)
     return 2
+
+
+def cmd_gui(args) -> int:
+    try:
+        from .webui.app import create_app
+    except ImportError:
+        print("Flask is required for the GUI — install it with:\n"
+              "    python -m pip install flask", file=sys.stderr)
+        return 2
+    app = create_app()
+    url = f"http://{args.host}:{args.port}/"
+    if not args.no_browser:
+        import threading
+        import webbrowser
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    print(f"fwforge GUI on {url} (Ctrl+C to stop)")
+    app.run(host=args.host, port=args.port, debug=False)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -348,6 +253,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("config")
     p.add_argument("-o", "--out", help="output file (default <config>.plan)")
     p.set_defaults(fn=cmd_plan)
+
+    p = sub.add_parser("gui", help="run the local web UI")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=4848)
+    p.add_argument("--no-browser", action="store_true")
+    p.set_defaults(fn=cmd_gui)
 
     args = ap.parse_args(argv)
     return args.fn(args)

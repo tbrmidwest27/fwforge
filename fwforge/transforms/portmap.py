@@ -140,8 +140,9 @@ def apply_tree(tree: CTree, mapping: dict[str, str]) -> dict:
             return
         new_values = []
         for tok in node.values:
-            if tok.value in mapping:
-                new_values.append(Token(mapping[tok.value], tok.quoted))
+            target = mapping.get(tok.value)
+            if target is not None and target != tok.value:
+                new_values.append(Token(target, tok.quoted))
                 bump(node.attr)
             else:
                 new_values.append(tok)
@@ -157,7 +158,8 @@ def apply_tree(tree: CTree, mapping: dict[str, str]) -> dict:
                 rewrite_set(child, extra)
             elif isinstance(child, EditNode):
                 if any(path_endswith(path, p) for p in EDIT_RENAME_PATHS) \
-                        and child.name.value in mapping:
+                        and mapping.get(child.name.value,
+                                        child.name.value) != child.name.value:
                     child.name = Token(mapping[child.name.value],
                                        child.name.quoted)
                     stats["edits"] += 1

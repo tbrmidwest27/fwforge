@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ meta.name }}
+  <span class="badge b-vendor">{{ meta.vendor }} {{ meta.confidence }}</span>
+  {% if meta.multi_vdom %}
+    <span class="badge b-vdom">multi-VDOM: {{ meta.scopes|join(", ") }}</span>
+  {% endif %}
+  {% if meta.source_os %}
+    <span class="badge b-info">FortiOS {{ meta.source_os }}</span>
+  {% endif %}
+  {% if meta.hostname %}
+    <span class="badge b-info">{{ meta.hostname }}</span>
+  {% endif %}
+</h1>
+
+{% if error %}<div class="banner err">plan error: {{ error }}</div>{% endif %}
+
+{% if meta.counts %}
+<div class="kpis">
+  {% for k, v in meta.counts.items() %}
+  <div class="kpi"><div class="n">{{ v }}</div><div class="l">{{ k }}</div></div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('convert', jid=jid) }}">
+<div class="card">
+  <h2 style="margin-top:0">Target</h2>
+  <div class="builder-row">
+    <label>FortiOS version
+      <select name="fortios">
+        {% for t in targets %}
+        <option value="{{ t }}" {% if t == default_target %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if meta.vendor == "fortios" %}
+    <label>platform code (e.g. FG7H1G)
+      <input type="text" name="target_platform" placeholder="leave empty to keep">
+    </label>
+    <label>source FortiOS
+      <input type="text" name="source_os" value="{{ meta.source_os }}" size="6">
+    </label>
+    {% endif %}
+  </div>
+  {% if meta.vendor == "fortios" %}
+  <p class="grid-note">If target version &gt; source, the upgrade-artifact
+    scan reports removed features, auto-fixed renames, and silent default
+    flips.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Interface mapping</h2>
+  <p class="grid-note">Source name &rarr; target port. Pre-filled with the
+    same name; change what differs on the target model. Empty target =
+    leave the name as-is.</p>
+  <table style="max-width:560px">
+    <tr><th>source</th>{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>target</th></tr>
+    {% for ifc in meta.interfaces %}
+    <tr>
+      <td><code>{{ ifc }}</code>
+        <input type="hidden" name="map_src" value="{{ ifc }}"></td>
+      {% if meta.multi_vdom %}
+      <td><span class="badge b-vdom">{{ meta.vdoms.get(ifc, "root") }}</span></td>
+      {% endif %}
+      <td><input type="text" name="map_dst" value="{{ ifc }}"
+                 style="width:100%"></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+{% if meta.vendor == "fortios" %}
+<div class="card">
+  <h2 style="margin-top:0">Restructure (optional)</h2>
+
+  <fieldset>
+    <legend>Zones — fold interfaces into a zone</legend>
+    <p class="grid-note">Creates the zone, rewrites every policy reference,
+      merges policies that become identical, audits the leftovers.
+      Members are source names; the mapping above is applied
+      automatically.</p>
+    <div id="zones"></div>
+    <button type="button" class="ghost small" onclick="addZone()">+ add zone</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>SD-WAN — move interfaces into SD-WAN members</legend>
+    <p class="grid-note">Member syntax:
+      <code>port3 gateway=203.0.113.1, port4 weight=10</code> &middot;
+      health-check: <code>ping 8.8.8.8</code>, <code>dns 9.9.9.9</code>,
+      <code>none</code>, or empty for a default ping check. Default routes
+      on members are converted to an sdwan-zone route automatically.</p>
+    <div id="sdwans"></div>
+    <button type="button" class="ghost small" onclick="addSdwan()">+ add SD-WAN zone</button>
+  </fieldset>
+</div>
+{% endif %}
+
+<p><button>Convert</button>
+  <a class="btn ghost" href="{{ url_for('index') }}">back</a></p>
+</form>
+
+{% if meta.inventory %}
+<details>
+  <summary>Config sections ({{ meta.inventory|length }})</summary>
+  <div class="card">
+  <table style="max-width:560px">
+    <tr><th>section</th><th>entries</th></tr>
+    {% for sec, n in meta.inventory.items() %}
+    <tr><td><code>{{ sec }}</code></td><td>{{ n }}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</details>
+{% endif %}
+
+<script>
+const IFACES = {{ meta.interfaces|tojson }};
+let zi = 0, si = 0;
+
+function ifaceOptions() {
+  return IFACES.map(n => `<option value="${n}">${n}</option>`).join("");
+}
+function addZone() {
+  const d = document.createElement("div");
+  d.className = "builder-row";
+  d.innerHTML = `
+    <label>name<br><input type="text" name="zone_name_${zi}" placeholder="lan"></label>
+    <label>members<br><select name="zone_members_${zi}" multiple>${ifaceOptions()}</select></label>
+    <label>intrazone<br><select name="zone_intrazone_${zi}">
+      <option value="deny" selected>deny</option>
+      <option value="allow">allow</option></select></label>
+    <label>vdom (optional)<br><input type="text" name="zone_vdom_${zi}" size="8"></label>
+    <button type="button" class="ghost small" style="margin-top:1.3rem"
+      onclick="this.parentNode.remove()">remove</button>`;
+  document.getElementById("zones").appendChild(d);
+  zi++;
+}
+function addSdwan() {
+  const d = document.createElement("div");
+  d.className = "builder-row";
+  d.innerHTML = `
+    <label>zone name<br><input type="text" name="sdwan_name_${si}" value="virtual-wan-link"></label>
+    <label>members<br><input type="text" name="sdwan_members_${si}" size="42"
+      placeholder="wan1 gateway=203.0.113.1, wan2 weight=10"></label>
+    <label>health-check<br><input type="text" name="sdwan_hc_${si}" size="14"
+      placeholder="ping 8.8.8.8"></label>
+    <label>vdom (optional)<br><input type="text" name="sdwan_vdom_${si}" size="8"></label>
+    <button type="button" class="ghost small" style="margin-top:1.3rem"
+      onclick="this.parentNode.remove()">remove</button>`;
+  document.getElementById("sdwans").appendChild(d);
+  si++;
+}
+</script>
+{% endblock %}

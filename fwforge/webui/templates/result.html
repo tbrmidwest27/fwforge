@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ meta.name }} &rarr; FortiOS {{ r.target }}
+  <span class="badge b-vendor">{{ r.mode }}</span>
+  {% if r.exit == 0 %}<span class="badge b-ok">converted</span>
+  {% else %}<span class="badge b-err">converted with errors</span>{% endif %}
+</h1>
+<p class="muted">{{ r.when }} &middot;
+  <a href="{{ url_for('job', jid=jid) }}">adjust mapping / plan and re-run</a></p>
+
+<div class="kpis">
+  <div class="kpi err"><div class="n">{{ r.counts.errors }}</div><div class="l">errors</div></div>
+  <div class="kpi warn"><div class="n">{{ r.counts.warnings }}</div><div class="l">warnings</div></div>
+  <div class="kpi"><div class="n">{{ r.counts.notes }}</div><div class="l">notes</div></div>
+  {% if r.mode == "migrate" %}
+  <div class="kpi"><div class="n">{{ r.sections }}</div><div class="l">sections kept</div></div>
+  <div class="kpi ok"><div class="n">{{ r.diff_changed }}</div><div class="l">lines changed</div></div>
+  {% else %}
+  <div class="kpi"><div class="n">{{ r.unparsed }}</div><div class="l">unconverted lines</div></div>
+  {% endif %}
+  <div class="kpi"><div class="n">{{ r.out_size }}</div><div class="l">output lines</div></div>
+</div>
+
+{% if r.meta %}
+<div class="card">
+  <table style="max-width:560px">
+    {% for k, v in r.meta.items() %}
+    <tr><th>{{ k.replace("_", " ") }}</th><td>{{ v }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<div class="dl">
+  <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">download FortiOS config</a>
+  <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.md') }}">report.md</a>
+  <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.json') }}">report.json</a>
+  {% if r.mode == "migrate" %}
+  <a class="btn ghost" href="{{ url_for('download', jid=jid, which='diff') }}">diff.patch</a>
+  {% endif %}
+</div>
+
+{% if r.unmapped %}
+<div class="banner err">
+  <strong>{{ r.unmapped|length }} interface name(s) are not mapped</strong> —
+  the output keeps the source names, which the FortiGate will reject.
+  Go back, fill in the mapping grid for:
+  {% for u in r.unmapped %}<code>{{ u }}</code> {% endfor %}
+</div>
+{% endif %}
+
+{% for level, title in [("error", "Errors — must fix"),
+                        ("warn", "Warnings — review"),
+                        ("info", "Notes")] %}
+  {% if r.findings[level] %}
+  <h2>{{ title }} ({{ r.findings[level]|length }})</h2>
+  <ul class="findings">
+    {% for f in r.findings[level] %}
+    <li class="{{ 'err' if level == 'error' else level }}">
+      <span class="area">{{ f.area }}</span>{{ f.message }}
+      {% if f.loc %}<span class="loc">[{{ f.loc }}]</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+{% endfor %}
+
+{% if r.mode == "migrate" %}
+<h2>What changed</h2>
+<details {% if r.diff_changed and r.diff_changed <= 80 %}open{% endif %}>
+  <summary>{{ r.diff_changed }} changed line(s)
+    {% if r.diff_total > r.diff|length %}
+      — showing first {{ r.diff|length }} of {{ r.diff_total }} diff lines
+      (full diff in diff.patch)
+    {% endif %}
+  </summary>
+  <pre class="diff">{% for l in r.diff %}<div class="{{ l.cls }}">{{ l.text }}</div>{% endfor %}</pre>
+</details>
+{% endif %}
+{% endblock %}

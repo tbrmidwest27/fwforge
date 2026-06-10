@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Load a firewall config</h1>
+{% if error %}<div class="banner err">{{ error }}</div>{% endif %}
+
+<div class="row">
+  <div class="card">
+    <h2 style="margin-top:0">Upload a file</h2>
+    <form method="post" action="{{ url_for('load') }}"
+          enctype="multipart/form-data">
+      <p><input type="file" name="config"></p>
+      <button>Load</button>
+    </form>
+    <p class="muted">FortiOS backup, Cisco ASA running-config, or Palo Alto
+      XML / <code>display set</code> export. Vendor is auto-detected.</p>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">Or a path on this machine</h2>
+    <form method="post" action="{{ url_for('load') }}">
+      <p><input type="text" name="path" style="width:100%"
+                placeholder="C:\path\to\backup.conf"></p>
+      <button>Load</button>
+    </form>
+    <p class="muted">Configs never leave this machine — there is no cloud
+      side to fwforge.</p>
+  </div>
+</div>
+
+{% if jobs %}
+<h2>Loaded configs</h2>
+<div class="card">
+<table>
+  <tr><th>config</th><th>vendor</th><th>loaded</th><th>status</th><th></th></tr>
+  {% for jid, j in jobs %}
+  <tr>
+    <td>{{ j.name }}</td>
+    <td><span class="badge b-vendor">{{ j.vendor }}</span></td>
+    <td class="muted">{{ j.created }}</td>
+    <td>
+      {% if j.result %}
+        {% if j.result.counts.errors %}
+          <span class="badge b-err">{{ j.result.counts.errors }} errors</span>
+        {% elif j.result.counts.warnings %}
+          <span class="badge b-warn">{{ j.result.counts.warnings }} warnings</span>
+        {% else %}<span class="badge b-ok">clean</span>{% endif %}
+      {% else %}<span class="muted">not converted yet</span>{% endif %}
+    </td>
+    <td>
+      <a class="btn ghost" style="padding:.2rem .7rem"
+         href="{{ url_for('job', jid=jid) }}">open</a>
+      {% if j.result %}
+      <a class="btn ghost" style="padding:.2rem .7rem"
+         href="{{ url_for('job_result', jid=jid) }}">result</a>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endif %}
+{% endblock %}

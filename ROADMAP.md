@@ -102,14 +102,18 @@ A maintained open converter has no real competition.
       Rule table curated from Fortinet release notes; extend in
       transforms/versiondelta.py as versions land.
 
+### v0.6 — shipped 2026-06-10
+- [x] **Local web GUI** (`fwforge gui`, Flask on 127.0.0.1:4848): engine
+      extracted to pipeline.py (CLI + GUI share it), mapping grid with
+      VDOM badges, zone/SD-WAN builder rows, upgrade-artifact display,
+      severity-grouped findings, downloads, colorized before/after diff.
+      Flask is the only (optional) dependency; core stays stdlib-only.
+
 ### next
 - [ ] **Load the converted config on the actual 701G** when the hardware
       arrives: restore, then `diag debug config-error-log read`; verify
       the FG7H1G platform code from a native 701G backup first
-- [ ] **Local web GUI** (Flask, same stack as the financials app):
-      upload/pick config → auto-detect → interface-mapping grid →
-      plan editor (zones/SD-WAN) → run → report viewer + before/after
-      diff. CLI stays the engine; the GUI is a thin layer over it.
+- [ ] ASA VPN conversion (crypto map / tunnel-group → phase1/2-interface)
 - [ ] ASA twice-NAT: the common idioms (identity NAT, source-static +
       destination-static pairs) → central-SNAT / VIP combinations
 - [ ] ASA crypto map / tunnel-group → FortiOS IPsec phase1/2-interface
