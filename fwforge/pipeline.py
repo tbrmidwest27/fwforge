@@ -14,8 +14,8 @@ from .parsers import CROSS_PARSERS, fortios_tree
 from .report import Report
 from .transforms import hwswitch
 from .transforms import names as names_tf
-from .transforms import optimize, portmap, sdwan, tree_refs, versiondelta
-from .transforms import vdommode, zones
+from .transforms import optimize, portmap, sdwan, sslvpn, tree_refs
+from .transforms import versiondelta, vdommode, zones
 from .transforms import routes as routes_tf
 from .transforms import tuning as tuning_tf
 from .transforms.plan import MigrationPlan
@@ -75,7 +75,9 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 target_platform: str | None = None,
                 want_normalized: bool = False, vdom_mode: str = "keep",
                 vdom_name: str = "root", vdom_scope_only: bool = False,
-                hw_switch: str = "keep") -> ConversionResult:
+                hw_switch: str = "keep", sslvpn_to_ipsec: bool = False,
+                sslvpn_psk: str = "CHANGEME-SET-A-REAL-PSK"
+                ) -> ConversionResult:
     """FortiOS -> FortiOS lossless tree migration. Raises PlanError."""
     report = Report()
     report.meta = {
@@ -102,6 +104,11 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
         hstats = hwswitch.convert(tree, report)
         if hstats["converted"]:
             report.meta["hw_switch_converted"] = hstats["converted"]
+
+    if sslvpn_to_ipsec:
+        sstats = sslvpn.convert(tree, report, psk=sslvpn_psk)
+        if sstats["tunnels"]:
+            report.meta["sslvpn_tunnels"] = sstats["tunnels"]
 
     if target_platform:
         for child in tree.children:

@@ -68,6 +68,28 @@ other devices. After renaming, a leftover scan reports every remaining
 old-name token so nothing slips through. `--target-platform FG7H1G`
 rewrites the `#config-version` header so the target model accepts the file.
 
+### SSL-VPN → IPsec dial-up assistant
+
+FortiOS 7.6 removed SSL-VPN tunnel mode. This converts it to the
+recommended replacement — an IKEv2 dial-up IPsec tunnel (FortiClient):
+
+```
+python -m fwforge convert ras.conf --fortios 8.0 \
+    --sslvpn-to-ipsec --sslvpn-psk "MyTunnelKey1"
+```
+
+It builds a phase1/phase2-interface scaffold from the SSL-VPN config:
+`source-interface` → tunnel interface, the tunnel IP-pool object →
+mode-config `ipv4-start-ip`/`end-ip`, the portal's split-tunnel network →
+`ipv4-split-include`, the authentication-rule group → `authusrgrp` (+ EAP),
+and the `ssl.<vdom>` firewall policies are rewired to the new tunnel with
+their user groups intact. The dead `vpn ssl settings`/`web portal` sections
+are removed. Like FortiConverter's assistant it's a **scaffold**: it emits
+a placeholder PSK and loudly flags what needs you — a real PSK, client
+reprovisioning to FortiClient IKEv2, and the SSL-VPN features (web-mode
+bookmarks, host-check) that have no IPsec equivalent. Web-mode-only SSL-VPN
+is left untouched and flagged. Per-VDOM aware.
+
 ### Hardware-switch → software-switch
 
 When the target model lacks the source's switch fabric, rewrite its

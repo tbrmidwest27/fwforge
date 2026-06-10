@@ -29,7 +29,7 @@ Tracks every FortiConverter capability that is NOT "another source vendor".
 | non-VDOM ↔ VDOM **mode** conversion | ✅ done — `--vdom-mode multi/single`, scope-split, `--vdom-scope-only` for safe load into existing box |
 | Hardware-switch → software-switch conversion | ✅ done — `--hw-switch convert`, drops dead switch infra, member renames flow |
 | Merge into an existing target config | ⏳ todo — source + target backup, no overlap |
-| SSL-VPN → IPsec migration assistant | ⏳ todo (we *detect* the removal; FC *converts* it) |
+| SSL-VPN → IPsec migration assistant | ✅ done — `--sslvpn-to-ipsec` builds an IKEv2 dial-up scaffold (mode-cfg pool, authusrgrp, split-include), rewires policies |
 | virtual-router → VRF conversion | ⏳ todo (pairs with Juniper/PAN parsers) |
 | FortiManager (.fmg) output target | ⏳ todo — emit per-ADOM policy package |
 | Audit / documentation report (polished) | ⏳ todo — we have md/JSON; add a print/PDF doc |
@@ -183,8 +183,15 @@ A maintained open converter has no real competition.
       flow into switch/aggregate `set member` lists (PATH_SCOPED_ATTRS
       suffix match, multi-VDOM safe). CLI flag + GUI checkbox.
 
+### v0.11 — shipped 2026-06-10
+- [x] **SSL-VPN → IPsec dial-up assistant** (transforms/sslvpn.py):
+      builds an IKEv2 dial-up phase1/phase2 scaffold from SSL-VPN tunnel-
+      mode config (source-interface, tunnel IP pool → mode-cfg, portal
+      split-tunnel → ipv4-split-include, auth-rule group → authusrgrp+EAP),
+      rewires ssl.<vdom> policies, removes the dead SSL-VPN sections,
+      flags PSK/client-reprovision/web-mode-loss. Per-VDOM. CLI + GUI.
+
 ### next (parity matrix ⏳ items, fleet-first order)
-- [ ] SSL-VPN → IPsec migration assistant (8.0 dropped SSL-VPN tunnel mode)
 - [ ] merge-into-existing-target-config
 - [ ] FortiManager output target; polished audit/doc report
 - [ ] **Load the converted config on the actual 701G** when hardware

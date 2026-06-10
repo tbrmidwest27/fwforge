@@ -234,6 +234,9 @@ def create_app() -> Flask:
                     vdom_scope_only=bool(request.form.get("vdom_scope_only")),
                     hw_switch=("convert" if request.form.get("hw_switch")
                                else "keep"),
+                    sslvpn_to_ipsec=bool(request.form.get("sslvpn_to_ipsec")),
+                    sslvpn_psk=request.form.get("sslvpn_psk", "").strip()
+                    or "CHANGEME-SET-A-REAL-PSK",
                     want_normalized=True)
             else:
                 mapping = {}

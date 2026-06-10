@@ -122,11 +122,19 @@
     <button type="button" class="ghost small" onclick="addZone()">+ add zone</button>
   </fieldset>
 
-  <label style="display:block;margin:.2rem 0 .8rem">
+  <label style="display:block;margin:.2rem 0 .4rem">
     <input type="checkbox" name="hw_switch" value="1">
     <strong>Convert hardware switch → software switch</strong> — for a
     target without the same switch fabric (rewrites
     <code>type hard-switch</code> as <code>type switch</code>)</label>
+  <div style="margin:.2rem 0 .8rem">
+    <label>
+      <input type="checkbox" name="sslvpn_to_ipsec" value="1">
+      <strong>Convert SSL-VPN → IPsec dial-up</strong> — SSL-VPN tunnel
+      mode is gone in FortiOS 7.6+</label>
+    <input type="text" name="sslvpn_psk" placeholder="IPsec PSK (optional)"
+           style="margin-left:.5rem;width:240px">
+  </div>
 
   <fieldset>
     <legend>SD-WAN — move interfaces into SD-WAN members</legend>

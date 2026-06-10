@@ -145,7 +145,10 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
             vdom_mode=getattr(args, "vdom_mode", "keep"),
             vdom_name=getattr(args, "vdom_name", "root"),
             vdom_scope_only=getattr(args, "vdom_scope_only", False),
-            hw_switch=getattr(args, "hw_switch", "keep"))
+            hw_switch=getattr(args, "hw_switch", "keep"),
+            sslvpn_to_ipsec=getattr(args, "sslvpn_to_ipsec", False),
+            sslvpn_psk=getattr(args, "sslvpn_psk", None)
+            or "CHANGEME-SET-A-REAL-PSK")
     except PlanError as e:
         print(f"plan error: {e}", file=sys.stderr)
         return 2
@@ -168,9 +171,10 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
         print(f"interface renames: {report.meta.get('interface_renames', 0)} "
               f"edits, {report.meta.get('reference_rewrites', 0)} "
               "references rewritten")
-    for key in ("vdom_mode", "hw_switch_converted", "zones_created",
-                "sdwan_members_added", "default_routes_converted",
-                "policies_merged", "fortios_versions", "upgrade_artifacts",
+    for key in ("vdom_mode", "hw_switch_converted", "sslvpn_tunnels",
+                "zones_created", "sdwan_members_added",
+                "default_routes_converted", "policies_merged",
+                "fortios_versions", "upgrade_artifacts",
                 "upgrade_auto_fixed"):
         if key in report.meta:
             print(f"{key.replace('_', ' ')}: {report.meta[key]}")
@@ -282,6 +286,13 @@ def main(argv: list[str] | None = None) -> int:
                    help="'convert' rewrites hardware-switch interfaces as "
                         "software switches (for targets without the same "
                         "switch fabric)")
+    p.add_argument("--sslvpn-to-ipsec", action="store_true",
+                   help="convert SSL-VPN tunnel mode into an IKEv2 dial-up "
+                        "IPsec scaffold (SSL-VPN tunnel mode is gone in "
+                        "FortiOS 7.6+)")
+    p.add_argument("--sslvpn-psk",
+                   help="PSK for the generated IPsec dial-up tunnel "
+                        "(default: a CHANGEME placeholder)")
     p.add_argument("--mode", default="auto",
                    choices=["auto", "cross", "migrate"])
     tune = p.add_argument_group("tuning (cross-vendor conversions)")
