@@ -3,6 +3,44 @@
 Competitive notes researched June 2026 (FortiConverter Tool 7.4.1 /
 Service 25.1.0, installed copy inspected + docs + Fortinet community).
 
+## Mission
+
+**Full FortiConverter parity + a modernized feature set that does things
+FortiConverter can't.** Additional vendor *parsers* (Check Point, Juniper,
+SonicWall, …) are explicitly deferred — they're additive and each is ~an
+hour's work. Everything else FortiConverter does, fwforge should do, and
+then exceed.
+
+## FortiConverter parity matrix (non-parser features)
+
+Tracks every FortiConverter capability that is NOT "another source vendor".
+
+| FortiConverter feature | fwforge status |
+|---|---|
+| FortiOS→FortiOS model migration, interface mapping | ✅ done (lossless tree) |
+| Tuning: discard unreferenced objects | ✅ done — `--prune` (theirs is opt-in & shallow; ours iterates) |
+| Tuning: rule include/exclude | ✅ done — `--only` / `--exclude` |
+| Tuning: Interface Pair View Split | ✅ done — `--split-interface-pairs` |
+| Merge duplicate objects | ✅ done — `--merge-dupes` (FC doesn't do this) |
+| Plain-CLI output with inline warnings | ✅ done + first-class md/JSON report |
+| Interface-mapping import/export | ✅ done — plan files + GUI grid |
+| GUI workflow | ✅ done — local Flask, + live diff & artifact scan |
+| VDOM mapping (config lands in right VDOM) | ✅ done (multi-VDOM aware) |
+| non-VDOM ↔ VDOM **mode** conversion | ⏳ todo — wrap/unwrap flat ↔ `config vdom` |
+| Hardware-switch → software-switch conversion | ⏳ todo — when target lacks hw switch |
+| Merge into an existing target config | ⏳ todo — source + target backup, no overlap |
+| SSL-VPN → IPsec migration assistant | ⏳ todo (we *detect* the removal; FC *converts* it) |
+| virtual-router → VRF conversion | ⏳ todo (pairs with Juniper/PAN parsers) |
+| FortiManager (.fmg) output target | ⏳ todo — emit per-ADOM policy package |
+| Audit / documentation report (polished) | ⏳ todo — we have md/JSON; add a print/PDF doc |
+| **Modern extras FC lacks** | route-based dstintf inference, version-upgrade
+  artifact scan (silent default-flips), zone/SD-WAN restructuring,
+  per-line provenance, deterministic diff, fully local, free |
+
+Build order for the ⏳ items: VDOM-mode conversion and hw→sw switch first
+(directly serve the 601F/121G fleet), then SSL-VPN→IPsec assistant (8.0
+relevance), then merge-into-existing, FortiManager output, doc report.
+
 ## What we learned about FortiConverter
 
 **Architecture** (from the installed copy): Django 5.2 + React web UI +
@@ -121,11 +159,22 @@ A maintained open converter has no real competition.
       policies with route-inferred LAN interfaces, crypto-ACL consumption
       tracking. Dial-up maps / cert auth / backup peers flagged loudly.
 
-### next
-- [ ] **Load the converted config on the actual 701G** when the hardware
-      arrives: restore, then `diag debug config-error-log read`; verify
-      the FG7H1G platform code from a native 701G backup first
-- [ ] ASA twice-NAT idioms; PAN-OS IPsec; Check Point parser
+### v0.8 — shipped 2026-06-10
+- [x] **Tuning actions** (FortiConverter's "Tuning page", but acting):
+      `--prune` (iterative unreferenced-object removal), `--merge-dupes`
+      (collapse same-value objects — FC can't), `--split-interface-pairs`
+      (their Interface Pair View Split), `--only`/`--exclude` (rule
+      include/exclude). Cross-vendor path; wired into CLI + GUI checkboxes.
+
+### next (parity matrix ⏳ items, fleet-first order)
+- [ ] non-VDOM ↔ VDOM **mode** conversion (wrap/unwrap)
+- [ ] hardware-switch → software-switch conversion
+- [ ] SSL-VPN → IPsec migration assistant (8.0 dropped SSL-VPN tunnel mode)
+- [ ] merge-into-existing-target-config
+- [ ] FortiManager output target; polished audit/doc report
+- [ ] **Load the converted config on the actual 701G** when hardware
+      arrives: restore, then `diag debug config-error-log read`
+- [ ] (later) more parsers: Check Point, Juniper, SonicWall
 - [ ] ASA twice-NAT: the common idioms (identity NAT, source-static +
       destination-static pairs) → central-SNAT / VIP combinations
 - [ ] ASA crypto map / tunnel-group → FortiOS IPsec phase1/2-interface

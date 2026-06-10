@@ -71,6 +71,29 @@
   </table>
 </div>
 
+{% if meta.vendor != "fortios" %}
+<div class="card">
+  <h2 style="margin-top:0">Tuning (optional)</h2>
+  <p class="grid-note">FortiConverter ports everything 1:1 by default;
+    these clean up the converted output instead.</p>
+  <label style="display:block;margin:.3rem 0">
+    <input type="checkbox" name="t_prune" value="1">
+    <strong>Prune unreferenced objects</strong> — drop addresses/services
+    no policy uses</label>
+  <label style="display:block;margin:.3rem 0">
+    <input type="checkbox" name="t_merge" value="1">
+    <strong>Merge duplicate objects</strong> — collapse same-value
+    objects to one name</label>
+  <label style="display:block;margin:.3rem 0">
+    <input type="checkbox" name="t_split" value="1">
+    <strong>Split interface pairs</strong> — one policy per
+    srcintf/dstintf pair</label>
+  <label style="display:block;margin:.4rem 0">drop policies (comma-separated names)<br>
+    <input type="text" name="t_exclude" style="width:100%"
+           placeholder="e.g. UNUSED-ACL-1, legacy-rule-3"></label>
+</div>
+{% endif %}
+
 {% if meta.vendor == "fortios" %}
 <div class="card">
   <h2 style="margin-top:0">Restructure (optional)</h2>

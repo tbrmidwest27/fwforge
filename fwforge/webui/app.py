@@ -21,6 +21,7 @@ from ..transforms import plan as plan_mod
 from ..transforms.plan import (MigrationPlan, PlanError, SdwanZoneSpec,
                                ZoneSpec)
 from ..transforms import versiondelta
+from ..transforms.tuning import TuningOptions
 
 JOBS: dict[str, dict] = {}
 JOBS_DIR = Path.home() / ".fwforge" / "gui-jobs"
@@ -234,9 +235,17 @@ def create_app() -> Flask:
                                     request.form.getlist("map_dst")):
                     if src.strip() and dst.strip():
                         mapping[src.strip()] = dst.strip()
+                tuning = TuningOptions(
+                    prune=bool(request.form.get("t_prune")),
+                    merge_dupes=bool(request.form.get("t_merge")),
+                    split_pairs=bool(request.form.get("t_split")),
+                    exclude=[s.strip() for s in
+                             request.form.get("t_exclude", "").split(",")
+                             if s.strip()],
+                )
                 result = pipeline.run_cross(
                     text, meta["vendor"], meta["name"], mapping,
-                    target=target)
+                    target=target, tuning=tuning)
         except PlanError as e:
             return redirect(url_for("job", jid=jid, error=str(e)))
 

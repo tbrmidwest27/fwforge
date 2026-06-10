@@ -95,6 +95,25 @@ The rule table (`transforms/versiondelta.py`) is curated from Fortinet's
 release-notes "Changes in CLI / default behavior" pages — deliberately
 conservative; extend it as versions land.
 
+### Tuning (cross-vendor conversions)
+
+FortiConverter ports a config 1:1 and offers a shallow opt-in cleanup;
+these flags clean up the converted output instead:
+
+```
+python -m fwforge convert asa.cfg -o out --map ports.map \
+    --prune --merge-dupes --split-interface-pairs --exclude UNUSED-1
+```
+
+- `--prune` — iteratively drop addresses/services/groups no policy uses
+- `--merge-dupes` — collapse same-value objects to one name, rewrite refs
+  (FortiConverter doesn't do this)
+- `--split-interface-pairs` — one policy per srcintf/dstintf pair
+  (their "Interface Pair View Split")
+- `--exclude a,b` / `--only a,b` — rule include/exclude by policy name
+
+All are also checkboxes on the GUI's conversion page.
+
 ### Migration plans: zones and SD-WAN refactors
 
 Beyond renames, a migration can *restructure*. `fwforge plan <config>`

@@ -29,6 +29,7 @@ from .parsers import fortios_tree
 from .report import Report
 from .transforms import portmap
 from .transforms.plan import MigrationPlan, PlanError, load_plan, scaffold
+from .transforms.tuning import TuningOptions
 
 
 def _read(path: str) -> str:
@@ -90,11 +91,24 @@ def _load_migration_plan(args) -> MigrationPlan:
     return plan
 
 
+def _tuning_from_args(args) -> TuningOptions:
+    return TuningOptions(
+        prune=getattr(args, "prune", False),
+        merge_dupes=getattr(args, "merge_dupes", False),
+        split_pairs=getattr(args, "split_interface_pairs", False),
+        exclude=[s for s in (getattr(args, "exclude", "") or "").split(",")
+                 if s.strip()],
+        only=[s for s in (getattr(args, "only", "") or "").split(",")
+              if s.strip()],
+    )
+
+
 def _convert_cross(text: str, src_path: str, args, outdir: Path,
                    vendor: str) -> int:
     mapping = portmap.load_map(args.map) if args.map else {}
     result = pipeline.run_cross(text, vendor, src_path, mapping,
-                                target=args.fortios)
+                                target=args.fortios,
+                                tuning=_tuning_from_args(args))
     report, cfg = result.report, result.cfg
 
     base = outdir / (Path(src_path).stem)
@@ -184,6 +198,9 @@ def cmd_convert(args) -> int:
         if vendor != "fortios":
             print("--mode migrate requires a FortiOS source", file=sys.stderr)
             return 2
+        if _tuning_from_args(args).any():
+            print("note: tuning options apply to cross-vendor conversions "
+                  "only (not FortiOS migration) — ignored", file=sys.stderr)
         return _convert_migrate(text, args.config, args, outdir)
     if vendor in CROSS_PARSERS:
         return _convert_cross(text, args.config, args, outdir, vendor)
@@ -246,6 +263,18 @@ def main(argv: list[str] | None = None) -> int:
                         "the restore")
     p.add_argument("--mode", default="auto",
                    choices=["auto", "cross", "migrate"])
+    tune = p.add_argument_group("tuning (cross-vendor conversions)")
+    tune.add_argument("--prune", action="store_true",
+                      help="drop address/service objects nothing references")
+    tune.add_argument("--merge-dupes", action="store_true",
+                      help="collapse duplicate objects to one name")
+    tune.add_argument("--split-interface-pairs", action="store_true",
+                      help="split multi-interface policies into single "
+                           "srcintf/dstintf pairs")
+    tune.add_argument("--exclude", default="",
+                      help="comma-separated policy names to drop")
+    tune.add_argument("--only", default="",
+                      help="comma-separated policy names to keep (drop rest)")
     p.set_defaults(fn=cmd_convert)
 
     p = sub.add_parser(

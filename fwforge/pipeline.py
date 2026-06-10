@@ -15,7 +15,9 @@ from .report import Report
 from .transforms import names as names_tf
 from .transforms import optimize, portmap, sdwan, tree_refs, versiondelta, zones
 from .transforms import routes as routes_tf
+from .transforms import tuning as tuning_tf
 from .transforms.plan import MigrationPlan
+from .transforms.tuning import TuningOptions
 
 
 @dataclass
@@ -33,8 +35,8 @@ class ConversionResult:
 
 
 def run_cross(text: str, vendor: str, src_name: str,
-              mapping: dict[str, str], target: str = "7.4"
-              ) -> ConversionResult:
+              mapping: dict[str, str], target: str = "7.4",
+              tuning: TuningOptions | None = None) -> ConversionResult:
     report = Report()
     report.meta = {
         "tool": f"fwforge {__version__}",
@@ -50,6 +52,10 @@ def run_cross(text: str, vendor: str, src_name: str,
     unmapped = portmap.apply_ir(cfg, mapping, report)
     names_tf.apply(cfg, report)
     routes_tf.infer_dst_zones(cfg, report)
+    if tuning and tuning.any():
+        stats = tuning_tf.apply(cfg, tuning, report)
+        report.meta["tuning"] = ", ".join(
+            f"{k}:{v}" for k, v in stats.items() if v)
     optimize.analyze(cfg, report)
     out_text = fortios_emit.emit(cfg, report, target=target)
 
