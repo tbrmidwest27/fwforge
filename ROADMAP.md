@@ -109,11 +109,23 @@ A maintained open converter has no real competition.
       severity-grouped findings, downloads, colorized before/after diff.
       Flask is the only (optional) dependency; core stays stdlib-only.
 
+### v0.7 — shipped 2026-06-10
+- [x] **ASA site-to-site VPN conversion** (the part everyone redoes by
+      hand after FortiConverter): crypto maps → route-based
+      phase1/phase2-interface. IKEv1+IKEv2 policies → proposal/dhgrp
+      lists, transform-sets & ipsec-proposals (incl. GCM), tunnel-group
+      PSKs (asymmetric IKEv2 → psksecret-remote; masked '*****' exports
+      detected → placeholder + error), per-ACE phase2 selectors, PFS
+      semantics preserved (ASA default off → `set pfs disable`), SA
+      lifetimes. Ramifications generated: tunnel routes, out/in VPN
+      policies with route-inferred LAN interfaces, crypto-ACL consumption
+      tracking. Dial-up maps / cert auth / backup peers flagged loudly.
+
 ### next
 - [ ] **Load the converted config on the actual 701G** when the hardware
       arrives: restore, then `diag debug config-error-log read`; verify
       the FG7H1G platform code from a native 701G backup first
-- [ ] ASA VPN conversion (crypto map / tunnel-group → phase1/2-interface)
+- [ ] ASA twice-NAT idioms; PAN-OS IPsec; Check Point parser
 - [ ] ASA twice-NAT: the common idioms (identity NAT, source-static +
       destination-static pairs) → central-SNAT / VIP combinations
 - [ ] ASA crypto map / tunnel-group → FortiOS IPsec phase1/2-interface

@@ -142,6 +142,35 @@ class NatRule:
 
 
 @dataclass
+class VpnPhase1:
+    """Route-based IPsec phase1 (FortiOS phase1-interface)."""
+
+    name: str  # becomes a FortiOS interface name — max 15 chars
+    interface: str = ""  # egress interface (vendor name, mapped later)
+    remote_gw: str = ""
+    ike_version: int = 1
+    proposals: list[str] = field(default_factory=list)  # enc-auth tokens
+    dhgrp: list[str] = field(default_factory=list)
+    psk: str = ""
+    psk_remote: str = ""  # asymmetric IKEv2 PSK
+    keylife: int = 0  # 0 = FortiOS default
+    comment: str | None = None
+    source: SourceRef | None = None
+
+
+@dataclass
+class VpnPhase2:
+    name: str
+    phase1: str = ""
+    proposals: list[str] = field(default_factory=list)
+    pfs_group: str = ""  # "" = PFS disabled (the ASA default!)
+    src: str = ""  # CIDR
+    dst: str = ""  # CIDR
+    keylife: int = 0
+    source: SourceRef | None = None
+
+
+@dataclass
 class Route:
     dest: str = "0.0.0.0/0"  # CIDR
     gateway: str = ""
@@ -167,6 +196,8 @@ class FirewallConfig:
     policies: list[Policy] = field(default_factory=list)
     vips: list[Vip] = field(default_factory=list)
     nats: list[NatRule] = field(default_factory=list)
+    phase1s: list[VpnPhase1] = field(default_factory=list)
+    phase2s: list[VpnPhase2] = field(default_factory=list)
     routes: list[Route] = field(default_factory=list)
     unparsed: list[SourceRef] = field(default_factory=list)
     meta: dict = field(default_factory=dict)

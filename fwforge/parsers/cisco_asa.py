@@ -27,6 +27,8 @@ from ..model import (
     ServiceGroup,
     SourceRef,
     Vip,
+    VpnPhase1,
+    VpnPhase2,
 )
 
 # --- Cisco literal tables (well-known names the ASA CLI accepts) -----------
@@ -66,6 +68,27 @@ PROTO_NUMBERS = {
 
 # Lines that are pure cosmetics — the only things skipped without a report.
 _COSMETIC = re.compile(r"^(!|:\s|:$|ASA Version|Cryptochecksum)")
+
+# ASA crypto algorithm tokens -> FortiOS names
+VPN_ENC = {
+    "des": "des", "3des": "3des", "aes": "aes128", "aes-128": "aes128",
+    "aes-192": "aes192", "aes-256": "aes256", "aes-gcm": "aes128gcm",
+    "aes-gcm-128": "aes128gcm", "aes-gcm-192": "aes192gcm",
+    "aes-gcm-256": "aes256gcm", "null": "null",
+}
+VPN_HASH = {
+    "md5": "md5", "sha": "sha1", "sha-1": "sha1", "sha1": "sha1",
+    "sha-256": "sha256", "sha256": "sha256", "sha-384": "sha384",
+    "sha384": "sha384", "sha-512": "sha512", "sha512": "sha512",
+}
+# esp- transform tokens (ikev1 transform-sets)
+ESP_ENC = {f"esp-{k}": v for k, v in VPN_ENC.items()}
+ESP_HASH = {
+    "esp-md5-hmac": "md5", "esp-sha-hmac": "sha1",
+    "esp-sha-1-hmac": "sha1", "esp-sha-256-hmac": "sha256",
+    "esp-sha-384-hmac": "sha384", "esp-sha-512-hmac": "sha512",
+    "esp-none": "null",
+}
 
 
 def detect(text: str) -> float:
@@ -123,6 +146,14 @@ class AsaParser:
         self._acl_policies: dict[str, list[Policy]] = {}
         self._access_groups: list[tuple[str, str, SourceRef]] = []
         self._findings: list[tuple[str, str, str, SourceRef | None]] = []
+        # --- VPN collection (assembled in finish_vpn) ---
+        self._ike_policies: dict[int, list[dict]] = {1: [], 2: []}
+        self._transform_sets: dict[str, list[str]] = {}  # ikev1
+        self._ipsec_proposals: dict[str, list[str]] = {}  # ikev2
+        self._crypto_maps: dict[tuple[str, int], dict] = {}
+        self._map_bindings: list[tuple[str, str, SourceRef]] = []
+        self._tunnel_groups: dict[str, dict] = {}
+        self._vpn_consumed_acls: set[str] = set()
 
     # -- findings -----------------------------------------------------------
 
@@ -300,20 +331,26 @@ class AsaParser:
             elif stripped.startswith("nat ("):
                 self.note(
                     "error", "nat",
-                    "twice-NAT (section 1/3) rule not converted — manual review",
+                    "twice-NAT (section 1/3) rule not converted — manual "
+                    "review. If this is a VPN NAT-exemption (identity) "
+                    "rule, it is unnecessary on FortiOS route-based VPNs",
                     ref,
                 )
                 self.cfg.unparsed.append(ref)
-            elif head in ("crypto", "tunnel-group", "group-policy"):
+            elif head == "crypto":
+                self.parse_crypto(toks, lineno, stripped, ref)
+            elif head == "tunnel-group":
+                self.parse_tunnel_group(toks, lineno, stripped, ref)
+            elif head == "group-policy":
                 self._swallow_block(lineno, line)
-                self.note(
-                    "warn", "vpn",
-                    f"VPN-related '{stripped[:40]}…' not converted in v1", ref,
-                )
+                self.note("info", "vpn",
+                          f"group-policy '{toks[1] if len(toks) > 1 else ''}'"
+                          " skipped (remote-access attribute container)", ref)
             else:
                 self.cfg.unparsed.append(ref)
                 self._swallow_block(lineno, line, record=True)
 
+        self.finish_vpn()
         self.finish_acls()
         self.cfg.meta["findings"] = self._findings
         return self.cfg
@@ -793,6 +830,422 @@ class AsaParser:
         else:
             self.cfg.unparsed.append(ref)
 
+    # -- VPN -----------------------------------------------------------------
+
+    def parse_crypto(self, toks: list[str], lineno: int, stripped: str,
+                     ref: SourceRef):
+        t = toks[1:]
+        if not t:
+            return
+        kind = t[0]
+
+        if kind in ("ikev1", "ikev2") and len(t) >= 2:
+            ver = 1 if kind == "ikev1" else 2
+            if t[1] == "enable" and len(t) >= 3:
+                self.cfg.meta.setdefault("ike_enabled", []).append(
+                    (ver, t[2]))
+                return
+            if t[1] == "policy" and len(t) >= 3:
+                self._parse_ike_policy(ver, t[2], lineno)
+                return
+            self.cfg.unparsed.append(ref)
+            return
+
+        if kind == "ipsec" and len(t) >= 2:
+            if t[1] == "ikev1" and len(t) >= 4 and t[2] == "transform-set":
+                self._parse_transform_set(t[3], t[4:], ref)
+                return
+            if t[1] == "ikev2" and len(t) >= 4 and t[2] == "ipsec-proposal":
+                self._parse_ipsec_proposal(t[3], lineno)
+                return
+            self.cfg.unparsed.append(ref)
+            return
+
+        if kind == "map" and len(t) >= 3:
+            name = t[1]
+            if t[2] == "interface" and len(t) >= 4:
+                self._map_bindings.append((name, t[3], ref))
+                return
+            if t[2].isdigit():
+                seq = int(t[2])
+                entry = self._crypto_maps.setdefault(
+                    (name, seq),
+                    {"acl": "", "peers": [], "ts": [], "props": [],
+                     "pfs": "", "salife": 0, "ref": ref})
+                rest = t[3:]
+                if rest[:2] == ["match", "address"] and len(rest) >= 3:
+                    entry["acl"] = rest[2]
+                elif rest[:1] == ["ipsec-isakmp"] and "dynamic" in rest:
+                    self.note("warn", "vpn",
+                              f"crypto map {name} {seq} references a "
+                              "dynamic map (dial-up) — convert to a "
+                              "FortiOS dial-up phase1 manually", ref)
+                elif rest[:1] == ["set"] and len(rest) >= 2:
+                    sub = rest[1]
+                    if sub == "peer":
+                        entry["peers"] += rest[2:]
+                    elif sub == "ikev1" and len(rest) >= 4 \
+                            and rest[2] == "transform-set":
+                        entry["ts"] += rest[3:]
+                    elif sub == "ikev2" and len(rest) >= 4 \
+                            and rest[2] == "ipsec-proposal":
+                        entry["props"] += rest[3:]
+                    elif sub == "pfs":
+                        grp = rest[2] if len(rest) >= 3 else "group2"
+                        entry["pfs"] = grp.replace("group", "")
+                    elif sub == "security-association" and len(rest) >= 5 \
+                            and rest[2] == "lifetime" \
+                            and rest[3] == "seconds":
+                        entry["salife"] = int(rest[4])
+                    elif sub == "trustpoint":
+                        self.note("warn", "vpn",
+                                  f"crypto map {name} {seq} uses "
+                                  "certificate auth (trustpoint) — import "
+                                  "certs and set authmethod signature "
+                                  "manually", ref)
+                    elif sub == "phase1-mode" and "aggressive" in rest:
+                        self.note("warn", "vpn",
+                                  f"crypto map {name} {seq} uses aggressive "
+                                  "mode — set 'set mode aggressive' on the "
+                                  "phase1 if the peer requires it", ref)
+                    # nat-t / reverse-route / connection-type: defaults fine
+                return
+            self.cfg.unparsed.append(ref)
+            return
+
+        if kind == "dynamic-map":
+            self.note("warn", "vpn",
+                      "crypto dynamic-map present — dial-up/remote-access "
+                      "IPsec is not auto-converted", ref)
+            self._swallow_block(lineno, stripped)
+            return
+        if kind == "ca":
+            self.note("warn", "vpn",
+                      "certificate (crypto ca) configuration is not "
+                      "converted — re-import certificates on the FortiGate",
+                      ref)
+            self._swallow_block(lineno, stripped)
+            return
+        self.cfg.unparsed.append(ref)
+
+    def _parse_ike_policy(self, ver: int, seq: str, lineno: int):
+        pol = {"seq": int(seq) if seq.isdigit() else 999,
+               "enc": [], "hash": [], "dh": [], "prf": [], "life": 0}
+        while not self.src.eof() and _is_indented(self.src.peek()):
+            ln, raw = self.src.take()
+            t = raw.strip().split()
+            if not t:
+                continue
+            if t[0] == "encryption":
+                pol["enc"] += [VPN_ENC[x] for x in t[1:] if x in VPN_ENC]
+            elif t[0] in ("hash", "integrity"):
+                pol["hash"] += [VPN_HASH[x] for x in t[1:] if x in VPN_HASH]
+            elif t[0] == "group":
+                pol["dh"] += [x for x in t[1:] if x.isdigit()]
+            elif t[0] == "prf":
+                pol["prf"] += [VPN_HASH[x] for x in t[1:] if x in VPN_HASH]
+            elif t[0] == "lifetime":
+                nums = [x for x in t[1:] if x.isdigit()]
+                if nums:
+                    pol["life"] = int(nums[0])
+            elif t[0] == "authentication" and "pre-share" not in t:
+                self.note("warn", "vpn",
+                          f"ikev{ver} policy {seq}: non-PSK authentication "
+                          f"({' '.join(t[1:])}) — certificates must be "
+                          "handled manually", self.src.ref(ln, raw))
+        self._ike_policies[ver].append(pol)
+
+    @staticmethod
+    def _esp_combos(encs: list[str], hashes: list[str]) -> list[str]:
+        out: list[str] = []
+        for e in encs:
+            if e.endswith("gcm"):
+                out.append(e)  # GCM is AEAD: no auth suffix in FortiOS
+            else:
+                for h in (hashes or ["sha1"]):
+                    out.append(f"{e}-{h}")
+        seen: set[str] = set()
+        return [p for p in out if not (p in seen or seen.add(p))]
+
+    def _parse_transform_set(self, name: str, toks: list[str],
+                             ref: SourceRef):
+        encs = [ESP_ENC[t] for t in toks if t in ESP_ENC]
+        hashes = [ESP_HASH[t] for t in toks if t in ESP_HASH]
+        if "mode" in toks and "transport" in toks:
+            self.note("warn", "vpn",
+                      f"transform-set {name} uses transport mode — FortiOS "
+                      "phase2 here is tunnel mode; review (GRE-over-IPsec?)",
+                      ref)
+        if not encs:
+            self.note("warn", "vpn",
+                      f"transform-set {name}: no recognizable ESP "
+                      "encryption — skipped", ref)
+            return
+        self._transform_sets[name] = self._esp_combos(encs, hashes)
+
+    def _parse_ipsec_proposal(self, name: str, lineno: int):
+        encs: list[str] = []
+        hashes: list[str] = []
+        while not self.src.eof() and _is_indented(self.src.peek()):
+            ln, raw = self.src.take()
+            t = raw.strip().split()
+            if t[:3] == ["protocol", "esp", "encryption"]:
+                encs += [VPN_ENC[x] for x in t[3:] if x in VPN_ENC]
+            elif t[:3] == ["protocol", "esp", "integrity"]:
+                hashes += [VPN_HASH[x] for x in t[3:] if x in VPN_HASH]
+        if encs:
+            self._ipsec_proposals[name] = self._esp_combos(encs, hashes)
+
+    def parse_tunnel_group(self, toks: list[str], lineno: int,
+                           stripped: str, ref: SourceRef):
+        if len(toks) < 3:
+            self.cfg.unparsed.append(ref)
+            return
+        peer = toks[1]
+        if toks[2] == "type":
+            ttype = toks[3] if len(toks) > 3 else ""
+            if ttype == "ipsec-l2l":
+                self._tunnel_groups.setdefault(peer, {})
+            else:
+                self.note("info", "vpn",
+                          f"tunnel-group '{peer}' type {ttype} skipped "
+                          "(remote-access — not auto-converted)", ref)
+                self._tunnel_groups.setdefault(peer, {})["skip"] = True
+            return
+        if toks[2] == "ipsec-attributes":
+            tg = self._tunnel_groups.setdefault(peer, {})
+            while not self.src.eof() and _is_indented(self.src.peek()):
+                ln, raw = self.src.take()
+                t = raw.strip().split()
+                if t[:2] == ["ikev1", "pre-shared-key"] and len(t) >= 3:
+                    tg["psk1"] = t[2]
+                elif t[:3] == ["ikev2", "local-authentication",
+                               "pre-shared-key"] and len(t) >= 4:
+                    tg["psk2_local"] = t[3]
+                elif t[:3] == ["ikev2", "remote-authentication",
+                               "pre-shared-key"] and len(t) >= 4:
+                    tg["psk2_remote"] = t[3]
+            return
+        # general-attributes / webvpn-attributes etc: irrelevant for L2L
+        self._swallow_block(lineno, stripped)
+
+    def _psk(self, value: str | None, peer: str, what: str,
+             ref: SourceRef) -> str:
+        if not value:
+            self.note("error", "vpn",
+                      f"peer {peer}: no {what} pre-shared key found in any "
+                      "tunnel-group — placeholder emitted, set the real key",
+                      ref)
+            return "CHANGEME-PSK"
+        if set(value) == {"*"}:
+            self.note("error", "vpn",
+                      f"peer {peer}: {what} pre-shared key is masked "
+                      "('*****') in this export — re-export with "
+                      "'more system:running-config' or re-enter the key",
+                      ref)
+            return "CHANGEME-PSK"
+        return value
+
+    def _ike_proposals(self, ver: int) -> tuple[list[str], list[str], int]:
+        props: list[str] = []
+        dh: list[str] = []
+        life = 0
+        for pol in sorted(self._ike_policies[ver], key=lambda d: d["seq"]):
+            for e in pol["enc"]:
+                if e.endswith("gcm"):
+                    prf = (pol["prf"] or ["sha1"])[0]
+                    props.append(f"{e}-prf{prf}")
+                else:
+                    for h in (pol["hash"] or ["sha1"]):
+                        props.append(f"{e}-{h}")
+            dh += pol["dh"]
+            if not life and pol["life"]:
+                life = pol["life"]
+        seen: set[str] = set()
+        props = [p for p in props if not (p in seen or seen.add(p))]
+        seen = set()
+        dh = [d for d in dh if not (d in seen or seen.add(d))]
+        return props[:8], dh, life
+
+    def _cidr_for(self, name: str, ref: SourceRef) -> str | None:
+        if name == "all":
+            return "0.0.0.0/0"
+        addr = self.cfg.address_by_name(name)
+        if addr is None:
+            self.note("warn", "vpn",
+                      f"VPN selector references group/unknown object "
+                      f"'{name}' — expand to host/subnet objects manually",
+                      ref)
+            return None
+        if addr.type == "host":
+            return f"{addr.value}/32"
+        if addr.type == "subnet":
+            return addr.value
+        self.note("warn", "vpn",
+                  f"VPN selector object '{name}' is {addr.type} — only "
+                  "host/subnet selectors convert", ref)
+        return None
+
+    def finish_vpn(self):
+        have_material = (self._crypto_maps or self._transform_sets
+                         or self._ipsec_proposals
+                         or self._ike_policies[1] or self._ike_policies[2])
+        if not self._map_bindings:
+            if have_material:
+                self.note("info", "vpn",
+                          "IKE/IPsec material present but no crypto map is "
+                          "bound to an interface — no tunnels converted")
+            return
+
+        from ..transforms.routes import RouteTable
+        table = RouteTable(self.cfg)  # before VPN routes are added
+        taken: set[str] = set()
+        route_seen: set[tuple[str, str]] = set()
+
+        for map_name, bind_ifc, bref in self._map_bindings:
+            entries = sorted(
+                (k[1], v) for k, v in self._crypto_maps.items()
+                if k[0] == map_name)
+            for seq, e in entries:
+                ref = e["ref"]
+                if not e["peers"] or not e["acl"]:
+                    self.note("warn", "vpn",
+                              f"crypto map {map_name} {seq} incomplete "
+                              "(missing peer or match address) — skipped",
+                              ref)
+                    continue
+                peer = e["peers"][0]
+                if len(e["peers"]) > 1:
+                    self.note("warn", "vpn",
+                              f"crypto map {map_name} {seq}: backup peers "
+                              f"{', '.join(e['peers'][1:])} not converted — "
+                              "consider a second phase1 or SD-WAN overlay",
+                              ref)
+                ver = 2 if e["props"] else 1
+                if e["props"] and e["ts"]:
+                    self.note("info", "vpn",
+                              f"crypto map {map_name} {seq} allows IKEv1 "
+                              "and IKEv2 — converted as IKEv2", ref)
+
+                # phase2 proposals from the named sets
+                p2_props: list[str] = []
+                names = e["props"] if ver == 2 else e["ts"]
+                table_src = self._ipsec_proposals if ver == 2 \
+                    else self._transform_sets
+                for n in names:
+                    p2_props += table_src.get(n, [])
+                if not p2_props:
+                    self.note("warn", "vpn",
+                              f"crypto map {map_name} {seq}: transform-set/"
+                              "proposal not found — defaulting to "
+                              "aes256-sha1", ref)
+                    p2_props = ["aes256-sha1"]
+                seen: set[str] = set()
+                p2_props = [p for p in p2_props
+                            if not (p in seen or seen.add(p))]
+
+                # phase1
+                tg = self._tunnel_groups.get(peer, {})
+                octets = peer.split(".")
+                base = (f"s2s-{octets[2]}-{octets[3]}"
+                        if len(octets) == 4 else f"s2s-{map_name}-{seq}")
+                name = base[:15]
+                n = 2
+                while name in taken:
+                    name = f"{base[:13]}~{n}"
+                    n += 1
+                taken.add(name)
+
+                p1 = VpnPhase1(
+                    name=name, interface=bind_ifc, remote_gw=peer,
+                    ike_version=ver,
+                    comment=f"peer {peer} (crypto map {map_name} {seq})",
+                    source=ref)
+                p1.proposals, p1.dhgrp, p1.keylife = self._ike_proposals(ver)
+                if not p1.proposals:
+                    self.note("warn", "vpn",
+                              f"no ikev{ver} policies found — phase1 "
+                              f"'{name}' defaults to aes256-sha256/aes256-"
+                              "sha1, dhgrp 14; match the peer manually",
+                              ref)
+                    p1.proposals = ["aes256-sha256", "aes256-sha1"]
+                    p1.dhgrp = ["14"]
+                if ver == 1:
+                    p1.psk = self._psk(tg.get("psk1"), peer, "IKEv1", ref)
+                else:
+                    local = tg.get("psk2_local") or tg.get("psk2_remote")
+                    remote = tg.get("psk2_remote")
+                    p1.psk = self._psk(local, peer, "IKEv2", ref)
+                    if remote and tg.get("psk2_local") \
+                            and remote != tg.get("psk2_local"):
+                        p1.psk_remote = remote
+                        self.note("info", "vpn",
+                                  f"peer {peer}: asymmetric IKEv2 PSKs — "
+                                  "emitted as psksecret/psksecret-remote",
+                                  ref)
+
+                # phase2 selectors from the crypto ACL
+                acl = e["acl"]
+                self._vpn_consumed_acls.add(acl)
+                aces = self._acl_policies.get(acl, [])
+                made = 0
+                for ace in aces:
+                    if ace.action != "accept":
+                        self.note("info", "vpn",
+                                  f"crypto ACL {acl}: deny ACE ignored "
+                                  "(FortiOS selectors are permit-only)",
+                                  ace.source)
+                        continue
+                    src_name = (ace.src_addrs or ["all"])[0]
+                    dst_name = (ace.dst_addrs or ["all"])[0]
+                    src_cidr = self._cidr_for(src_name, ace.source or ref)
+                    dst_cidr = self._cidr_for(dst_name, ace.source or ref)
+                    if src_cidr is None or dst_cidr is None:
+                        continue
+                    made += 1
+                    self.cfg.phase2s.append(VpnPhase2(
+                        name=f"{name}-p2-{made}", phase1=name,
+                        proposals=p2_props, pfs_group=e["pfs"],
+                        src=src_cidr, dst=dst_cidr, keylife=e["salife"],
+                        source=ace.source or ref))
+
+                    # ramifications: route + the two policies
+                    if dst_cidr != "0.0.0.0/0" \
+                            and (name, dst_cidr) not in route_seen:
+                        route_seen.add((name, dst_cidr))
+                        self.cfg.routes.append(Route(
+                            dest=dst_cidr, gateway="", interface=name,
+                            comment=f"VPN route (crypto map {map_name} "
+                                    f"{seq})", source=ref))
+                    lan_ifc = "any"
+                    if src_cidr != "0.0.0.0/0":
+                        net = ipaddress.IPv4Network(src_cidr, strict=False)
+                        lan_ifc = table.lookup_net(net) or "any"
+                    if lan_ifc == "any":
+                        self.note("warn", "vpn",
+                                  f"{name}: could not infer the LAN-side "
+                                  f"interface for {src_cidr} — VPN policies "
+                                  "use 'any'; review", ref)
+                    self.cfg.policies.append(Policy(
+                        name=f"{name}-out-{made}", src_zones=[lan_ifc],
+                        dst_zones=[name], src_addrs=[src_name],
+                        dst_addrs=[dst_name], services=["ALL"],
+                        comment="auto-generated VPN policy", source=ref))
+                    self.cfg.policies.append(Policy(
+                        name=f"{name}-in-{made}", src_zones=[name],
+                        dst_zones=[lan_ifc], src_addrs=[dst_name],
+                        dst_addrs=[src_name], services=["ALL"],
+                        comment="auto-generated VPN policy", source=ref))
+
+                if made:
+                    self.cfg.phase1s.append(p1)
+                else:
+                    taken.discard(name)
+                    self.note("warn", "vpn",
+                              f"crypto map {map_name} {seq} (peer {peer}): "
+                              "no convertible selectors — tunnel skipped",
+                              ref)
+
     def finish_acls(self):
         bound: set[str] = set()
         for acl, ifc, _ref in self._access_groups:
@@ -802,11 +1255,17 @@ class AsaParser:
                 pol.src_zones = [ifc]
                 self.cfg.policies.append(pol)
         for acl, pols in self._acl_policies.items():
-            if acl not in bound:
-                self.note("info", "policies",
-                          f"ACL '{acl}' ({len(pols)} ACEs) is not bound to any "
-                          "interface via access-group — not converted "
-                          "(may be VPN interesting-traffic or unused)", None)
+            if acl in bound:
+                continue
+            if acl in self._vpn_consumed_acls:
+                self.note("info", "vpn",
+                          f"ACL '{acl}' consumed as VPN interesting-traffic "
+                          "selector", None)
+                continue
+            self.note("info", "policies",
+                      f"ACL '{acl}' ({len(pols)} ACEs) is not bound to any "
+                      "interface via access-group — not converted "
+                      "(may be VPN interesting-traffic or unused)", None)
 
     def parse_route(self, toks: list[str], ref: SourceRef):
         try:

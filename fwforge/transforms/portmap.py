@@ -87,11 +87,14 @@ def apply_ir(cfg: FirewallConfig, mapping: dict[str, str], report) -> list[str]:
     """Apply mapping to the IR. Returns source names left unmapped."""
     unmapped: set[str] = set()
     # zone-based vendors (PAN-OS): policies reference zones, not
-    # interfaces — only the zones' member interfaces need mapping
-    zone_names = {z.name for z in cfg.zones}
+    # interfaces — only the zones' member interfaces need mapping.
+    # VPN tunnel names are interfaces fwforge itself creates on the
+    # target; they are never source ports to map.
+    skip_names = {z.name for z in cfg.zones} \
+        | {p.name for p in cfg.phase1s}
 
     def mapped(name: str) -> str:
-        if name in ("any", "all", "") or name in zone_names:
+        if name in ("any", "all", "") or name in skip_names:
             return name
         if name in mapping:
             return mapping[name]
@@ -103,6 +106,8 @@ def apply_ir(cfg: FirewallConfig, mapping: dict[str, str], report) -> list[str]:
             itf.target_name = mapping[itf.name]
     for zone in cfg.zones:
         zone.members = [mapped(m) for m in zone.members]
+    for p1 in cfg.phase1s:
+        p1.interface = mapped(p1.interface)
     for pol in cfg.policies:
         pol.src_zones = [mapped(z) for z in pol.src_zones]
         pol.dst_zones = [mapped(z) for z in pol.dst_zones]

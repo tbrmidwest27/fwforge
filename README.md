@@ -141,10 +141,10 @@ flagged, for example).
 
 | source | status |
 |---|---|
-| Cisco ASA | interfaces, name aliases, network/service objects, object-groups (incl. nested + protocol groups), extended ACLs → policies, access-group bindings, static routes, object NAT (static → VIP, dynamic → interface PAT), route-based `dstintf` inference |
+| Cisco ASA | interfaces, name aliases, network/service objects, object-groups (incl. nested + protocol groups), extended ACLs → policies, access-group bindings, static routes, object NAT (static → VIP, dynamic → interface PAT), route-based `dstintf` inference, **site-to-site VPN**: crypto maps + tunnel-groups → route-based phase1/phase2-interface (IKEv1+IKEv2 policies → proposals, transform-sets/ipsec-proposals, PFS preserved — including ASA's off-by-default vs FortiOS's on-by-default), plus the ramifications: tunnel routes, bidirectional VPN policies with route-inferred LAN interfaces, masked-PSK detection. Dial-up/dynamic maps and cert auth are flagged, not converted |
 | Palo Alto (XML **and** `display set` formats) | interfaces (incl. L3 subinterfaces), zones → real FortiOS zones (`intrazone allow` to preserve PAN's default behavior, flagged), addresses/groups, services/groups (comma port lists, source ports, predefined service-http/https), security rules incl. negate-source/destination, NAT (interface PAT, bi-directional static + destination translation → VIPs with port-forward), static routes (egress inferred when omitted). **App-ID rules convert on their service match and are loudly flagged** — FortiOS application control must be recreated as profiles. Multi-vsys: first vsys, rest flagged. |
 | FortiOS | full-config lossless tree migration with interface mapping, zone/SD-WAN refactors, multi-VDOM |
-| not yet | VPN (flagged, never silent), twice-NAT (flagged), Check Point / Juniper parsers |
+| not yet | ASA twice-NAT (flagged, with a VPN-exemption hint), PAN IPsec, Check Point / Juniper parsers |
 
 Built-in FortiOS services are reused only on **exact** semantic match:
 `tcp/443` becomes `HTTPS`, but `udp/53` is *not* mapped to built-in `DNS`

@@ -99,6 +99,7 @@ class Emitter:
         self.addr_groups()
         self.services()
         self.svc_groups()
+        self.vpn()
         self.vips()
         self.routes()
         self.policies()
@@ -230,6 +231,69 @@ class Emitter:
             self.line("    next")
         self.line("end")
 
+    def vpn(self):
+        cfg = self.cfg
+        if not cfg.phase1s:
+            return
+        self.line()
+        self.line("config vpn ipsec phase1-interface")
+        for p1 in cfg.phase1s:
+            self.line(f"    edit {_q(p1.name)}")
+            self.line(f"        set interface "
+                      f"{_q(_intf(cfg, p1.interface))}")
+            if p1.ike_version == 2:
+                self.line("        set ike-version 2")
+            self.line("        set peertype any")
+            self.line("        set proposal " + " ".join(p1.proposals))
+            if p1.dhgrp:
+                self.line("        set dhgrp " + " ".join(p1.dhgrp))
+            self.line(f"        set remote-gw {p1.remote_gw}")
+            self.line(f"        set psksecret {_q(p1.psk)}")
+            if p1.psk_remote:
+                self.line(f"        set psksecret-remote "
+                          f"{_q(p1.psk_remote)}")
+            if p1.keylife:
+                self.line(f"        set keylife {p1.keylife}")
+            if p1.comment:
+                self.line(f"        set comments {_q(p1.comment[:255])}")
+            self.line("    next")
+        self.line("end")
+        self.line()
+        self.line("config vpn ipsec phase2-interface")
+        for p2 in cfg.phase2s:
+            self.line(f"    edit {_q(p2.name)}")
+            self.line(f"        set phase1name {_q(p2.phase1)}")
+            self.line("        set proposal " + " ".join(p2.proposals))
+            if p2.pfs_group:
+                self.line(f"        set dhgrp {p2.pfs_group}")
+            else:
+                # ASA's default is PFS off; FortiOS default is PFS on —
+                # without this line the SAs silently fail to match
+                self.line("        set pfs disable")
+            if p2.keylife:
+                self.line(f"        set keylifeseconds {p2.keylife}")
+            try:
+                src = ipaddress.IPv4Network(p2.src, strict=False)
+                dst = ipaddress.IPv4Network(p2.dst, strict=False)
+            except ValueError:
+                self.report.add("error", "vpn",
+                                f"phase2 '{p2.name}': bad selector "
+                                f"{p2.src} -> {p2.dst}", p2.source)
+                self.line("    next")
+                continue
+            self.line(f"        set src-subnet {src.network_address} "
+                      f"{src.netmask}")
+            self.line(f"        set dst-subnet {dst.network_address} "
+                      f"{dst.netmask}")
+            self.line("    next")
+        self.line("end")
+        self.report.add(
+            "info", "vpn",
+            f"{len(cfg.phase1s)} route-based tunnel(s) emitted with "
+            f"{len(cfg.phase2s)} phase2 selector(s), plus tunnel routes "
+            "and VPN policies. Verify proposals/PSKs against the peer and "
+            "bring the tunnel up with: diagnose vpn ike gateway list")
+
     def vips(self):
         emittable = [v for v in self.cfg.vips
                      if v.ext_ip and not v.mapped_ip.startswith("<")]
@@ -283,7 +347,8 @@ class Emitter:
             self.line(f"    edit {i}")
             if net.prefixlen or net.network_address != ipaddress.IPv4Address("0.0.0.0"):
                 self.line(f"        set dst {net.network_address} {net.netmask}")
-            self.line(f"        set gateway {rt.gateway}")
+            if rt.gateway:
+                self.line(f"        set gateway {rt.gateway}")
             self.line(f"        set device {_q(_intf(self.cfg, rt.interface))}")
             if rt.distance != 10:
                 self.line(f"        set distance {rt.distance}")
