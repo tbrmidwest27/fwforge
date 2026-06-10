@@ -23,7 +23,7 @@ def test_convert_asa_end_to_end(tmp_path):
     # twice-NAT in the fixture is reported as an error -> exit code 1
     assert rc == 1
 
-    conf = (tmp_path / "asa_sample.fos.conf").read_text(encoding="utf-8")
+    conf = (tmp_path / "asa_sample.config-all.txt").read_text(encoding="utf-8")
     report_md = (tmp_path / "asa_sample.report.md").read_text(encoding="utf-8")
     report = json.loads(
         (tmp_path / "asa_sample.report.json").read_text(encoding="utf-8")
@@ -71,7 +71,10 @@ def test_migrate_fortios_end_to_end(tmp_path):
         "-o", str(tmp_path), "--map", str(mapfile),
     ])
     assert rc == 0
-    conf = (tmp_path / "fortios_sample.fos.conf").read_text(encoding="utf-8")
+    # FortiGate->FortiGate = one full restorable .conf, not split files
+    conf = (tmp_path / "fortios_sample.conf").read_text(encoding="utf-8")
+    assert not (tmp_path / "fortios_sample.branches").exists()
+    assert conf.splitlines()[0].startswith("#config-version=")  # restorable
     assert 'edit "wan1"' in conf
     assert 'set dstintf "wan1"' in conf
     # unknown-to-the-tool sections survive a migration untouched

@@ -33,14 +33,27 @@ python -m fwforge inspect myfirewall.cfg
 python -m fwforge convert myfirewall.cfg -o out --map ports.map
 ```
 
-`convert` writes four artifacts:
+`convert` writes outputs whose **shape depends on the conversion**, plus
+reports:
+
+**FortiGate → FortiGate** (model migration) → one **full restorable
+config**:
 
 | file | what it is |
 |---|---|
-| `<name>.fos.conf` | paste-able FortiOS CLI script (deterministic — diffs cleanly between runs) |
-| `<name>.report.md` | human conversion report: counts, coverage %, errors / warnings / notes |
-| `<name>.report.json` | machine-readable report with full per-line provenance |
-| `<name>.portmap` | sample interface map, written when interfaces are unmapped |
+| `<name>.conf` | complete FortiOS backup — restore wholesale via *System → Configuration → Restore* or `execute restore config`. `#config-version=` stays on line 1; findings are embedded as `#` comments (ignored on load) |
+
+**Anything → FortiGate** (ASA, Palo Alto) → **FortiConverter-style script
+files** (it's a paste-script, not a full backup):
+
+| file | what it is |
+|---|---|
+| `<name>.config-all.txt` | the whole converted script, findings embedded as `#` comments |
+| `<name>.branches/NN-<section>.txt` | one file per `config` branch (firewall-address, firewall-policy, …) for selective CLI application |
+
+Both also write `<name>.report.md`, `<name>.report.json`, and (cross-vendor,
+when interfaces are unmapped) a `<name>.portmap` sample. The GUI offers the
+main file, an **all-files .zip**, and the reports.
 
 The interface map file is `source-name = target-port`, one per line:
 

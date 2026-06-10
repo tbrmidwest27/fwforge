@@ -92,7 +92,7 @@ def test_e2e_vpn_emission(tmp_path):
         "-o", str(tmp_path), "--map", str(mapfile),
     ])
     assert rc == 1  # masked PSK is an error-level finding
-    conf = (tmp_path / "asa_vpn.fos.conf").read_text(encoding="utf-8")
+    conf = (tmp_path / "asa_vpn.config-all.txt").read_text(encoding="utf-8")
 
     assert "config vpn ipsec phase1-interface" in conf
     blocks = conf.split("    edit ")

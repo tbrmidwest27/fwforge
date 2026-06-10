@@ -115,7 +115,7 @@ def test_cli_wrap_with_portmap(tmp_path):
         "--vdom-name", "root",
     ])
     assert rc == 0
-    conf = (tmp_path / "fortios_sample.fos.conf").read_text(encoding="utf-8")
+    conf = (tmp_path / "fortios_sample.conf").read_text(encoding="utf-8")
     report = json.loads(
         (tmp_path / "fortios_sample.report.json").read_text(encoding="utf-8"))
     assert "config global" in conf

@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, pipeline
+from .emit import package
 from .parsers import CROSS_PARSERS, detect_vendor
 from .parsers import fortios_tree
 from .report import Report
@@ -111,9 +112,9 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
                                 tuning=_tuning_from_args(args))
     report, cfg = result.report, result.cfg
 
-    base = outdir / (Path(src_path).stem)
-    (base.with_suffix(".fos.conf")).write_text(result.out_text,
-                                               encoding="utf-8")
+    stem = Path(src_path).stem
+    base = outdir / stem
+    pkg = package.write_split(outdir, stem, result.out_text, report)
     (base.with_suffix(".report.md")).write_text(
         report.to_markdown(cfg, text), encoding="utf-8")
     (base.with_suffix(".report.json")).write_text(
@@ -123,7 +124,8 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
             result.sample_portmap, encoding="utf-8")
 
     errors, warns = report.count("error"), report.count("warn")
-    print(f"wrote {base.with_suffix('.fos.conf')}")
+    print(f"wrote {pkg['config_all']} "
+          f"(+ {pkg['branch_count']} branch files in {pkg['branch_dir']})")
     print(f"policies: {len(cfg.policies)}  addresses: {len(cfg.addresses)}  "
           f"services: {len(cfg.services)}  vips: {len(cfg.vips)}")
     print(f"report: {errors} errors, {warns} warnings, "
@@ -154,19 +156,19 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
         return 2
     report = result.report
 
-    base = outdir / (Path(src_path).stem)
-    (base.with_suffix(".fos.conf")).write_text(result.out_text,
-                                               encoding="utf-8")
+    stem = Path(src_path).stem
+    base = outdir / stem
+    pkg = package.write_full(outdir, stem, result.out_text, report)
     (base.with_suffix(".report.md")).write_text(
         report.to_markdown(), encoding="utf-8")
     (base.with_suffix(".report.json")).write_text(
         report.to_json(), encoding="utf-8")
     if result.sample_portmap:
-        (outdir / (Path(src_path).stem + ".portmap")).write_text(
+        (outdir / (stem + ".portmap")).write_text(
             result.sample_portmap, encoding="utf-8")
 
-    print(f"wrote {base.with_suffix('.fos.conf')} "
-          f"({result.section_count} sections preserved)")
+    print(f"wrote {pkg['main']} "
+          f"(full restorable config, {result.section_count} sections)")
     if plan.portmap:
         print(f"interface renames: {report.meta.get('interface_renames', 0)} "
               f"edits, {report.meta.get('reference_rewrites', 0)} "

@@ -130,7 +130,7 @@ def test_full_multivdom_plan_cli(tmp_path):
         "-o", str(tmp_path), "--plan", str(planfile),
     ])
     assert rc == 0
-    conf = (tmp_path / "fortios_multivdom.fos.conf").read_text(
+    conf = (tmp_path / "fortios_multivdom.conf").read_text(
         encoding="utf-8")
     report = json.loads(
         (tmp_path / "fortios_multivdom.report.json").read_text(

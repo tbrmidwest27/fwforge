@@ -130,6 +130,6 @@ def test_exclude_via_cli(tmp_path):
         "--exclude", "OUTSIDE-IN-3",
     ])
     assert rc in (0, 1)
-    conf = (tmp_path / "asa_sample.fos.conf").read_text(encoding="utf-8")
+    conf = (tmp_path / "asa_sample.config-all.txt").read_text(encoding="utf-8")
     assert 'set name "OUTSIDE-IN-3"' not in conf
     assert 'set name "OUTSIDE-IN-1"' in conf

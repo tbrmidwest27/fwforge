@@ -99,7 +99,7 @@ def test_e2e_cli(tmp_path):
         "--fortios", "8.0",
     ])
     assert rc == 0
-    conf = (tmp_path / "fortios_sslvpn.fos.conf").read_text(encoding="utf-8")
+    conf = (tmp_path / "fortios_sslvpn.conf").read_text(encoding="utf-8")
     report = json.loads(
         (tmp_path / "fortios_sslvpn.report.json").read_text(encoding="utf-8"))
     assert "config vpn ipsec phase1-interface" in conf
@@ -122,5 +122,5 @@ def test_not_converted_without_flag(tmp_path):
         (tmp_path / "fortios_sslvpn.report.json").read_text(encoding="utf-8"))
     assert any("SSL-VPN tunnel mode was removed" in f["message"]
                for f in report["findings"])
-    conf = (tmp_path / "fortios_sslvpn.fos.conf").read_text(encoding="utf-8")
+    conf = (tmp_path / "fortios_sslvpn.conf").read_text(encoding="utf-8")
     assert "config vpn ssl settings" in conf

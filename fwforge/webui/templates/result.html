@@ -32,13 +32,29 @@
 {% endif %}
 
 <div class="dl">
-  <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">download FortiOS config</a>
+  {% if r.mode == "migrate" %}
+  <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">download config (.conf)</a>
+  {% else %}
+  <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">config-all.txt</a>
+  {% endif %}
+  <a class="btn" href="{{ url_for('bundle', jid=jid) }}">all files (.zip)</a>
   <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.md') }}">report.md</a>
   <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.json') }}">report.json</a>
   {% if r.mode == "migrate" %}
   <a class="btn ghost" href="{{ url_for('download', jid=jid, which='diff') }}">diff.patch</a>
   {% endif %}
 </div>
+{% if r.mode == "migrate" %}
+<p class="muted">FortiGate&rarr;FortiGate: one <strong>full restorable
+  config</strong> &mdash; load via <em>System &rarr; Configuration &rarr;
+  Restore</em> or <code>execute restore config</code>. Findings are
+  embedded as <code>#</code> comments (ignored on load).</p>
+{% else %}
+<p class="muted">Cross-vendor: a paste-script. <code>config-all.txt</code>
+  has the findings as comments; the .zip also includes
+  {{ r.branch_count }} per-branch .txt file(s) (one per <code>config</code>
+  section) to apply selectively.</p>
+{% endif %}
 
 {% if r.unmapped %}
 <div class="banner err">

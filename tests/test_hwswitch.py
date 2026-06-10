@@ -101,7 +101,7 @@ def test_e2e_hw_switch_with_portmap(tmp_path):
         "--plan", str(planfile), "--hw-switch", "convert",
     ])
     assert rc == 0
-    conf = (tmp_path / "fortios_hwswitch.fos.conf").read_text(
+    conf = (tmp_path / "fortios_hwswitch.conf").read_text(
         encoding="utf-8")
     report = json.loads(
         (tmp_path / "fortios_hwswitch.report.json").read_text(
@@ -118,7 +118,7 @@ def test_e2e_hw_switch_keep_is_default(tmp_path):
         "convert", str(FIX / "fortios_hwswitch.conf"), "-o", str(tmp_path),
     ])
     assert rc == 0
-    conf = (tmp_path / "fortios_hwswitch.fos.conf").read_text(
+    conf = (tmp_path / "fortios_hwswitch.conf").read_text(
         encoding="utf-8")
     assert "set type hard-switch" in conf              # untouched by default
     assert "config system virtual-switch" in conf

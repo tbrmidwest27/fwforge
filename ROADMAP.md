@@ -23,6 +23,7 @@ Tracks every FortiConverter capability that is NOT "another source vendor".
 | Tuning: Interface Pair View Split | ✅ done — `--split-interface-pairs` |
 | Merge duplicate objects | ✅ done — `--merge-dupes` (FC doesn't do this) |
 | Plain-CLI output with inline warnings | ✅ done + first-class md/JSON report |
+| config-all.txt + per-branch files; full-backup for FGT→FGT | ✅ done — FGT→FGT = one restorable `.conf`; cross-vendor = config-all.txt + per-branch `.txt` (findings embedded as `#` comments); GUI .zip bundle |
 | Interface-mapping import/export | ✅ done — plan files + GUI grid |
 | GUI workflow | ✅ done — local Flask, + live diff & artifact scan |
 | VDOM mapping (config lands in right VDOM) | ✅ done (multi-VDOM aware) |
@@ -190,6 +191,14 @@ A maintained open converter has no real competition.
       split-tunnel → ipv4-split-include, auth-rule group → authusrgrp+EAP),
       rewires ssl.<vdom> policies, removes the dead SSL-VPN sections,
       flags PSK/client-reprovision/web-mode-loss. Per-VDOM. CLI + GUI.
+
+### v0.12 — shipped 2026-06-10
+- [x] **Output packaging by conversion type** (emit/package.py): FGT→FGT
+      migration writes one full restorable `<stem>.conf`; cross-vendor
+      writes FortiConverter-style `<stem>.config-all.txt` + per-branch
+      `<stem>.branches/NN-<section>.txt`. Findings embedded as `#` comments
+      after the header (restore-safe). GUI: mode-aware download + all-files
+      .zip bundle.
 
 ### next (parity matrix ⏳ items, fleet-first order)
 - [ ] merge-into-existing-target-config

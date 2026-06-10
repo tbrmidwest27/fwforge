@@ -9,12 +9,14 @@ from __future__ import annotations
 import difflib
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
 
 from .. import __version__, pipeline
+from ..emit import package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
 from ..transforms import portmap, tree_refs
 from ..transforms import plan as plan_mod
@@ -259,7 +261,11 @@ def create_app() -> Flask:
             return redirect(url_for("job", jid=jid, error=str(e)))
 
         report = result.report
-        (jdir / "out.fos.conf").write_text(result.out_text, encoding="utf-8")
+        stem = Path(meta["name"]).stem or "config"
+        if result.mode == "migrate":
+            pkg = package.write_full(jdir, stem, result.out_text, report)
+        else:
+            pkg = package.write_split(jdir, stem, result.out_text, report)
         if result.mode == "cross":
             (jdir / "report.md").write_text(
                 report.to_markdown(result.cfg, text), encoding="utf-8")
@@ -282,6 +288,10 @@ def create_app() -> Flask:
             "when": time.strftime("%Y-%m-%d %H:%M"),
             "target": target,
             "exit": result.exit_code,
+            "stem": stem,
+            "split": pkg["split"],
+            "main_name": pkg["main_name"],
+            "branch_count": pkg["branch_count"],
             "counts": {
                 "errors": report.count("error"),
                 "warnings": report.count("warn"),
@@ -309,25 +319,41 @@ def create_app() -> Flask:
         return render_template("result.html", jid=jid, meta=meta,
                                r=meta["result"])
 
-    FILES = {
-        "conf": ("out.fos.conf", "text/plain"),
-        "report.md": ("report.md", "text/markdown"),
-        "report.json": ("report.json", "application/json"),
-        "diff": ("diff.patch", "text/plain"),
-        "source": ("source.conf", "text/plain"),
-    }
-
     @app.get("/job/<jid>/dl/<which>")
     def download(jid, which):
-        _job(jid)
-        if which not in FILES:
+        meta = _job(jid)
+        stem = Path(meta["name"]).stem or "config"
+        main_name = meta.get("result", {}).get("main_name",
+                                                f"{stem}.config-all.txt")
+        files = {
+            "conf": (main_name, "text/plain", main_name),
+            "report.md": ("report.md", "text/markdown", f"{stem}.report.md"),
+            "report.json": ("report.json", "application/json",
+                            f"{stem}.report.json"),
+            "diff": ("diff.patch", "text/plain", f"{stem}.diff.patch"),
+        }
+        if which not in files:
             abort(404)
-        fname, mime = FILES[which]
+        fname, mime, dlname = files[which]
         fpath = JOBS_DIR / jid / fname
         if not fpath.is_file():
             abort(404)
-        stem = Path(_job(jid)["name"]).stem
         return send_file(fpath, mimetype=mime, as_attachment=True,
-                         download_name=f"{stem}.{fname}")
+                         download_name=dlname)
+
+    @app.get("/job/<jid>/bundle.zip")
+    def bundle(jid):
+        meta = _job(jid)
+        stem = Path(meta["name"]).stem or "config"
+        jdir = JOBS_DIR / jid
+        zpath = jdir / "bundle.zip"
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in sorted(jdir.rglob("*")):
+                if p.is_file() and p.name not in ("bundle.zip",
+                                                  "source.conf"):
+                    z.write(p, p.relative_to(jdir))
+        return send_file(zpath, mimetype="application/zip",
+                         as_attachment=True,
+                         download_name=f"{stem}.fwforge.zip")
 
     return app
