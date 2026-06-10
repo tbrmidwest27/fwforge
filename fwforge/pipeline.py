@@ -12,6 +12,7 @@ from .emit import fortios as fortios_emit
 from .model import FirewallConfig
 from .parsers import CROSS_PARSERS, fortios_tree
 from .report import Report
+from .transforms import hwswitch
 from .transforms import names as names_tf
 from .transforms import optimize, portmap, sdwan, tree_refs, versiondelta
 from .transforms import vdommode, zones
@@ -73,8 +74,8 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 target: str = "7.4", source_os: str | None = None,
                 target_platform: str | None = None,
                 want_normalized: bool = False, vdom_mode: str = "keep",
-                vdom_name: str = "root",
-                vdom_scope_only: bool = False) -> ConversionResult:
+                vdom_name: str = "root", vdom_scope_only: bool = False,
+                hw_switch: str = "keep") -> ConversionResult:
     """FortiOS -> FortiOS lossless tree migration. Raises PlanError."""
     report = Report()
     report.meta = {
@@ -96,6 +97,11 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 f"-> {'multi' if vdom_mode == 'multi' else 'single'}-VDOM"
                 + (f" (VDOM '{vstats.get('vdom_name', vdom_name)}')"
                    if vdom_mode == 'multi' else ""))
+
+    if hw_switch == "convert":
+        hstats = hwswitch.convert(tree, report)
+        if hstats["converted"]:
+            report.meta["hw_switch_converted"] = hstats["converted"]
 
     if target_platform:
         for child in tree.children:

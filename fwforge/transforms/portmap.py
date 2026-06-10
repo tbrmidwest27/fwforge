@@ -41,10 +41,14 @@ GLOBAL_INTF_ATTRS = {
 # ports, FortiExtender ports) — never rename, never flag
 _FOREIGN_NAME_PATHS = (("switch-controller",),)
 
-# attrs that hold interface names only under specific config paths
+# attrs that hold interface names only under specific config paths.
+# `set member` under system interface = switch/aggregate/redundant member
+# ports (always interface names); under virtual-wire-pair = the pair's two
+# interfaces. Matched by suffix so it also fires inside config global on
+# multi-VDOM configs.
 PATH_SCOPED_ATTRS: dict[tuple, set[str]] = {
     ("system", "virtual-wire-pair"): {"member"},
-    ("system", "interface", "member"): set(),  # placeholder, see edit names
+    ("system", "interface"): {"member"},
 }
 
 # config paths whose `edit <name>` entries ARE interface names
@@ -154,10 +158,10 @@ def apply_tree(tree: CTree, mapping: dict[str, str]) -> dict:
         node.values = new_values
 
     def walk(children, path: tuple):
-        extra = set()
+        extra: set[str] = set()
         for scoped_path, attrs in PATH_SCOPED_ATTRS.items():
-            if path == scoped_path:
-                extra = attrs
+            if path_endswith(path, scoped_path):
+                extra |= attrs
         for child in children:
             if isinstance(child, SetLine):
                 rewrite_set(child, extra)

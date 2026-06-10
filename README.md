@@ -68,6 +68,22 @@ other devices. After renaming, a leftover scan reports every remaining
 old-name token so nothing slips through. `--target-platform FG7H1G`
 rewrites the `#config-version` header so the target model accepts the file.
 
+### Hardware-switch → software-switch
+
+When the target model lacks the source's switch fabric, rewrite its
+hardware switch as a CPU software switch so the same ports keep bridging:
+
+```
+python -m fwforge convert desktop.conf --hw-switch convert --plan m.plan
+```
+
+Interfaces with `set type hard-switch` become `set type switch` (name, IP,
+allowaccess and member ports preserved, so policies/routes/VLANs that
+referenced the bundle keep working); the now-dead `system virtual-switch`
+/ `system physical-switch` sections are dropped. Member port renames flow
+through the interface mapping. `hard-switch-vlan` interfaces are flagged
+for manual review rather than guessed at. Default is `keep` (untouched).
+
 ### VDOM-mode conversion
 
 Change a FortiOS config's VDOM mode during migration (e.g. a flat 601F

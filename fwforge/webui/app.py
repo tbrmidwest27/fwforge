@@ -232,6 +232,8 @@ def create_app() -> Flask:
                     vdom_name=request.form.get("vdom_name", "root").strip()
                     or "root",
                     vdom_scope_only=bool(request.form.get("vdom_scope_only")),
+                    hw_switch=("convert" if request.form.get("hw_switch")
+                               else "keep"),
                     want_normalized=True)
             else:
                 mapping = {}

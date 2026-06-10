@@ -122,6 +122,12 @@
     <button type="button" class="ghost small" onclick="addZone()">+ add zone</button>
   </fieldset>
 
+  <label style="display:block;margin:.2rem 0 .8rem">
+    <input type="checkbox" name="hw_switch" value="1">
+    <strong>Convert hardware switch → software switch</strong> — for a
+    target without the same switch fabric (rewrites
+    <code>type hard-switch</code> as <code>type switch</code>)</label>
+
   <fieldset>
     <legend>SD-WAN — move interfaces into SD-WAN members</legend>
     <p class="grid-note">Member syntax:

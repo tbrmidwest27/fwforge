@@ -27,7 +27,7 @@ Tracks every FortiConverter capability that is NOT "another source vendor".
 | GUI workflow | ✅ done — local Flask, + live diff & artifact scan |
 | VDOM mapping (config lands in right VDOM) | ✅ done (multi-VDOM aware) |
 | non-VDOM ↔ VDOM **mode** conversion | ✅ done — `--vdom-mode multi/single`, scope-split, `--vdom-scope-only` for safe load into existing box |
-| Hardware-switch → software-switch conversion | ⏳ todo — when target lacks hw switch |
+| Hardware-switch → software-switch conversion | ✅ done — `--hw-switch convert`, drops dead switch infra, member renames flow |
 | Merge into an existing target config | ⏳ todo — source + target backup, no overlap |
 | SSL-VPN → IPsec migration assistant | ⏳ todo (we *detect* the removal; FC *converts* it) |
 | virtual-router → VRF conversion | ⏳ todo (pairs with Juniper/PAN parsers) |
@@ -175,8 +175,15 @@ A maintained open converter has no real competition.
       pipeline so all downstream transforms see the target structure.
       CLI flags + GUI select.
 
+### v0.10 — shipped 2026-06-10
+- [x] **hardware-switch → software-switch conversion**
+      (transforms/hwswitch.py): `type hard-switch` -> `type switch`,
+      drops dead `system virtual-switch`/`physical-switch`, flags
+      `hard-switch-vlan`. Also fixed a latent gap — interface renames now
+      flow into switch/aggregate `set member` lists (PATH_SCOPED_ATTRS
+      suffix match, multi-VDOM safe). CLI flag + GUI checkbox.
+
 ### next (parity matrix ⏳ items, fleet-first order)
-- [ ] hardware-switch → software-switch conversion
 - [ ] SSL-VPN → IPsec migration assistant (8.0 dropped SSL-VPN tunnel mode)
 - [ ] merge-into-existing-target-config
 - [ ] FortiManager output target; polished audit/doc report
