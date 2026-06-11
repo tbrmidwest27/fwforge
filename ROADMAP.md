@@ -213,6 +213,18 @@ A maintained open converter has no real competition.
 - merge-into-existing-config: built, then **withdrawn same day** —
   declined by design owner; reverted cleanly to v0.12.
 
+### v0.14 — shipped 2026-06-11
+- [x] **GUI overhaul, FortiConverter look & feel** (design language
+      learned from the installed FC frontend — MUI, #266798 steel-blue
+      accent, gray surfaces; own clean-room implementation): dark sidebar
+      shell + topbar, Conversions project list with status chips and
+      delete, step wizard (Source & Target / Interface Mapping / Policy
+      Selection / Tuning / Restructure / Convert), cross-vendor **Policy
+      Selection** step (searchable checkbox table → exclude), tabbed
+      results (Summary / Findings with search+severity filter / Output
+      line-numbered preview / Changes diff), **persistent jobs**
+      (job.json per job, reloaded at startup).
+
 ### next (parity matrix ⏳ items)
 - [ ] FortiManager output target; polished audit/doc report
 - [ ] **Load the converted config on the actual 701G** when hardware

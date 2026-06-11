@@ -1,75 +1,105 @@
 {% extends "base.html" %}
-{% block content %}
-<h1>{{ meta.name }}
-  <span class="badge b-vendor">{{ meta.vendor }} {{ meta.confidence }}</span>
-  {% if meta.multi_vdom %}
-    <span class="badge b-vdom">multi-VDOM: {{ meta.scopes|join(", ") }}</span>
-  {% endif %}
-  {% if meta.source_os %}
-    <span class="badge b-info">FortiOS {{ meta.source_os }}</span>
-  {% endif %}
-  {% if meta.hostname %}
-    <span class="badge b-info">{{ meta.hostname }}</span>
-  {% endif %}
-</h1>
+{% block title %}{{ meta.name }}{% endblock %}
+{% block nav_conversions %}{% endblock %}
+{% block pagetitle %}Conversion wizard{% endblock %}
+{% block crumbs %}{{ meta.name }}{% endblock %}
+{% block tbright %}
+  <span class="badge b-vendor">{{ meta.vendor_label or meta.vendor }} {{ meta.confidence }}</span>
+  {% if meta.multi_vdom %}<span class="badge b-vdom">multi-VDOM</span>{% endif %}
+  {% if meta.source_os %}<span class="badge b-info">FortiOS {{ meta.source_os }}</span>{% endif %}
+{% endblock %}
 
+{% block content %}
 {% if error %}<div class="banner err">plan error: {{ error }}</div>{% endif %}
 
-{% if meta.counts %}
-<div class="kpis">
-  {% for k, v in meta.counts.items() %}
-  <div class="kpi"><div class="n">{{ v }}</div><div class="l">{{ k }}</div></div>
-  {% endfor %}
-</div>
-{% endif %}
+<ol class="steps" id="stepper"></ol>
 
 <form method="post" action="{{ url_for('convert', jid=jid) }}">
-<div class="card">
-  <h2 style="margin-top:0">Target</h2>
-  <div class="builder-row">
-    <label>FortiOS version
-      <select name="fortios">
-        {% for t in targets %}
-        <option value="{{ t }}" {% if t == default_target %}selected{% endif %}>{{ t }}</option>
+
+<!-- ================= Step: Source & Target ================= -->
+<section class="wstep" data-title="Source &amp; Target">
+<div class="row">
+  <div class="card">
+    <h2>Source</h2>
+    <table>
+      <tr><th>file</th><td>{{ meta.name }} <span class="muted">({{ meta.lines }} lines)</span></td></tr>
+      <tr><th>vendor</th><td>{{ meta.vendor_label or meta.vendor }}
+        <span class="muted">detected {{ meta.confidence }}</span></td></tr>
+      {% if meta.hostname %}<tr><th>hostname</th><td>{{ meta.hostname }}</td></tr>{% endif %}
+      {% if meta.source_os %}<tr><th>FortiOS</th><td>{{ meta.source_os }}</td></tr>{% endif %}
+      {% if meta.multi_vdom %}<tr><th>VDOMs</th><td>{{ meta.scopes|join(", ") }}</td></tr>{% endif %}
+    </table>
+    {% if meta.counts %}
+    <div class="kpis" style="margin-top:.8rem">
+      {% for k, v in meta.counts.items() %}
+      <div class="kpi"><div class="n">{{ v }}</div><div class="l">{{ k }}</div></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if meta.inventory %}
+    <details>
+      <summary>Config sections ({{ meta.inventory|length }})</summary>
+      <table style="max-width:520px">
+        <tr><th>section</th><th>entries</th></tr>
+        {% for sec, n in meta.inventory.items() %}
+        <tr><td><code>{{ sec }}</code></td><td>{{ n }}</td></tr>
         {% endfor %}
-      </select>
-    </label>
-    {% if meta.vendor == "fortios" %}
-    <label>platform code (e.g. FG7H1G)
-      <input type="text" name="target_platform" placeholder="leave empty to keep">
-    </label>
-    <label>source FortiOS
-      <input type="text" name="source_os" value="{{ meta.source_os }}" size="6">
-    </label>
-    <label>VDOM mode
-      <select name="vdom_mode">
-        <option value="keep" selected>keep as-is</option>
-        <option value="multi">wrap into multi-VDOM</option>
-        <option value="single">flatten to non-VDOM</option>
-      </select>
-    </label>
-    <label>VDOM name
-      <input type="text" name="vdom_name" value="root" size="8">
-    </label>
-    <label style="align-self:center;margin-top:1rem">
-      <input type="checkbox" name="vdom_scope_only" value="1">
-      scope-only (drop globals)
-    </label>
+      </table>
+    </details>
     {% endif %}
   </div>
-  {% if meta.vendor == "fortios" %}
-  <p class="grid-note">If target version &gt; source, the upgrade-artifact
-    scan reports removed features, auto-fixed renames, and silent default
-    flips.</p>
-  {% endif %}
-</div>
 
+  <div class="card">
+    <h2>Target</h2>
+    <div class="builder-row">
+      <label>FortiOS version<br>
+        <select name="fortios">
+          {% for t in targets %}
+          <option value="{{ t }}" {% if t == default_target %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% if meta.vendor == "fortios" %}
+      <label>platform code<br>
+        <input type="text" name="target_platform" size="10"
+               placeholder="e.g. FG7H1G"></label>
+      <label>source FortiOS<br>
+        <input type="text" name="source_os" value="{{ meta.source_os }}" size="6"></label>
+      {% endif %}
+    </div>
+    {% if meta.vendor == "fortios" %}
+    <div class="builder-row">
+      <label>VDOM mode<br>
+        <select name="vdom_mode">
+          <option value="keep" selected>keep as-is</option>
+          <option value="multi">wrap into multi-VDOM</option>
+          <option value="single">flatten to non-VDOM</option>
+        </select></label>
+      <label>VDOM name<br>
+        <input type="text" name="vdom_name" value="root" size="8"></label>
+      <label style="align-self:center;margin-top:1.1rem">
+        <input type="checkbox" name="vdom_scope_only" value="1">
+        scope-only (drop globals)</label>
+    </div>
+    <p class="grid-note">If target version &gt; source, the upgrade-artifact
+      scan reports removed features, auto-fixed renames, and silent
+      default flips.</p>
+    {% else %}
+    <p class="grid-note">Cross-vendor output is a FortiConverter-style
+      script package: <code>config-all.txt</code> plus per-branch files.</p>
+    {% endif %}
+  </div>
+</div>
+</section>
+
+<!-- ================= Step: Interface Mapping ================= -->
+<section class="wstep" data-title="Interface Mapping">
 <div class="card">
-  <h2 style="margin-top:0">Interface mapping</h2>
+  <h2>Interface Mapping</h2>
   <p class="grid-note">Source name &rarr; target port. Pre-filled with the
     same name; change what differs on the target model. Empty target =
     leave the name as-is.</p>
-  <table style="max-width:560px">
+  <table style="max-width:580px">
     <tr><th>source</th>{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>target</th></tr>
     {% for ifc in meta.interfaces %}
     <tr>
@@ -84,10 +114,49 @@
     {% endfor %}
   </table>
 </div>
+</section>
 
 {% if meta.vendor != "fortios" %}
+<!-- ================= Step: Policy Selection (cross) ================= -->
+<section class="wstep" data-title="Policy Selection">
 <div class="card">
-  <h2 style="margin-top:0">Tuning (optional)</h2>
+  <h2>Policy Selection</h2>
+  <p class="grid-note">Untick a rule to leave it out of the conversion.
+    {% if meta.policies_truncated %}Showing the first
+    {{ meta.policies|length }} of
+    {{ meta.policies|length + meta.policies_truncated }} policies.{% endif %}</p>
+  <input type="hidden" name="pol_present" value="1">
+  <div class="searchbar">
+    <input type="text" id="polsearch" placeholder="filter rules…"
+           style="width:260px" oninput="filterPolicies()">
+    <button type="button" class="ghost small" onclick="setAllPolicies(true)">select all</button>
+    <button type="button" class="ghost small" onclick="setAllPolicies(false)">clear all</button>
+    <span class="muted" id="polcount"></span>
+  </div>
+  <table id="poltable">
+    <tr><th></th><th>rule</th><th>from</th><th>to</th><th>source</th>
+        <th>destination</th><th>service</th><th>action</th></tr>
+    {% for p in meta.policies %}
+    <tr data-hay="{{ (p.name ~ ' ' ~ p.src ~ ' ' ~ p.dst ~ ' ' ~ p.srcaddr ~ ' ' ~ p.dstaddr ~ ' ' ~ p.service)|lower }}">
+      <td><input type="checkbox" name="pol_keep" value="{{ p.name }}" checked></td>
+      <td><strong>{{ p.name }}</strong>
+        {% if p.disabled %}<span class="badge b-info">disabled</span>{% endif %}</td>
+      <td>{{ p.src }}</td><td>{{ p.dst }}</td>
+      <td class="muted">{{ p.srcaddr }}</td>
+      <td class="muted">{{ p.dstaddr }}</td>
+      <td class="muted">{{ p.service }}</td>
+      <td>{% if p.action == "accept" %}<span class="badge b-ok">accept</span>
+        {% else %}<span class="badge b-err">deny</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+</section>
+
+<!-- ================= Step: Tuning (cross) ================= -->
+<section class="wstep" data-title="Tuning">
+<div class="card">
+  <h2>Tuning</h2>
   <p class="grid-note">FortiConverter ports everything 1:1 by default;
     these clean up the converted output instead.</p>
   <label style="display:block;margin:.3rem 0">
@@ -96,27 +165,30 @@
     no policy uses</label>
   <label style="display:block;margin:.3rem 0">
     <input type="checkbox" name="t_merge" value="1">
-    <strong>Merge duplicate objects</strong> — collapse same-value
-    objects to one name</label>
+    <strong>Merge duplicate objects</strong> — collapse same-value objects
+    to one name</label>
   <label style="display:block;margin:.3rem 0">
     <input type="checkbox" name="t_split" value="1">
     <strong>Split interface pairs</strong> — one policy per
     srcintf/dstintf pair</label>
-  <label style="display:block;margin:.4rem 0">drop policies (comma-separated names)<br>
+  <label style="display:block;margin:.4rem 0">also drop policies (comma-separated names)<br>
     <input type="text" name="t_exclude" style="width:100%"
            placeholder="e.g. UNUSED-ACL-1, legacy-rule-3"></label>
 </div>
+</section>
 {% endif %}
 
 {% if meta.vendor == "fortios" %}
+<!-- ================= Step: Restructure (fortios) ================= -->
+<section class="wstep" data-title="Restructure">
 <div class="card">
-  <h2 style="margin-top:0">Restructure (optional)</h2>
+  <h2>Restructure <span class="muted">(optional)</span></h2>
 
   <fieldset>
     <legend>Zones — fold interfaces into a zone</legend>
     <p class="grid-note">Creates the zone, rewrites every policy reference,
       merges policies that become identical, audits the leftovers.
-      Members are source names; the mapping above is applied
+      Members are source names; the mapping step is applied
       automatically.</p>
     <div id="zones"></div>
     <button type="button" class="ghost small" onclick="addZone()">+ add zone</button>
@@ -124,52 +196,81 @@
 
   <label style="display:block;margin:.2rem 0 .4rem">
     <input type="checkbox" name="hw_switch" value="1">
-    <strong>Convert hardware switch → software switch</strong> — for a
-    target without the same switch fabric (rewrites
-    <code>type hard-switch</code> as <code>type switch</code>)</label>
+    <strong>Convert hardware switch &rarr; software switch</strong> — for a
+    target without the same switch fabric</label>
   <div style="margin:.2rem 0 .8rem">
     <label>
       <input type="checkbox" name="sslvpn_to_ipsec" value="1">
-      <strong>Convert SSL-VPN → IPsec dial-up</strong> — SSL-VPN tunnel
+      <strong>Convert SSL-VPN &rarr; IPsec dial-up</strong> — SSL-VPN tunnel
       mode is gone in FortiOS 7.6+</label>
     <input type="text" name="sslvpn_psk" placeholder="IPsec PSK (optional)"
-           style="margin-left:.5rem;width:240px">
+           style="margin-left:.5rem;width:230px">
   </div>
 
   <fieldset>
     <legend>SD-WAN — move interfaces into SD-WAN members</legend>
-    <p class="grid-note">Member syntax:
-      <code>port3 gateway=203.0.113.1, port4 weight=10</code> &middot;
-      health-check: <code>ping 8.8.8.8</code>, <code>dns 9.9.9.9</code>,
-      <code>none</code>, or empty for a default ping check. Default routes
-      on members are converted to an sdwan-zone route automatically.</p>
+    <p class="grid-note">Generates the full construct: members (gateways
+      harvested from old default routes), health check with SLA target,
+      steering rules, pinned rules for member-specific routes.
+      Member syntax: <code>port3 gateway=203.0.113.1, port4 weight=10</code></p>
     <div id="sdwans"></div>
     <button type="button" class="ghost small" onclick="addSdwan()">+ add SD-WAN zone</button>
   </fieldset>
 </div>
+</section>
 {% endif %}
 
-<p><button>Convert</button>
-  <a class="btn ghost" href="{{ url_for('index') }}">back</a></p>
+<!-- ================= Step: Convert ================= -->
+<section class="wstep" data-title="Convert">
+<div class="card">
+  <h2>Review &amp; Convert</h2>
+  <p>Running the conversion writes the output package and a full report —
+    nothing touches any device. You can adjust any step and re-run as many
+    times as you like.</p>
+  <ul class="muted">
+    <li>{{ meta.vendor_label or meta.vendor }} &rarr; FortiOS
+      {% if meta.vendor == "fortios" %}(full restorable config)
+      {% else %}(config-all.txt + per-branch scripts){% endif %}</li>
+    <li>Findings are embedded as <code>#</code> comments and listed in the
+      report tabs.</li>
+  </ul>
+  <p><button style="font-size:1rem;padding:.6rem 1.6rem">Convert</button></p>
+</div>
+</section>
+
+<div class="wnav">
+  <button type="button" class="ghost" id="wprev" onclick="stepGo(cur-1)">&larr; Back</button>
+  <span class="spacer"></span>
+  <button type="button" id="wnext" onclick="stepGo(cur+1)">Next &rarr;</button>
+</div>
 </form>
-
-{% if meta.inventory %}
-<details>
-  <summary>Config sections ({{ meta.inventory|length }})</summary>
-  <div class="card">
-  <table style="max-width:560px">
-    <tr><th>section</th><th>entries</th></tr>
-    {% for sec, n in meta.inventory.items() %}
-    <tr><td><code>{{ sec }}</code></td><td>{{ n }}</td></tr>
-    {% endfor %}
-  </table>
-  </div>
-</details>
-{% endif %}
 
 <script>
 const IFACES = {{ meta.interfaces|tojson }};
-let zi = 0, si = 0;
+let zi = 0, si = 0, cur = 0;
+const steps = Array.from(document.querySelectorAll(".wstep"));
+const stepper = document.getElementById("stepper");
+
+steps.forEach((s, i) => {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="n">${i + 1}</span> ${s.dataset.title}`;
+  li.onclick = () => stepGo(i);
+  stepper.appendChild(li);
+});
+function stepGo(i) {
+  if (i < 0 || i >= steps.length) return;
+  cur = i;
+  steps.forEach((s, n) => s.classList.toggle("show", n === i));
+  Array.from(stepper.children).forEach((li, n) => {
+    li.classList.toggle("active", n === i);
+    li.classList.toggle("done", n < i);
+  });
+  document.getElementById("wprev").style.visibility =
+    i === 0 ? "hidden" : "visible";
+  document.getElementById("wnext").style.visibility =
+    i === steps.length - 1 ? "hidden" : "visible";
+}
+stepGo(0);
 
 function ifaceOptions() {
   return IFACES.map(n => `<option value="${n}">${n}</option>`).join("");
@@ -194,20 +295,37 @@ function addSdwan() {
   d.className = "builder-row";
   d.innerHTML = `
     <label>zone name<br><input type="text" name="sdwan_name_${si}" value="virtual-wan-link"></label>
-    <label>members<br><input type="text" name="sdwan_members_${si}" size="42"
+    <label>members<br><input type="text" name="sdwan_members_${si}" size="38"
       placeholder="wan1 gateway=203.0.113.1, wan2 weight=10"></label>
-    <label>health-check<br><input type="text" name="sdwan_hc_${si}" size="14"
+    <label>health-check<br><input type="text" name="sdwan_hc_${si}" size="12"
       placeholder="ping 8.8.8.8"></label>
     <label>steering<br><select name="sdwan_rule_${si}">
       <option value="auto" selected>auto (SLA)</option>
       <option value="sla">sla</option>
       <option value="load-balance">load-balance</option>
       <option value="none">none</option></select></label>
-    <label>vdom (optional)<br><input type="text" name="sdwan_vdom_${si}" size="8"></label>
+    <label>vdom (optional)<br><input type="text" name="sdwan_vdom_${si}" size="7"></label>
     <button type="button" class="ghost small" style="margin-top:1.3rem"
       onclick="this.parentNode.remove()">remove</button>`;
   document.getElementById("sdwans").appendChild(d);
   si++;
+}
+function filterPolicies() {
+  const q = document.getElementById("polsearch").value.toLowerCase();
+  let shown = 0;
+  document.querySelectorAll("#poltable tr[data-hay]").forEach(tr => {
+    const hit = !q || tr.dataset.hay.includes(q);
+    tr.style.display = hit ? "" : "none";
+    if (hit) shown++;
+  });
+  const pc = document.getElementById("polcount");
+  if (pc) pc.textContent = q ? `${shown} match(es)` : "";
+}
+function setAllPolicies(on) {
+  document.querySelectorAll("#poltable tr[data-hay]").forEach(tr => {
+    if (tr.style.display !== "none")
+      tr.querySelector("input[type=checkbox]").checked = on;
+  });
 }
 </script>
 {% endblock %}

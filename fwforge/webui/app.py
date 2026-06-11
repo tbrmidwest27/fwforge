@@ -1,12 +1,14 @@
 """fwforge local web UI — a thin Flask layer over fwforge.pipeline.
 
 No conversion logic lives here: routes collect input, call the same
-pipeline the CLI uses, and render the Report. Jobs are kept in memory
-with artifacts on disk under ~/.fwforge/gui-jobs/<id>/.
+pipeline the CLI uses, and render the Report. Jobs live on disk under
+~/.fwforge/gui-jobs/<id>/ (job.json + artifacts) and survive restarts.
 """
 from __future__ import annotations
 
 import difflib
+import json
+import shutil
 import time
 import uuid
 import zipfile
@@ -29,6 +31,31 @@ JOBS: dict[str, dict] = {}
 JOBS_DIR = Path.home() / ".fwforge" / "gui-jobs"
 FORTIOS_TARGETS = ["7.0", "7.2", "7.4", "7.6", "8.0"]
 DIFF_RENDER_CAP = 600
+PREVIEW_CAP = 500
+POLICY_CAP = 800
+
+VENDOR_LABELS = {"cisco-asa": "Cisco ASA", "paloalto": "Palo Alto",
+                 "fortios": "FortiOS"}
+
+
+def _save_job(jid: str) -> None:
+    try:
+        (JOBS_DIR / jid / "job.json").write_text(
+            json.dumps(JOBS[jid], default=str), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_jobs() -> None:
+    JOBS.clear()
+    if not JOBS_DIR.is_dir():
+        return
+    for jfile in JOBS_DIR.glob("*/job.json"):
+        try:
+            JOBS[jfile.parent.name] = json.loads(
+                jfile.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
 
 
 def _analyze(text: str, name: str) -> dict:
@@ -36,6 +63,7 @@ def _analyze(text: str, name: str) -> dict:
     meta = {
         "name": name,
         "vendor": vendor,
+        "vendor_label": VENDOR_LABELS.get(vendor, vendor),
         "confidence": f"{conf:.0%}",
         "created": time.strftime("%Y-%m-%d %H:%M"),
         "interfaces": [],
@@ -46,6 +74,9 @@ def _analyze(text: str, name: str) -> dict:
         "hostname": "",
         "inventory": {},
         "counts": {},
+        "policies": [],
+        "policies_truncated": 0,
+        "lines": len(text.splitlines()),
     }
     if vendor == "fortios":
         tree = fortios_tree.parse_config(text, name)
@@ -71,6 +102,20 @@ def _analyze(text: str, name: str) -> dict:
             "nat rules / vips": len(cfg.nats) + len(cfg.vips),
             "routes": len(cfg.routes),
         }
+        pols = []
+        for p in cfg.policies[:POLICY_CAP]:
+            pols.append({
+                "name": p.name,
+                "src": " ".join(p.src_zones) or "any",
+                "dst": " ".join(p.dst_zones) or "any",
+                "srcaddr": " ".join(p.src_addrs[:3]),
+                "dstaddr": " ".join(p.dst_addrs[:3]),
+                "service": " ".join(p.services[:3]),
+                "action": p.action,
+                "disabled": p.disabled,
+            })
+        meta["policies"] = pols
+        meta["policies_truncated"] = max(0, len(cfg.policies) - POLICY_CAP)
     return meta
 
 
@@ -155,9 +200,28 @@ def _plan_from_form(form) -> MigrationPlan:
     return plan
 
 
+def _tuning_from_form(form, meta) -> TuningOptions:
+    exclude = [s.strip() for s in form.get("t_exclude", "").split(",")
+               if s.strip()]
+    # policy-selection checkboxes: anything not kept is excluded
+    if form.get("pol_present"):
+        kept = set(form.getlist("pol_keep"))
+        for p in meta.get("policies", []):
+            if p["name"] and p["name"] not in kept \
+                    and p["name"] not in exclude:
+                exclude.append(p["name"])
+    return TuningOptions(
+        prune=bool(form.get("t_prune")),
+        merge_dupes=bool(form.get("t_merge")),
+        split_pairs=bool(form.get("t_split")),
+        exclude=exclude,
+    )
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    _load_jobs()
 
     @app.context_processor
     def inject():
@@ -165,7 +229,7 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        jobs = sorted(JOBS.items(), key=lambda kv: kv[1]["created"],
+        jobs = sorted(JOBS.items(), key=lambda kv: kv[1].get("created", ""),
                       reverse=True)
         return render_template("index.html", jobs=jobs,
                                error=request.args.get("error", ""))
@@ -198,6 +262,7 @@ def create_app() -> Flask:
         jdir.mkdir(parents=True, exist_ok=True)
         (jdir / "source.conf").write_text(text, encoding="utf-8")
         JOBS[jid] = meta
+        _save_job(jid)
         return redirect(url_for("job", jid=jid))
 
     def _job(jid: str) -> dict:
@@ -214,6 +279,13 @@ def create_app() -> Flask:
             "plan.html", jid=jid, meta=meta, targets=FORTIOS_TARGETS,
             default_target=default_target,
             error=request.args.get("error", ""))
+
+    @app.post("/job/<jid>/delete")
+    def delete(jid):
+        _job(jid)
+        shutil.rmtree(JOBS_DIR / jid, ignore_errors=True)
+        JOBS.pop(jid, None)
+        return redirect(url_for("index"))
 
     @app.post("/job/<jid>/convert")
     def convert(jid):
@@ -247,17 +319,10 @@ def create_app() -> Flask:
                                     request.form.getlist("map_dst")):
                     if src.strip() and dst.strip():
                         mapping[src.strip()] = dst.strip()
-                tuning = TuningOptions(
-                    prune=bool(request.form.get("t_prune")),
-                    merge_dupes=bool(request.form.get("t_merge")),
-                    split_pairs=bool(request.form.get("t_split")),
-                    exclude=[s.strip() for s in
-                             request.form.get("t_exclude", "").split(",")
-                             if s.strip()],
-                )
                 result = pipeline.run_cross(
                     text, meta["vendor"], meta["name"], mapping,
-                    target=target, tuning=tuning)
+                    target=target,
+                    tuning=_tuning_from_form(request.form, meta))
         except PlanError as e:
             return redirect(url_for("job", jid=jid, error=str(e)))
 
@@ -310,6 +375,7 @@ def create_app() -> Flask:
             "diff_total": len(diff_full.splitlines()),
             "out_size": len(result.out_text.splitlines()),
         }
+        _save_job(jid)
         return redirect(url_for("job_result", jid=jid))
 
     @app.get("/job/<jid>/result")
@@ -317,8 +383,16 @@ def create_app() -> Flask:
         meta = _job(jid)
         if "result" not in meta:
             return redirect(url_for("job", jid=jid))
-        return render_template("result.html", jid=jid, meta=meta,
-                               r=meta["result"])
+        # output preview for the Output tab
+        main = JOBS_DIR / jid / meta["result"]["main_name"]
+        preview: list[str] = []
+        if main.is_file():
+            preview = main.read_text(
+                encoding="utf-8", errors="replace").splitlines()
+        shown = preview[:PREVIEW_CAP]
+        return render_template(
+            "result.html", jid=jid, meta=meta, r=meta["result"],
+            preview=shown, preview_total=len(preview))
 
     @app.get("/job/<jid>/dl/<which>")
     def download(jid, which):
@@ -351,7 +425,8 @@ def create_app() -> Flask:
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
             for p in sorted(jdir.rglob("*")):
                 if p.is_file() and p.name not in ("bundle.zip",
-                                                  "source.conf"):
+                                                  "source.conf",
+                                                  "job.json"):
                     z.write(p, p.relative_to(jdir))
         return send_file(zpath, mimetype="application/zip",
                          as_attachment=True,

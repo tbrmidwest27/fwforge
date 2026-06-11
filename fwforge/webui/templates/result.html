@@ -1,13 +1,15 @@
 {% extends "base.html" %}
-{% block content %}
-<h1>{{ meta.name }} &rarr; FortiOS {{ r.target }}
-  <span class="badge b-vendor">{{ r.mode }}</span>
+{% block title %}{{ meta.name }} results{% endblock %}
+{% block nav_conversions %}{% endblock %}
+{% block pagetitle %}Conversion results{% endblock %}
+{% block crumbs %}{{ meta.name }} &rarr; FortiOS {{ r.target }}{% endblock %}
+{% block tbright %}
   {% if r.exit == 0 %}<span class="badge b-ok">converted</span>
   {% else %}<span class="badge b-err">converted with errors</span>{% endif %}
-</h1>
-<p class="muted">{{ r.when }} &middot;
-  <a href="{{ url_for('job', jid=jid) }}">adjust mapping / plan and re-run</a></p>
+  <a class="btn ghost small" href="{{ url_for('job', jid=jid) }}">adjust &amp; re-run</a>
+{% endblock %}
 
+{% block content %}
 <div class="kpis">
   <div class="kpi err"><div class="n">{{ r.counts.errors }}</div><div class="l">errors</div></div>
   <div class="kpi warn"><div class="n">{{ r.counts.warnings }}</div><div class="l">warnings</div></div>
@@ -21,76 +23,141 @@
   <div class="kpi"><div class="n">{{ r.out_size }}</div><div class="l">output lines</div></div>
 </div>
 
-{% if r.meta %}
-<div class="card">
-  <table style="max-width:560px">
-    {% for k, v in r.meta.items() %}
-    <tr><th>{{ k.replace("_", " ") }}</th><td>{{ v }}</td></tr>
-    {% endfor %}
-  </table>
-</div>
-{% endif %}
-
-<div class="dl">
-  {% if r.mode == "migrate" %}
-  <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">download config (.conf)</a>
-  {% else %}
-  <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">config-all.txt</a>
-  {% endif %}
-  <a class="btn" href="{{ url_for('bundle', jid=jid) }}">all files (.zip)</a>
-  <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.md') }}">report.md</a>
-  <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.json') }}">report.json</a>
-  {% if r.mode == "migrate" %}
-  <a class="btn ghost" href="{{ url_for('download', jid=jid, which='diff') }}">diff.patch</a>
-  {% endif %}
-</div>
-{% if r.mode == "migrate" %}
-<p class="muted">FortiGate&rarr;FortiGate: one <strong>full restorable
-  config</strong> &mdash; load via <em>System &rarr; Configuration &rarr;
-  Restore</em> or <code>execute restore config</code>. Findings are
-  embedded as <code>#</code> comments (ignored on load).</p>
-{% else %}
-<p class="muted">Cross-vendor: a paste-script. <code>config-all.txt</code>
-  has the findings as comments; the .zip also includes
-  {{ r.branch_count }} per-branch .txt file(s) (one per <code>config</code>
-  section) to apply selectively.</p>
-{% endif %}
-
 {% if r.unmapped %}
 <div class="banner err">
   <strong>{{ r.unmapped|length }} interface name(s) are not mapped</strong> —
   the output keeps the source names, which the FortiGate will reject.
-  Go back, fill in the mapping grid for:
+  Go back to Interface Mapping for:
   {% for u in r.unmapped %}<code>{{ u }}</code> {% endfor %}
 </div>
 {% endif %}
 
-{% for level, title in [("error", "Errors — must fix"),
-                        ("warn", "Warnings — review"),
-                        ("info", "Notes")] %}
-  {% if r.findings[level] %}
-  <h2>{{ title }} ({{ r.findings[level]|length }})</h2>
-  <ul class="findings">
-    {% for f in r.findings[level] %}
-    <li class="{{ 'err' if level == 'error' else level }}">
-      <span class="area">{{ f.area }}</span>{{ f.message }}
-      {% if f.loc %}<span class="loc">[{{ f.loc }}]</span>{% endif %}
-    </li>
-    {% endfor %}
-  </ul>
+<div class="tabs" id="rtabs">
+  <button type="button" class="active" data-pane="summary">Summary</button>
+  <button type="button" data-pane="findings">Findings
+    ({{ r.counts.errors + r.counts.warnings + r.counts.notes }})</button>
+  <button type="button" data-pane="output">Output</button>
+  {% if r.mode == "migrate" %}
+  <button type="button" data-pane="changes">Changes ({{ r.diff_changed }})</button>
   {% endif %}
-{% endfor %}
+</div>
+
+<!-- ============ Summary ============ -->
+<div class="tabpane show" id="pane-summary">
+  <div class="dl">
+    {% if r.split %}
+    <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">config-all.txt</a>
+    {% else %}
+    <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">download config (.conf)</a>
+    {% endif %}
+    <a class="btn" href="{{ url_for('bundle', jid=jid) }}">all files (.zip)</a>
+    <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.md') }}">report.md</a>
+    <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.json') }}">report.json</a>
+    {% if r.mode == "migrate" %}
+    <a class="btn ghost" href="{{ url_for('download', jid=jid, which='diff') }}">diff.patch</a>
+    {% endif %}
+  </div>
+  {% if r.mode == "migrate" %}
+  <p class="muted">FortiGate&rarr;FortiGate: one <strong>full restorable
+    config</strong> &mdash; load via <em>System &rarr; Configuration &rarr;
+    Restore</em> or <code>execute restore config</code>. Findings are
+    embedded as <code>#</code> comments (ignored on load).</p>
+  {% else %}
+  <p class="muted">Cross-vendor: a paste-script. <code>config-all.txt</code>
+    has the findings as comments; the .zip also includes
+    {{ r.branch_count }} per-branch .txt file(s) (one per
+    <code>config</code> section) to apply selectively.</p>
+  {% endif %}
+
+  <div class="card">
+    <h2>Conversion summary</h2>
+    <table style="max-width:620px">
+      <tr><th>run</th><td>{{ r.when }}</td></tr>
+      <tr><th>mode</th><td>{{ r.mode }}</td></tr>
+      <tr><th>target</th><td>FortiOS {{ r.target }}</td></tr>
+      {% for k, v in r.meta.items() %}
+      <tr><th>{{ k.replace("_", " ") }}</th><td>{{ v }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+
+<!-- ============ Findings ============ -->
+<div class="tabpane" id="pane-findings">
+  <div class="searchbar">
+    <input type="text" id="fsearch" placeholder="filter findings…"
+           style="width:280px" oninput="filterFindings()">
+    <select id="flevel" onchange="filterFindings()">
+      <option value="">all levels</option>
+      <option value="err">errors</option>
+      <option value="warn">warnings</option>
+      <option value="info">notes</option>
+    </select>
+    <span class="muted" id="fcount"></span>
+  </div>
+  {% for level, title in [("error", "Errors — must fix"),
+                          ("warn", "Warnings — review"),
+                          ("info", "Notes")] %}
+    {% if r.findings[level] %}
+    <h2 style="font-size:.95rem">{{ title }} ({{ r.findings[level]|length }})</h2>
+    <ul class="findings">
+      {% for f in r.findings[level] %}
+      <li class="{{ 'err' if level == 'error' else level }}"
+          data-hay="{{ (f.area ~ ' ' ~ f.message)|lower }}">
+        <span class="area">{{ f.area }}</span>{{ f.message }}
+        {% if f.loc %}<span class="loc">[{{ f.loc }}]</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  {% endfor %}
+</div>
+
+<!-- ============ Output ============ -->
+<div class="tabpane" id="pane-output">
+  <p class="muted">{{ r.main_name }}
+    {% if preview_total > preview|length %}
+      — showing first {{ preview|length }} of {{ preview_total }} lines
+      (download for the full file)
+    {% else %} — {{ preview_total }} lines{% endif %}
+  </p>
+  <pre class="code">{% for line in preview %}<div><span class="ln">{{ loop.index }}</span>{{ line }}</div>{% endfor %}</pre>
+</div>
 
 {% if r.mode == "migrate" %}
-<h2>What changed</h2>
-<details {% if r.diff_changed and r.diff_changed <= 80 %}open{% endif %}>
-  <summary>{{ r.diff_changed }} changed line(s)
+<!-- ============ Changes ============ -->
+<div class="tabpane" id="pane-changes">
+  <p class="muted">{{ r.diff_changed }} changed line(s)
     {% if r.diff_total > r.diff|length %}
       — showing first {{ r.diff|length }} of {{ r.diff_total }} diff lines
       (full diff in diff.patch)
     {% endif %}
-  </summary>
-  <pre class="diff">{% for l in r.diff %}<div class="{{ l.cls }}">{{ l.text }}</div>{% endfor %}</pre>
-</details>
+  </p>
+  <pre class="code diff">{% for l in r.diff %}<div class="{{ l.cls }}">{{ l.text }}</div>{% endfor %}</pre>
+</div>
 {% endif %}
+
+<script>
+document.querySelectorAll("#rtabs button").forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll("#rtabs button").forEach(
+      b => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tabpane").forEach(
+      p => p.classList.toggle("show", p.id === "pane-" + btn.dataset.pane));
+  };
+});
+function filterFindings() {
+  const q = document.getElementById("fsearch").value.toLowerCase();
+  const lvl = document.getElementById("flevel").value;
+  let shown = 0;
+  document.querySelectorAll("#pane-findings li").forEach(li => {
+    const okQ = !q || li.dataset.hay.includes(q);
+    const okL = !lvl || li.classList.contains(lvl);
+    li.style.display = (okQ && okL) ? "" : "none";
+    if (okQ && okL) shown++;
+  });
+  document.getElementById("fcount").textContent =
+    (q || lvl) ? `${shown} match(es)` : "";
+}
+</script>
 {% endblock %}

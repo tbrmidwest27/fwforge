@@ -260,12 +260,20 @@ python -m pip install flask    # the only optional dependency
 python -m fwforge gui          # opens http://127.0.0.1:4848
 ```
 
-A thin local Flask layer over the same pipeline the CLI uses (no logic of
-its own): load a config (upload or local path) → auto-detect → interface
-mapping grid with VDOM badges → zone / SD-WAN builders → convert → result
-page with severity-grouped findings, upgrade artifacts, downloads
-(config / report.md / report.json / diff.patch) and a colorized
-before/after diff. Binds to localhost; configs never leave the machine.
+A local Flask app over the same pipeline the CLI uses (no logic of its
+own), styled and structured like a management tool:
+
+- **Conversions home**: persistent project list (survives restarts) with
+  vendor/status chips, re-open, results, delete
+- **Step wizard** per conversion: Source & Target → Interface Mapping
+  (grid with VDOM badges) → *cross-vendor:* Policy Selection (searchable
+  checkbox table — untick rules to exclude them) and Tuning → *FortiOS:*
+  Restructure (zones, SD-WAN, hw-switch, SSL-VPN→IPsec) → Convert
+- **Tabbed results**: Summary (downloads + apply instructions), Findings
+  (search + severity filter), Output (line-numbered preview), Changes
+  (colorized diff for migrations)
+
+Binds to localhost; configs never leave the machine.
 
 ## Development
 
