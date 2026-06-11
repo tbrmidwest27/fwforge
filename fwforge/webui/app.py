@@ -274,14 +274,16 @@ def create_app() -> Flask:
         name = ""
         upload = request.files.get("config")
         if upload and upload.filename:
-            text = upload.read().decode("utf-8", "replace")
+            # utf-8-sig: strip the BOM Windows editors prepend (it breaks
+            # the line-anchored vendor detection)
+            text = upload.read().decode("utf-8-sig", "replace")
             name = upload.filename
         elif request.form.get("path", "").strip():
             p = Path(request.form["path"].strip())
             if not p.is_file():
                 return redirect(url_for("index",
                                         error=f"file not found: {p}"))
-            text = p.read_text(encoding="utf-8", errors="replace")
+            text = p.read_text(encoding="utf-8-sig", errors="replace")
             name = p.name
         if not text.strip():
             return redirect(url_for("index", error="no config provided"))

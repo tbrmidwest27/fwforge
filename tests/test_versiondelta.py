@@ -114,3 +114,94 @@ def test_e2e_same_version_no_upgrade_findings(tmp_path):
     assert "upgrade_artifacts" not in report["meta"]
     assert not any(f["area"] == "upgrade" and "removed" in f["message"]
                    for f in report["findings"])
+
+
+DOWNGRADE_SRC = """#config-version=FGT601F-8.0.1-FW-build4100-260301:opmode=0:vdom=0:user=admin
+config system gui-dashboard-collection
+    edit "default"
+        set layout 2
+    next
+end
+config firewall address
+    edit "printer"
+        set hw-version "HP"
+    next
+end
+config vpn ipsec phase1-interface
+    edit "to-branch"
+        set interface "wan1"
+        set remote-gw 203.0.113.9
+        set psksecret ENC abc
+    next
+    edit "to-dc"
+        set interface "wan1"
+        set dhgrp 20
+        set remote-gw 203.0.113.10
+        set psksecret ENC def
+    next
+end
+"""
+
+
+def test_downgrade_scan_80_to_74():
+    tree = ft.parse_config(DOWNGRADE_SRC)
+    report = Report()
+    stats = vd.scan(tree, (8, 0), (7, 4), report)
+    msgs = [f.message for f in report.findings]
+
+    # introduced section flagged as dropped on the older build
+    assert any("gui-dashboard-collection" in m and "dropped" in m
+               for m in msgs)
+    # rename reverted: hw-version -> hw-model
+    out = ft.serialize(tree)
+    assert 'set hw-model "HP"' in out
+    assert "hw-version" not in out
+    assert stats["auto_fixed"] == 1
+    # default flip warned with the reverse wording, only for the entry
+    # relying on the default
+    p1 = next(m for m in msgs if "goes back 20 -> 14" in m)
+    assert "to-branch" in p1 and "to-dc" not in p1
+    # the standing rule-based caveat is present
+    assert any("config-error-log" in m for m in msgs)
+    assert all(f.area == "downgrade" for f in report.findings)
+
+
+def test_downgrade_empty_phase_tables_silent():
+    text = ("#config-version=FGT601F-8.0.1-FW-build4100-260301:opmode=0\n"
+            "config vpn ipsec phase1-interface\n"
+            "end\n")
+    tree = ft.parse_config(text)
+    report = Report()
+    stats = vd.scan(tree, (8, 0), (7, 4), report)
+    assert stats["artifacts"] == 0
+    assert not any("dhgrp" in f.message for f in report.findings)
+
+
+def test_e2e_downgrade_scan_cli(tmp_path):
+    srcdir = tmp_path / "in"
+    srcdir.mkdir()
+    src = srcdir / "newbox.conf"
+    src.write_text(DOWNGRADE_SRC, encoding="utf-8")
+    rc = cli.main(["convert", str(src), "-o", str(tmp_path),
+                   "--fortios", "7.4"])
+    assert rc == 0  # warnings only
+    report = json.loads(
+        (tmp_path / "newbox.report.json").read_text(encoding="utf-8"))
+    assert report["meta"]["fortios_versions"] == "8.0 -> 7.4"
+    assert report["meta"]["downgrade_artifacts"] >= 2
+    assert report["meta"]["downgrade_auto_fixed"] == 1
+    conf = (tmp_path / "newbox.conf").read_text(encoding="utf-8")
+    assert "set hw-model" in conf
+    assert src.read_text(encoding="utf-8") == DOWNGRADE_SRC  # untouched
+
+
+def test_cli_refuses_to_overwrite_its_input(tmp_path):
+    src = tmp_path / "samebox.conf"
+    src.write_text(DOWNGRADE_SRC, encoding="utf-8")
+    rc = cli.main(["convert", str(src), "-o", str(tmp_path),
+                   "--fortios", "7.4"])
+    assert rc == 0
+    # input intact; output written under a shifted stem
+    assert src.read_text(encoding="utf-8") == DOWNGRADE_SRC
+    out = (tmp_path / "samebox-converted.conf").read_text(encoding="utf-8")
+    assert "set hw-model" in out

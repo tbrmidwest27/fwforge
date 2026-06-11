@@ -343,3 +343,14 @@ def test_old_job_without_iface_details_heals_on_open(client):
     # and the healed meta is persisted for the next restart
     saved = _json.loads((jdir / "job.json").read_text(encoding="utf-8"))
     assert saved["iface_details"]
+
+
+def test_bom_prefixed_config_detected(client, tmp_path):
+    # PowerShell 5.1 Out-File utf8 prepends a BOM; detection must survive
+    src = tmp_path / "bom.conf"
+    src.write_bytes(b"\xef\xbb\xbf" + (FIX / "fortios_sample.conf").read_bytes())
+    resp = client.post("/load", data={"path": str(src)},
+                       follow_redirects=False)
+    assert resp.status_code == 302
+    jid = resp.headers["Location"].rstrip("/").split("/")[-1]
+    assert webui_app.JOBS[jid]["vendor"] == "fortios"

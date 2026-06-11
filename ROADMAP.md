@@ -256,6 +256,24 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.22 — shipped 2026-06-11
+- [x] **Downgrade version scan** (per Adam): the version-delta scan now
+      runs in BOTH directions. target < source applies the rule table
+      backwards — renames reverted (hw-version -> hw-model,
+      sdwan -> virtual-wan-link below 6.4), default flips warned with
+      reverse wording (8.0 dhgrp 20->14 / 21->5, allow-traffic-redirect
+      re-enabling hairpin), new `introduced-section`/`introduced-attr`
+      rule kinds flag features the older build doesn't know
+      (system gui-dashboard-collection before 8.0), plus a standing
+      "rule-based and partial; check config-error-log after restore"
+      note. Findings under area `downgrade`; meta
+      downgrade_artifacts/downgrade_auto_fixed; wizard note updated.
+- [x] **CLI input-overwrite guard**: `-o` pointing at the input's own
+      directory no longer lets `<stem>.conf` overwrite the source —
+      output shifts to `<stem>-converted.*` with a notice.
+- [x] **BOM tolerance**: config reads (CLI, GUI upload, GUI path) use
+      utf-8-sig so a Windows BOM no longer breaks vendor detection.
+
 ### v0.21.2 — shipped 2026-06-11
 - [x] **Old jobs heal on open**: conversion projects saved before the
       informed pickers existed carry no `iface_details` in job.json, so

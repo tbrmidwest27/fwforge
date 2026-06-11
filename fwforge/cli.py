@@ -34,7 +34,9 @@ from .transforms.tuning import TuningOptions
 
 
 def _read(path: str) -> str:
-    return Path(path).read_text(encoding="utf-8", errors="replace")
+    # utf-8-sig: tolerate the BOM Windows editors prepend — it would
+    # otherwise break the line-anchored vendor-detection patterns
+    return Path(path).read_text(encoding="utf-8-sig", errors="replace")
 
 
 def cmd_detect(args) -> int:
@@ -185,6 +187,15 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
     report = result.report
 
     stem = Path(src_path).stem
+    try:
+        clobber = (outdir / f"{stem}.conf").resolve() \
+            == Path(src_path).resolve()
+    except OSError:
+        clobber = False
+    if clobber:
+        stem += "-converted"
+        print(f"note: output would overwrite the input file - writing "
+              f"{stem}.* instead")
     pkg = package.write_full(outdir, stem, result.out_text, report)
     (outdir / (stem + ".report.md")).write_text(
         report.to_markdown(), encoding="utf-8")
@@ -206,7 +217,8 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
                 "sslvpn_tunnels", "zones_created", "sdwan_members_added",
                 "default_routes_converted", "policies_merged",
                 "fortios_versions", "upgrade_artifacts",
-                "upgrade_auto_fixed"):
+                "upgrade_auto_fixed", "downgrade_artifacts",
+                "downgrade_auto_fixed"):
         if key in report.meta:
             print(f"{key.replace('_', ' ')}: {report.meta[key]}")
     errors, warns = report.count("error"), report.count("warn")

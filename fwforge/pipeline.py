@@ -159,11 +159,6 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
         report.add("info", "upgrade",
                    f"target version '{target}' not understood — "
                    "upgrade-artifact scan skipped")
-    elif tgt_ver < src_ver:
-        report.add("warn", "upgrade",
-                   f"target FortiOS {target} is OLDER than the source "
-                   f"({src_ver[0]}.{src_ver[1]}) — downgrades are not "
-                   "analyzed; new-syntax artifacts may be rejected")
     else:
         vstats = versiondelta.scan(tree, src_ver, tgt_ver, report)
         report.meta["fortios_versions"] = (
@@ -171,6 +166,9 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
         if tgt_ver > src_ver:
             report.meta["upgrade_artifacts"] = vstats["artifacts"]
             report.meta["upgrade_auto_fixed"] = vstats["auto_fixed"]
+        elif tgt_ver < src_ver:
+            report.meta["downgrade_artifacts"] = vstats["artifacts"]
+            report.meta["downgrade_auto_fixed"] = vstats["auto_fixed"]
 
     result = ConversionResult(mode="migrate", vendor="fortios",
                               report=report)
