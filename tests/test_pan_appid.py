@@ -123,3 +123,76 @@ def test_pa_sample_still_maps(tmp_path):
     al = cfg.app_lists[0]
     assert al.categories == [25]  # web-browsing -> Web.Client; ssl ignored
     assert "PAN apps: web-browsing, ssl" in out.comment  # comment preserved
+
+
+APPDEF = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip>
+      <entry name="10.0.0.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="trust"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <application>
+      <entry name="erp-app"><default><port>
+        <member>tcp/8443</member><member>tcp/9000-9010</member>
+      </port></default></entry>
+      <entry name="dyn-app"><default><port>
+        <member>tcp/dynamic</member></port></default></entry>
+    </application>
+    <application-group>
+      <entry name="biz-apps"><members>
+        <member>erp-app</member><member>ssh</member></members></entry>
+    </application-group>
+    <rulebase><security><rules>
+      <entry name="Tight"><from><member>trust</member></from>
+        <to><member>trust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>biz-apps</member><member>dns</member></application>
+        <service><member>application-default</member></service>
+        <action>allow</action></entry>
+      <entry name="Loose"><from><member>trust</member></from>
+        <to><member>trust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>dyn-app</member></application>
+        <service><member>application-default</member></service>
+        <action>allow</action></entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_default_ports_lookup():
+    assert pan_appid.default_ports("dns") == [("tcp/udp", "53")]
+    assert pan_appid.default_ports("facebook-base") == [("tcp", "80 443")]
+    assert pan_appid.default_ports("bittorrent") is None   # dynamic
+    assert pan_appid.default_ports("ssl") == [("tcp", "443")]
+
+
+def test_application_default_tightened():
+    cfg = paloalto.parse(APPDEF, "appdef.xml")
+    tight = next(p for p in cfg.policies if p.name == "Tight")
+    # custom erp-app (file ports) + ssh + dns resolved -> real services
+    assert "ALL" not in tight.services
+    names = " ".join(tight.services)
+    assert "8443" in names and "22" in names
+    svc = next(s for s in cfg.services if "8443" in s.name)
+    assert svc.protocol == "tcp"
+    assert "9000-9010" in svc.dst_ports
+    dns_svc = next(s for s in cfg.services if s.name in tight.services
+                   and s.protocol == "tcp/udp")
+    assert dns_svc.dst_ports == "53"
+    msgs = [m for _, _, m, _ in cfg.meta["findings"]]
+    assert any("tightened to" in m for m in msgs)
+
+
+def test_application_default_dynamic_falls_back():
+    cfg = paloalto.parse(APPDEF, "appdef.xml")
+    loose = next(p for p in cfg.policies if p.name == "Loose")
+    assert loose.services == ["ALL"]      # dyn-app has dynamic ports
+    msgs = [m for _, _, m, _ in cfg.meta["findings"]]
+    assert any("no default-port data" in m and "dyn-app" in m
+               for m in msgs)

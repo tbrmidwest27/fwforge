@@ -36,10 +36,34 @@ class ConversionResult:
     exit_code: int = 0
 
 
+def _cross_one(cfg: FirewallConfig, mapping, target, tuning, nat_mode,
+               report) -> tuple[str, list[str]]:
+    """Transforms + emit for one IR config; returns (text, unmapped)."""
+    from dataclasses import replace as _dc_replace
+    unmapped = portmap.apply_ir(cfg, mapping, report)
+    renames = names_tf.apply(cfg, report)
+    routes_tf.infer_dst_zones(cfg, report)
+    if tuning and tuning.any():
+        # exclude/only are given as SOURCE rule names; sanitization has
+        # already renamed the policies, so translate the filters too
+        local = _dc_replace(
+            tuning,
+            exclude=[renames.get(n, n) for n in tuning.exclude],
+            only=[renames.get(n, n) for n in tuning.only])
+        stats = tuning_tf.apply(cfg, local, report)
+        report.meta["tuning"] = ", ".join(
+            f"{k}:{v}" for k, v in stats.items() if v)
+    optimize.analyze(cfg, report)
+    out_text = fortios_emit.emit(cfg, report, target=target,
+                                 nat_mode=nat_mode)
+    return out_text, unmapped
+
+
 def run_cross(text: str, vendor: str, src_name: str,
               mapping: dict[str, str], target: str = "7.4",
               tuning: TuningOptions | None = None,
-              nat_mode: str = "policy") -> ConversionResult:
+              nat_mode: str = "policy",
+              parser_opts: dict | None = None) -> ConversionResult:
     report = Report()
     report.meta = {
         "tool": f"fwforge {__version__}",
@@ -47,33 +71,81 @@ def run_cross(text: str, vendor: str, src_name: str,
         "mode": "cross-vendor",
         "target": f"FortiOS {target}",
     }
-    cfg: FirewallConfig = CROSS_PARSERS[vendor](text, src_name)
+    if parser_opts:
+        cfg: FirewallConfig = CROSS_PARSERS[vendor](text, src_name,
+                                                    **parser_opts)
+    else:
+        cfg = CROSS_PARSERS[vendor](text, src_name)
     report.absorb_parser_findings(cfg)
     report.meta["source_vendor"] = cfg.vendor
     report.meta["source_hostname"] = cfg.hostname
-
-    unmapped = portmap.apply_ir(cfg, mapping, report)
-    renames = names_tf.apply(cfg, report)
-    routes_tf.infer_dst_zones(cfg, report)
-    if tuning and tuning.any():
-        # exclude/only are given as SOURCE rule names; sanitization has
-        # already renamed the policies, so translate the filters too
-        tuning.exclude[:] = [renames.get(n, n) for n in tuning.exclude]
-        tuning.only[:] = [renames.get(n, n) for n in tuning.only]
-        stats = tuning_tf.apply(cfg, tuning, report)
-        report.meta["tuning"] = ", ".join(
-            f"{k}:{v}" for k, v in stats.items() if v)
-    optimize.analyze(cfg, report)
     if nat_mode == "central":
         report.meta["nat_mode"] = "central NAT"
-    out_text = fortios_emit.emit(cfg, report, target=target,
-                                 nat_mode=nat_mode)
 
+    vsys_cfgs = cfg.meta.pop("vsys_cfgs", None)
+    if vsys_cfgs:
+        return _run_cross_multi(vsys_cfgs, cfg, vendor, mapping, target,
+                                tuning, nat_mode, report)
+
+    out_text, unmapped = _cross_one(cfg, mapping, target, tuning,
+                                    nat_mode, report)
     result = ConversionResult(
         mode="cross", vendor=vendor, out_text=out_text, report=report,
         cfg=cfg, unmapped=unmapped)
     if unmapped:
         result.sample_portmap = portmap.sample_map(unmapped)
+    result.exit_code = 1 if report.count("error") else 0
+    return result
+
+
+def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
+                     target, tuning, nat_mode,
+                     report) -> ConversionResult:
+    """Multi-vsys source -> one script with a VDOM block per vsys."""
+    bodies: list[tuple[str, str]] = []
+    all_unmapped: set[str] = set()
+    for vname, vcfg in vsys_cfgs:
+        if vcfg is not primary:
+            report.absorb_parser_findings(vcfg)
+        text, unmapped = _cross_one(vcfg, mapping, target, tuning,
+                                    nat_mode, report)
+        # drop the per-cfg comment header; one header tops the assembly
+        body = "\n".join(l for l in text.splitlines()
+                         if not l.startswith("#")).strip("\n")
+        bodies.append((vname, body))
+        all_unmapped.update(unmapped)
+
+    names = [v for v, _ in bodies]
+    out: list[str] = [
+        f"# fwforge converted config - source vendor: {primary.vendor}",
+        f"# source hostname: {primary.hostname or '(unknown)'}"
+        f" | target: FortiOS {target}",
+        f"# multi-vsys source: one VDOM per vsys ({', '.join(names)})",
+        "# review the companion report before applying",
+        "",
+        "# enable multi-VDOM on the target first:",
+        "#   config system global / set vdom-mode multi-vdom / end",
+        "",
+        "config vdom",
+    ]
+    for v in names:
+        out += [f"edit {v}", "next"]
+    out += ["end", ""]
+    for v, body in bodies:
+        out += ["config vdom", f"edit {v}", body, "end", ""]
+    report.add(
+        "info", "vsys",
+        f"{len(names)} vsys converted into VDOM blocks: "
+        f"{', '.join(names)}. Interfaces are device-level — assign each "
+        "to its VDOM (set vdom) per the interface mapping before "
+        "pasting the VDOM blocks")
+    report.meta["vsys_vdoms"] = ", ".join(names)
+
+    result = ConversionResult(
+        mode="cross", vendor=vendor, out_text="\n".join(out) + "\n",
+        report=report, cfg=primary, unmapped=sorted(all_unmapped))
+    if all_unmapped:
+        result.sample_portmap = portmap.sample_map(sorted(all_unmapped))
     result.exit_code = 1 if report.count("error") else 0
     return result
 

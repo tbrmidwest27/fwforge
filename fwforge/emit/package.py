@@ -28,7 +28,9 @@ def _fname(name: str) -> str:
 def split_branches(text: str) -> list[tuple[str, str]]:
     """Split FortiOS CLI text into top-level `config <x> ... end` blocks.
     Returns [(branch-name, block-text)]; lines outside any block (the
-    header) are not returned — they live only in config-all."""
+    header) are not returned — they live only in config-all. A
+    `config vdom` block splits into per-VDOM sections, each re-wrapped
+    so every branch file pastes standalone."""
     lines = text.splitlines()
     out: list[tuple[str, str]] = []
     depth = 0
@@ -47,7 +49,28 @@ def split_branches(text: str) -> list[tuple[str, str]]:
                 out.append((name or "section",
                             "\n".join(lines[start:idx + 1])))
                 start = None
-    return out
+    final: list[tuple[str, str]] = []
+    for nm, block in out:
+        if nm == "vdom":
+            final += _split_vdom_block(block)
+        else:
+            final.append((nm, block))
+    return final
+
+
+def _split_vdom_block(block: str) -> list[tuple[str, str]]:
+    lines = block.splitlines()
+    if len(lines) < 3 or not lines[1].strip().startswith("edit "):
+        return [("vdom", block)]
+    vdom = lines[1].strip()[5:].strip().strip('"')
+    inner = "\n".join(lines[2:-1])
+    subs = split_branches(inner)
+    if not subs:
+        # the VDOM-creation block (edit/next pairs, no sections)
+        return [("vdom", block)]
+    return [(f"{vdom} {nm}",
+             f"config vdom\nedit {vdom}\n{sub}\nend")
+            for nm, sub in subs]
 
 
 # finding messages use a few typographic characters; fold them to ASCII —

@@ -91,6 +91,111 @@ APP_TO_CAT = {
 TRANSPORT = {"ssl", "tls", "ipsec", "ike", "gre", "ipsec-esp", "tcp", "udp",
              "ip", "quic"}
 
+# Default destination ports for common PAN App-IDs, used to tighten
+# `service application-default` rules into real port services instead of
+# ALL. Curated from Palo Alto's public Applipedia listings (clean-room;
+# port facts, not their data files). Apps with dynamic/negotiated ports
+# (P2P, SIP media, Skype, evasive proxies) are deliberately absent — an
+# absent app keeps the rule at ALL with a warning, which is honest.
+# Format: app -> [(protocol, dst_ports)] with fwforge Service syntax
+# ("tcp"/"udp"/"tcp/udp"/"icmp", ports space-separated, ranges with '-').
+DEFAULT_PORTS: dict[str, list[tuple[str, str]]] = {
+    "web-browsing": [("tcp", "80")],
+    "ssl": [("tcp", "443")],
+    "quic": [("udp", "443")],
+    "http2": [("tcp", "80 443")],
+    "flash": [("tcp", "80 443 1935")],
+    "http-video": [("tcp", "80 443")],
+    "dns": [("tcp/udp", "53")],
+    "ntp": [("udp", "123")],
+    "dhcp": [("udp", "67 68")],
+    "snmp": [("udp", "161")],
+    "ldap": [("tcp", "389 636 3268 3269"), ("udp", "389")],
+    "kerberos": [("tcp", "88 464"), ("udp", "88 464")],
+    "radius": [("udp", "1812 1813 1645 1646")],
+    "syslog": [("udp", "514")],
+    "tftp": [("udp", "69")],
+    "icmp": [("icmp", "")],
+    "ping": [("icmp", "")],
+    "netbios-ns": [("udp", "137")],
+    "netbios-dg": [("udp", "138")],
+    "ssh": [("tcp", "22")],
+    "telnet": [("tcp", "23")],
+    "ms-rdp": [("tcp", "3389"), ("udp", "3389")],
+    "vnc": [("tcp", "5900-5906")],
+    "citrix": [("tcp", "1494 2598")],
+    "ica": [("tcp", "1494 2598")],
+    "teamviewer": [("tcp", "80 443 5938")],
+    "pcanywhere": [("tcp", "5631"), ("udp", "5632")],
+    "ftp": [("tcp", "21")],
+    "smtp": [("tcp", "25 587")],
+    "pop3": [("tcp", "110")],
+    "imap": [("tcp", "143")],
+    "gmail": [("tcp", "80 443")],
+    "outlook-web": [("tcp", "80 443")],
+    "yahoo-mail": [("tcp", "80 443")],
+    "facebook": [("tcp", "80 443")],
+    "twitter": [("tcp", "80 443")],
+    "instagram": [("tcp", "80 443")],
+    "linkedin": [("tcp", "80 443")],
+    "pinterest": [("tcp", "80 443")],
+    "snapchat": [("tcp", "80 443")],
+    "tiktok": [("tcp", "80 443")],
+    "reddit": [("tcp", "80 443")],
+    "youtube": [("tcp", "80 443")],
+    "netflix": [("tcp", "80 443")],
+    "vimeo": [("tcp", "80 443")],
+    "spotify": [("tcp", "80 443 4070")],
+    "twitch": [("tcp", "80 443")],
+    "rtsp": [("tcp", "554"), ("udp", "554")],
+    "h323": [("tcp", "1720")],
+    "mgcp": [("udp", "2427 2727")],
+    "zoom": [("tcp", "80 443 8801-8802"),
+             ("udp", "3478 3479 8801-8810")],
+    "ms-teams": [("tcp", "443"), ("udp", "3478-3481")],
+    "webex": [("tcp", "443 5004"), ("udp", "9000")],
+    "slack": [("tcp", "443")],
+    "gotomeeting": [("tcp", "443 8200")],
+    "whatsapp": [("tcp", "443 5222")],
+    "ms-office365": [("tcp", "80 443")],
+    "office365": [("tcp", "80 443")],
+    "dropbox": [("tcp", "80 443 17500"), ("udp", "17500")],
+    "google-drive": [("tcp", "80 443")],
+    "gdrive": [("tcp", "80 443")],
+    "onedrive": [("tcp", "80 443")],
+    "box": [("tcp", "80 443")],
+    "icloud": [("tcp", "80 443")],
+    "ms-ds-smb": [("tcp", "139 445")],
+    "smb": [("tcp", "139 445")],
+    "nfs": [("tcp", "111 2049"), ("udp", "111 2049")],
+    "github": [("tcp", "22 443")],
+    "amazon-aws": [("tcp", "443")],
+    "aws": [("tcp", "443")],
+    "azure": [("tcp", "443")],
+    "gcp": [("tcp", "443")],
+    "salesforce": [("tcp", "443")],
+    "windows-update": [("tcp", "80 443")],
+    "apple-update": [("tcp", "80 443")],
+    "ms-update": [("tcp", "80 443")],
+    "adobe-update": [("tcp", "80 443")],
+    "mysql": [("tcp", "3306")],
+    "mssql": [("tcp", "1433")],
+    "ms-sql": [("tcp", "1433")],
+    "oracle": [("tcp", "1521")],
+    "postgres": [("tcp", "5432")],
+    "http-proxy": [("tcp", "80 3128 8080")],
+    "google-base": [("tcp", "80 443")],
+    "apple-appstore": [("tcp", "80 443")],
+    "google-play": [("tcp", "80 443")],
+}
+
+
+def default_ports(app: str) -> list[tuple[str, str]] | None:
+    """Default destination ports for a PAN App-ID, or None when unknown
+    / dynamic. Exact name wins over the suffix-stripped form."""
+    return DEFAULT_PORTS.get(app.lower()) \
+        or DEFAULT_PORTS.get(_norm(app))
+
 
 def _norm(app: str) -> str:
     a = app.lower()

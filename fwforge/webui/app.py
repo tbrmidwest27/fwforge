@@ -22,6 +22,7 @@ from .. import __version__, pipeline
 from .. import schema as schema_mod
 from ..emit import fortimanager, package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
+from ..parsers.paloalto import PanoramaChoiceNeeded
 from ..transforms import portmap, tree_refs, zones
 from ..transforms import plan as plan_mod
 from ..transforms.plan import (MigrationPlan, PlanError, SdwanMember,
@@ -104,32 +105,58 @@ def _analyze(text: str, name: str) -> dict:
             d["policy_refs"] = refs.get(d["name"], 0)
         meta["iface_details"] = details
     elif vendor in CROSS_PARSERS:
-        cfg = CROSS_PARSERS[vendor](text, name)
-        meta["interfaces"] = [i.name for i in cfg.interfaces]
-        meta["hostname"] = cfg.hostname
-        meta["counts"] = {
-            "interfaces": len(cfg.interfaces),
-            "zones": len(cfg.zones),
-            "addresses": len(cfg.addresses),
-            "services": len(cfg.services),
-            "policies": len(cfg.policies),
-            "nat rules / vips": len(cfg.nats) + len(cfg.vips),
-            "routes": len(cfg.routes),
-        }
+        try:
+            cfg = CROSS_PARSERS[vendor](text, name)
+        except PanoramaChoiceNeeded as e:
+            meta["panorama"] = {"device_groups": e.device_groups,
+                                "templates": e.templates,
+                                "needs_choice": True}
+            return meta
+        pano = cfg.meta.get("panorama")
+        if pano:
+            meta["panorama"] = {**pano, "needs_choice": False}
+        scopes = cfg.meta.get("vsys_cfgs") or [(None, cfg)]
+        if len(scopes) > 1:
+            meta["vsys"] = [n for n, _ in scopes]
+        seen_if: list[str] = []
+        counts = {"interfaces": 0, "zones": 0, "addresses": 0,
+                  "services": 0, "policies": 0, "nat rules / vips": 0,
+                  "routes": 0}
         pols = []
-        for p in cfg.policies[:POLICY_CAP]:
-            pols.append({
-                "name": p.name,
-                "src": " ".join(p.src_zones) or "any",
-                "dst": " ".join(p.dst_zones) or "any",
-                "srcaddr": " ".join(p.src_addrs[:3]),
-                "dstaddr": " ".join(p.dst_addrs[:3]),
-                "service": " ".join(p.services[:3]),
-                "action": p.action,
-                "disabled": p.disabled,
-            })
+        truncated = 0
+        for vname, vcfg in scopes:
+            for i in vcfg.interfaces:
+                if i.name not in seen_if:
+                    seen_if.append(i.name)
+            counts["zones"] += len(vcfg.zones)
+            counts["addresses"] += len(vcfg.addresses)
+            counts["services"] += len(vcfg.services)
+            counts["policies"] += len(vcfg.policies)
+            counts["nat rules / vips"] += len(vcfg.nats) + len(vcfg.vips)
+            counts["routes"] += len(vcfg.routes)
+            for p in vcfg.policies:
+                if len(pols) >= POLICY_CAP:
+                    truncated += 1
+                    continue
+                entry = {
+                    "name": p.name,
+                    "src": " ".join(p.src_zones) or "any",
+                    "dst": " ".join(p.dst_zones) or "any",
+                    "srcaddr": " ".join(p.src_addrs[:3]),
+                    "dstaddr": " ".join(p.dst_addrs[:3]),
+                    "service": " ".join(p.services[:3]),
+                    "action": p.action,
+                    "disabled": p.disabled,
+                }
+                if vname is not None:
+                    entry["vsys"] = vname
+                pols.append(entry)
+        counts["interfaces"] = len(seen_if)
+        meta["interfaces"] = seen_if
+        meta["hostname"] = cfg.hostname
+        meta["counts"] = counts
         meta["policies"] = pols
-        meta["policies_truncated"] = max(0, len(cfg.policies) - POLICY_CAP)
+        meta["policies_truncated"] = truncated
     return meta
 
 
@@ -382,13 +409,26 @@ def create_app() -> Flask:
                                     request.form.getlist("map_dst")):
                     if src.strip() and dst.strip():
                         mapping[src.strip()] = dst.strip()
+                parser_opts = {
+                    k: v for k, v in {
+                        "device_group":
+                            request.form.get("pa_dg", "").strip(),
+                        "template":
+                            request.form.get("pa_template", "").strip(),
+                    }.items() if v}
                 result = pipeline.run_cross(
                     text, meta["vendor"], meta["name"], mapping,
                     target=target,
                     tuning=_tuning_from_form(request.form, meta),
-                    nat_mode=request.form.get("nat_mode", "policy"))
+                    nat_mode=request.form.get("nat_mode", "policy"),
+                    parser_opts=parser_opts or None)
         except PlanError as e:
             return redirect(url_for("job", jid=jid, error=str(e)))
+        except PanoramaChoiceNeeded as e:
+            return redirect(url_for(
+                "job", jid=jid,
+                error="pick a device-group (Panorama export): "
+                      + ", ".join(e.device_groups)))
 
         report = result.report
         if request.form.get("schema_enable"):

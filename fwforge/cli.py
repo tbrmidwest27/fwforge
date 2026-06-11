@@ -29,6 +29,7 @@ from . import schema as schema_mod
 from .emit import fortimanager, package
 from .parsers import CROSS_PARSERS, detect_vendor
 from .parsers import fortios_tree
+from .parsers.paloalto import PanoramaChoiceNeeded
 from .report import Report
 from .transforms import portmap
 from .transforms.plan import MigrationPlan, PlanError, load_plan, scaffold
@@ -166,10 +167,32 @@ def _tuning_from_args(args) -> TuningOptions:
 def _convert_cross(text: str, src_path: str, args, outdir: Path,
                    vendor: str) -> int:
     mapping = portmap.load_map(args.map) if args.map else {}
-    result = pipeline.run_cross(text, vendor, src_path, mapping,
-                                target=args.fortios,
-                                tuning=_tuning_from_args(args),
-                                nat_mode=getattr(args, "nat_mode", "policy"))
+    parser_opts: dict = {}
+    if vendor == "paloalto":
+        for attr, key in (("pa_vsys", "vsys"),
+                          ("pa_device_group", "device_group"),
+                          ("pa_template", "template")):
+            v = getattr(args, attr, None)
+            if v:
+                parser_opts[key] = v
+    try:
+        result = pipeline.run_cross(
+            text, vendor, src_path, mapping,
+            target=args.fortios,
+            tuning=_tuning_from_args(args),
+            nat_mode=getattr(args, "nat_mode", "policy"),
+            parser_opts=parser_opts or None)
+    except PanoramaChoiceNeeded as e:
+        print("this is a Panorama export — pick a device-group with "
+              "--pa-device-group:", file=sys.stderr)
+        for dg in e.device_groups:
+            print(f"  --pa-device-group {dg}", file=sys.stderr)
+        if e.templates:
+            print("optionally add network config from a template:",
+                  file=sys.stderr)
+            for t in e.templates:
+                print(f"  --pa-template {t}", file=sys.stderr)
+        return 2
     report, cfg = result.report, result.cfg
     _schema_check(args, result.out_text, report)
 
@@ -405,6 +428,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="also write a FortiManager JSON-RPC import bundle "
                         "(<name>.fmg.json) creating the objects + a policy "
                         "package in that ADOM (cross-vendor conversions)")
+    p.add_argument("--pa-vsys",
+                   help="Palo Alto multi-vsys: convert only this vsys "
+                        "(default: every vsys becomes a VDOM block)")
+    p.add_argument("--pa-device-group",
+                   help="Panorama export: which device-group to convert")
+    p.add_argument("--pa-template",
+                   help="Panorama export: template supplying network "
+                        "config (interfaces/zones) for the device-group")
     p.add_argument("--schema-check", metavar="HOST|FILE",
                    help="validate the output against the exact CLI schema "
                         "of a target build: a live FortiGate host[:port] "

@@ -216,6 +216,19 @@ def _line(node: dict) -> int:
     return node.get(LINE, 0) if isinstance(node, dict) else 0
 
 
+class PanoramaChoiceNeeded(ValueError):
+    """A Panorama export has several device-groups — the caller must
+    pick one (and optionally a template for network config)."""
+
+    def __init__(self, device_groups: list[str], templates: list[str]):
+        self.device_groups = device_groups
+        self.templates = templates
+        super().__init__(
+            "Panorama export: pick a device-group "
+            f"(available: {', '.join(device_groups)}; "
+            f"templates: {', '.join(templates) or 'none'})")
+
+
 class _Reporter:
     """Adapter so _vpn_common can append findings via a parser's note()."""
 
@@ -227,10 +240,21 @@ class _Reporter:
 
 
 class PaloParser:
-    def __init__(self, text: str, filename: str = ""):
+    def __init__(self, text: str, filename: str = "",
+                 vsys: str | None = None,
+                 device_group: str | None = None,
+                 template: str | None = None):
         self.filename = filename
         self.cfg = FirewallConfig(vendor="paloalto")
         self._findings: list[tuple[str, str, str, SourceRef | None]] = []
+        self._want_vsys = vsys
+        self._dg = device_group
+        self._tmpl = template
+        self._sibling_names: list[str] = []
+        self._import_ifcs: set[str] | None = None
+        self._import_vrs: set[str] | None = None
+        self._pre_rules: list = []
+        self._post_rules: list = []
         if text.lstrip().startswith("<"):
             tree = _tree_from_xml(text)
         else:
@@ -239,6 +263,8 @@ class PaloParser:
 
     def note(self, level: str, area: str, msg: str,
              ref: SourceRef | None = None):
+        if self._want_vsys:
+            msg = f"[vsys {self._want_vsys}] {msg}"
         self._findings.append((level, area, msg, ref))
 
     def ref(self, node, label: str) -> SourceRef:
@@ -246,34 +272,198 @@ class PaloParser:
 
     # -- scope resolution -----------------------------------------------
 
+    def device_groups(self) -> list[str]:
+        """Device-group names when this is a Panorama export."""
+        device = self._device_node()
+        return [n for n, _ in _entries(device.get("device-group"))]
+
+    def templates(self) -> list[str]:
+        device = self._device_node()
+        return [n for n, _ in _entries(device.get("template"))]
+
+    def _device_node(self) -> dict:
+        devices = self.tree.get("devices")
+        if isinstance(devices, dict):
+            for _name, node in _entries(devices):
+                return node
+        return self.tree
+
+    def _merge_scope(self, base: dict, over: dict) -> dict:
+        """Section-aware merge: entries of both sides survive within an
+        object section (over wins on a same-name entry); a plain
+        top-level update would drop e.g. every shared address the
+        moment the vsys/device-group defines one of its own."""
+        merged = {k: v for k, v in base.items() if k != LINE}
+        for k, v in over.items():
+            if k == LINE:
+                continue
+            if k in merged and isinstance(merged[k], dict) \
+                    and isinstance(v, dict):
+                inner = {kk: vv for kk, vv in merged[k].items()
+                         if kk != LINE}
+                inner.update({kk: vv for kk, vv in v.items()
+                              if kk != LINE})
+                merged[k] = inner
+            else:
+                merged[k] = v
+        return merged
+
+    def _rules_of(self, scope, *path) -> list:
+        node = scope
+        for part in path:
+            node = node.get(part) if isinstance(node, dict) else None
+            if node is None:
+                return []
+        return _entries(node)
+
     def scopes(self) -> tuple[dict, dict]:
-        """(device_scope, vsys_scope) for both formats."""
+        """(device_scope, vsys_scope) for both formats. Also resolves
+        Panorama device-group exports and pushed pre/post rulebases."""
         cfg = self.tree
-        device = cfg
+        device = self._device_node()
+        self._dev_key = ""
         devices = cfg.get("devices")
         if isinstance(devices, dict):
-            for name, node in _entries(devices):
-                device = node
+            for name, _node in _entries(devices):
+                self._dev_key = name
                 break
+        self._vsys_key = ""
+        shared = cfg.get("shared")
+        shared = shared if isinstance(shared, dict) else {}
+
+        # ---- Panorama export: a device-group plays the vsys role ----
+        dgs = device.get("device-group")
+        if isinstance(dgs, dict) and _entries(dgs):
+            return self._panorama_scopes(device, dgs, shared)
+
         vsys_scope = device
         vsys = device.get("vsys")
         if isinstance(vsys, dict):
             entries = _entries(vsys)
-            if entries:
+            if self._want_vsys is not None:
+                pick = next((e for e in entries
+                             if e[0] == self._want_vsys), None)
+                if pick is None:
+                    self.note("error", "vsys",
+                              f"vsys '{self._want_vsys}' not found")
+                    entries = []
+                else:
+                    vsys_scope = pick[1]
+                    self._vsys_key = pick[0]
+            elif entries:
                 vsys_scope = entries[0][1]
-                if len(entries) > 1:
+                self._vsys_key = entries[0][0]
+                self._sibling_names = [n for n, _ in entries[1:]]
+                if self._sibling_names:
                     self.note(
-                        "error", "vsys",
-                        f"multi-vsys config ({len(entries)} vsys): only "
-                        f"'{entries[0][0]}' converted — re-run per vsys or "
-                        "wait for VDOM-mapped conversion")
-        # shared objects (Panorama / shared scope) merge in at lower priority
-        shared = cfg.get("shared")
-        if isinstance(shared, dict):
-            merged = dict(shared)
-            merged.update({k: v for k, v in vsys_scope.items() if k != LINE})
-            vsys_scope = merged
+                        "info", "vsys",
+                        f"multi-vsys config ({len(entries)} vsys): each "
+                        "vsys converts into its own VDOM "
+                        f"({', '.join(n for n, _ in entries)})")
+        # interface / virtual-router imports scope device-level network
+        # to this vsys (only enforced when there are multiple vsys)
+        if self._vsys_key and (self._sibling_names or self._want_vsys):
+            imp = vsys_scope.get("import", {})
+            net = imp.get("network", {}) if isinstance(imp, dict) else {}
+            if isinstance(net, dict):
+                self._import_ifcs = set(_as_list(net.get("interface")))
+                self._import_vrs = set(_as_list(net.get("virtual-router")))
+
+        # Panorama-pushed config on a managed firewall: pre/post
+        # rulebases + pushed objects live under /config/panorama
+        pano = cfg.get("panorama")
+        if isinstance(pano, dict):
+            pscopes = [pano]
+            pvsys = pano.get("vsys")
+            if isinstance(pvsys, dict) and self._vsys_key:
+                node = pvsys.get(self._vsys_key)
+                if isinstance(node, dict):
+                    pscopes.append(node)
+            for ps in pscopes:
+                self._pre_rules += self._rules_of(
+                    ps, "pre-rulebase", "security", "rules")
+                self._post_rules += self._rules_of(
+                    ps, "post-rulebase", "security", "rules")
+                # pushed objects merge below local ones
+                shared = self._merge_scope(shared, {
+                    k: v for k, v in ps.items()
+                    if k in ("address", "address-group", "service",
+                             "service-group", "application",
+                             "application-group", "application-filter")})
+            if self._pre_rules or self._post_rules:
+                self.note(
+                    "info", "panorama",
+                    f"Panorama-pushed rulebases merged: "
+                    f"{len(self._pre_rules)} pre + local + "
+                    f"{len(self._post_rules)} post (PAN evaluation order)")
+
+        # shared objects (Panorama / shared scope) merge in at lower
+        # priority
+        if shared:
+            vsys_scope = self._merge_scope(shared, vsys_scope)
         return device, vsys_scope
+
+    def _panorama_scopes(self, device: dict, dgs: dict,
+                         shared: dict) -> tuple[dict, dict]:
+        """Panorama export: shared + one device-group form the object/
+        rule scope; an optional template supplies network config."""
+        names = [n for n, _ in _entries(dgs)]
+        if self._dg is None and len(names) == 1:
+            self._dg = names[0]
+        if self._dg is None or self._dg not in names:
+            raise PanoramaChoiceNeeded(names, self.templates())
+        dg = dgs[self._dg]
+        self._vsys_key = self._dg
+        self.cfg.meta["panorama"] = {
+            "device_group": self._dg, "device_groups": names,
+            "template": self._tmpl or "", "templates": self.templates()}
+        self.note("info", "panorama",
+                  f"Panorama export: converting device-group "
+                  f"'{self._dg}'" + (f" with template '{self._tmpl}'"
+                                     if self._tmpl else " (no template — "
+                                     "interfaces/zones come from "
+                                     "templates; pick one for network "
+                                     "config)"))
+        self._pre_rules = self._rules_of(
+            shared, "pre-rulebase", "security", "rules") + self._rules_of(
+            dg, "pre-rulebase", "security", "rules")
+        self._post_rules = self._rules_of(
+            dg, "post-rulebase", "security", "rules") + self._rules_of(
+            shared, "post-rulebase", "security", "rules")
+        parent = dg.get("parent-dg")
+        if isinstance(parent, str) and parent:
+            self.note("warn", "panorama",
+                      f"device-group '{self._dg}' inherits from "
+                      f"'{parent}' — parent device-group rules/objects "
+                      "are NOT merged yet; convert the parent separately")
+
+        scope = self._merge_scope(shared, dg)
+        net_device: dict = {}
+        if self._tmpl:
+            tmpl = device.get("template", {})
+            tnode = tmpl.get(self._tmpl) if isinstance(tmpl, dict) else None
+            if not isinstance(tnode, dict):
+                stacks = self.templates()
+                self.note("error", "panorama",
+                          f"template '{self._tmpl}' not found "
+                          f"(available: {', '.join(stacks) or 'none'})")
+            else:
+                tcfg = tnode.get("config", {})
+                tdevs = tcfg.get("devices", {}) if isinstance(tcfg, dict) \
+                    else {}
+                for _n, tdev in _entries(tdevs):
+                    net_device = tdev
+                    break
+                # template vsys carries zones (and vsys-ish settings)
+                tvsys = net_device.get("vsys")
+                if isinstance(tvsys, dict):
+                    for _n, tv in _entries(tvsys):
+                        if isinstance(tv, dict) and "zone" in tv \
+                                and "zone" not in scope:
+                            scope = self._merge_scope(
+                                {"zone": tv["zone"]}, scope)
+                        break
+        return net_device, scope
 
     # -- sections ---------------------------------------------------------
 
@@ -284,6 +474,8 @@ class PaloParser:
             self.cfg.hostname = str(
                 hostname.get("system", {}).get("hostname", "")
                 if isinstance(hostname.get("system"), dict) else "")
+        if not self.cfg.hostname and self._dg:
+            self.cfg.hostname = self._dg
 
         self.parse_interfaces(device.get("network", {}))
         self.parse_zones(vsys.get("zone"))
@@ -291,15 +483,25 @@ class PaloParser:
         self.parse_addr_groups(vsys.get("address-group"))
         self.parse_services(vsys.get("service"))
         self.parse_svc_groups(vsys.get("service-group"))
+        self.parse_applications(vsys)
         rulebase = vsys.get("rulebase", {})
+        local_rules: list = []
+        nat_rules = None
         if isinstance(rulebase, dict):
             sec = rulebase.get("security", {})
-            self.parse_rules(sec.get("rules") if isinstance(sec, dict) else None)
+            if isinstance(sec, dict):
+                local_rules = _entries(sec.get("rules"))
             nat = rulebase.get("nat", {})
-            self.parse_nat(nat.get("rules") if isinstance(nat, dict) else None)
+            nat_rules = nat.get("rules") if isinstance(nat, dict) else None
+        # PAN evaluation order: Panorama pre -> local -> Panorama post
+        self.parse_rules_entries(
+            self._pre_rules + local_rules + self._post_rules)
+        self.parse_nat(nat_rules)
         self.parse_routes(device.get("network", {}))
         self.parse_vpn(device.get("network", {}))
         self.report_unconverted_sections(device, vsys, rulebase)
+        if not self._want_vsys:
+            self.report_xml_coverage()
         self.cfg.meta["findings"] = self._findings
         return self.cfg
 
@@ -373,6 +575,9 @@ class PaloParser:
 
         for tname, t in tun_entries:
             ref = self.ref(t, f"ipsec tunnel {tname}")
+            tif = t.get("tunnel-interface", "")
+            if isinstance(tif, str) and tif and not self._imported(tif):
+                continue  # tunnel interface belongs to another vsys
             auto = t.get("auto-key", {})
             if not isinstance(auto, dict):
                 self.note("warn", "vpn",
@@ -459,6 +664,15 @@ class PaloParser:
                 p2_keylife=p2["life"],
                 comment=f"PAN tunnel {tname} (peer {peer})", source=ref)
 
+    def _imported(self, name: str) -> bool:
+        """Is this device-level interface visible to the current vsys?
+        (Always true when not in multi-vsys mode.)"""
+        if self._import_ifcs is None:
+            return True
+        imps = self._import_ifcs
+        return (name in imps or name.split(".")[0] in imps
+                or any(i.startswith(name + ".") for i in imps))
+
     def parse_interfaces(self, network):
         if not isinstance(network, dict):
             return
@@ -468,6 +682,8 @@ class PaloParser:
         for family in ("ethernet", "aggregate-ethernet"):
             fam = iface.get(family)
             for name, node in _entries(fam):
+                if not self._imported(name):
+                    continue
                 self._one_interface(name, node)
         # vlan/loopback/tunnel interfaces live in a <units> container
         # directly under the family node, and their entries carry <ip>
@@ -477,6 +693,8 @@ class PaloParser:
             if not isinstance(fam, dict):
                 continue
             for uname, unode in _entries(fam.get("units")):
+                if not self._imported(uname):
+                    continue
                 sub = Interface(name=uname,
                                 source=self.ref(unode, f"interface {uname}"))
                 if isinstance(unode, dict):
@@ -527,6 +745,8 @@ class PaloParser:
                           "target interface", ref)
             units = layer3.get("units")
             for uname, unode in _entries(units):
+                if not self._imported(uname):
+                    continue
                 sub = Interface(name=uname, parent=name,
                                 source=self.ref(unode, f"interface {uname}"))
                 tag = unode.get("tag")
@@ -671,6 +891,124 @@ class PaloParser:
             self.cfg.svc_groups.append(ServiceGroup(
                 name=name, members=members, source=ref))
 
+    def parse_applications(self, vsys: dict) -> None:
+        """Custom application objects / groups / filters. Custom apps
+        carry their own default ports in the file — exact data for
+        tightening `service application-default` rules."""
+        self._custom_apps: dict[str, list[tuple[str, str]] | None] = {}
+        self._app_groups: dict[str, list[str]] = {}
+        self._app_filters: set[str] = set()
+        for name, node in _entries(vsys.get("application")):
+            specs: list[tuple[str, str]] | None = []
+            default = node.get("default") if isinstance(node, dict) else None
+            if isinstance(default, dict):
+                if "ident-by-ip-protocol" in default:
+                    proto = str(default["ident-by-ip-protocol"])
+                    specs = [("ip", proto)] if proto.isdigit() else None
+                elif "ident-by-icmp-type" in default:
+                    specs = [("icmp", "")]
+                else:
+                    port = default.get("port")
+                    members = _as_list(port) if port is not None else []
+                    for m in members:
+                        proto, _, spec = m.partition("/")
+                        spec = spec.replace(",", " ").strip()
+                        if proto == "icmp":
+                            specs.append(("icmp", ""))
+                        elif proto in ("tcp", "udp") and spec \
+                                and "dynamic" not in spec:
+                            specs.append((proto, spec))
+                        else:
+                            specs = None  # dynamic/unknown -> not tightenable
+                            break
+                    else:
+                        if not members:
+                            specs = None
+            else:
+                specs = None
+            self._custom_apps[name] = specs if specs else None
+        for name, node in _entries(vsys.get("application-group")):
+            self._app_groups[name] = _as_list(
+                node.get("members") if isinstance(node, dict)
+                and "members" in node else node)
+        for name, _node in _entries(vsys.get("application-filter")):
+            self._app_filters.add(name)
+
+    def _app_port_specs(self, app: str,
+                        seen: set | None = None
+                        ) -> list[tuple[str, str]] | None:
+        """Default-port specs for one app: the file's own custom
+        definitions win, then groups expand, then the curated table."""
+        seen = seen or set()
+        if app in seen:
+            return None
+        seen.add(app)
+        if app in self._custom_apps:
+            return self._custom_apps[app]
+        if app in self._app_groups:
+            merged: list[tuple[str, str]] = []
+            for m in self._app_groups[app]:
+                specs = self._app_port_specs(m, seen)
+                if specs is None:
+                    return None
+                merged += specs
+            return merged or None
+        if app in self._app_filters:
+            return None  # criteria-based; membership needs the app DB
+        return pan_appid.default_ports(app)
+
+    def _appdefault_services(self, apps: list[str], rule: str,
+                             ref: SourceRef) -> list[str] | None:
+        """Synthesize tight services for a `service application-default`
+        rule. Returns service names, or None when any app's default
+        ports are unknown (caller falls back to ALL + warning)."""
+        if apps == ["any"] or not apps:
+            return None
+        by_proto: dict[str, set[str]] = {}
+        special: list[str] = []
+        unresolved: list[str] = []
+        for app in apps:
+            specs = self._app_port_specs(app)
+            if specs is None:
+                unresolved.append(app)
+                continue
+            for proto, ports in specs:
+                if proto == "icmp":
+                    special.append("ALL_ICMP")
+                elif proto == "ip":
+                    nm = f"proto_{ports}"
+                    if not any(s.name == nm for s in self.cfg.services):
+                        self.cfg.services.append(Service(
+                            name=nm, protocol="ip",
+                            proto_number=int(ports), source=ref))
+                    special.append(nm)
+                else:
+                    by_proto.setdefault(proto, set()).update(ports.split())
+        if unresolved:
+            self.note(
+                "warn", "policies",
+                f"rule '{rule}': service=application-default kept as ALL "
+                f"— no default-port data for: {', '.join(unresolved)} "
+                "(dynamic-port or unknown app); tighten manually", ref)
+            return None
+        out: list[str] = []
+        for proto in sorted(by_proto):
+            ports = " ".join(sorted(
+                by_proto[proto],
+                key=lambda p: int(p.split("-")[0])))
+            nm = f"appdef-{proto.replace('/', '')}-" \
+                 + ports.replace(" ", "_")
+            if not any(s.name == nm for s in self.cfg.services):
+                self.cfg.services.append(Service(
+                    name=nm, protocol=proto, dst_ports=ports,
+                    comment="from PAN application-default ports",
+                    source=ref))
+            out.append(nm)
+        for nm in special:
+            if nm not in out:
+                out.append(nm)
+        return out or None
+
     def _ensure_service(self, name: str, ref: SourceRef) -> None:
         if name in ("any", "application-default"):
             return
@@ -690,7 +1028,10 @@ class PaloParser:
                       ref)
 
     def parse_rules(self, rules):
-        for name, r in _entries(rules):
+        self.parse_rules_entries(_entries(rules))
+
+    def parse_rules_entries(self, entries: list):
+        for name, r in entries:
             ref = self.ref(r, f"security rule '{name}'")
             action = str(r.get("action", "allow"))
             services: list[str] = []
@@ -723,11 +1064,21 @@ class PaloParser:
                     "policy is emitted always-on; recreate a firewall "
                     "schedule and set it on the policy", ref)
             if app_default:
-                self.note(
-                    "warn", "policies",
-                    f"rule '{name}' uses service=application-default — "
-                    "ports depend on the App-ID database; converted as ALL, "
-                    "tighten manually", ref)
+                tightened = self._appdefault_services(apps, name, ref)
+                if tightened:
+                    services = tightened
+                    self.note(
+                        "info", "policies",
+                        f"rule '{name}': service=application-default "
+                        f"tightened to {', '.join(tightened)} from the "
+                        "apps' default ports (custom app definitions in "
+                        "the file win over the curated table)", ref)
+                elif apps == ["any"]:
+                    self.note(
+                        "warn", "policies",
+                        f"rule '{name}' uses service=application-default "
+                        "with application=any — converted as ALL, tighten "
+                        "manually", ref)
             if "profile-setting" in r:
                 self.note("info", "policies",
                           f"rule '{name}': security profiles not converted "
@@ -927,6 +1278,9 @@ class PaloParser:
                       "routes merged into one table (FortiOS VRFs in v2)")
         from ..model import Route
         for vrname, vr in vr_entries:
+            if self._import_vrs is not None \
+                    and vrname not in self._import_vrs:
+                continue  # virtual-router belongs to another vsys
             rt = vr.get("routing-table", {})
             ip = rt.get("ip", {}) if isinstance(rt, dict) else {}
             static = ip.get("static-route") if isinstance(ip, dict) else None
@@ -980,9 +1334,115 @@ class PaloParser:
                     continue
         return ""
 
+    # subtree paths the parse functions consume; everything outside these
+    # shows up in the coverage map
+    def _claims(self) -> set[tuple]:
+        dev = ("devices", self._dev_key) if self._dev_key else ()
+        claims: set[tuple] = set()
+        vsys_parts = ("zone", "address", "address-group", "service",
+                      "service-group", "application", "application-group",
+                      "application-filter", "import")
+        for part in vsys_parts:
+            claims.add(("shared", part))
+        if self._dg:
+            dg = dev + ("device-group", self._dg)
+            for part in vsys_parts:
+                claims.add(dg + (part,))
+            for rb in ("pre-rulebase", "post-rulebase"):
+                claims.add(dg + (rb, "security"))
+                claims.add(("shared", rb, "security"))
+            if self._tmpl:
+                claims.add(dev + ("template", self._tmpl))
+            return claims
+        for sub in ("interface", "virtual-router", "ike", "tunnel"):
+            claims.add(dev + ("network", sub))
+        claims.add(dev + ("deviceconfig", "system", "hostname"))
+        # every vsys is consumed — siblings convert into their own VDOMs
+        for vn in [self._vsys_key] + self._sibling_names:
+            if not vn:
+                continue
+            vs = dev + ("vsys", vn)
+            for part in vsys_parts:
+                claims.add(vs + (part,))
+            for rb in ("security", "nat"):
+                claims.add(vs + ("rulebase", rb))
+        # Panorama-pushed config on a managed firewall
+        for rb in ("pre-rulebase", "post-rulebase"):
+            claims.add(("panorama", rb, "security"))
+        claims.add(("panorama", "vsys"))
+        for part in vsys_parts:
+            claims.add(("panorama", part))
+        return claims
+
+    def _leaves(self, node) -> int:
+        if isinstance(node, dict):
+            n = sum(self._leaves(v) for k, v in node.items() if k != LINE)
+            return n or 1
+        if isinstance(node, list):
+            return len(node) or 1
+        return 1
+
+    def report_xml_coverage(self) -> None:
+        """Quantified nothing-dropped-silently: walk the WHOLE config
+        tree, count leaf values under subtrees the parser consumed vs
+        everything else, and name the unread subtrees."""
+        claims = self._claims()
+
+        def walk(path: tuple, node) -> tuple[int, list]:
+            if path in claims:
+                return self._leaves(node), []
+            if not isinstance(node, dict):
+                return 0, [(path, self._leaves(node))]
+            claimed = 0
+            unread: list = []
+            for k, v in node.items():
+                if k == LINE:
+                    continue
+                c, u = walk(path + (k,), v)
+                claimed += c
+                unread += u
+            if claimed == 0 and unread:
+                # nothing below was read: report the whole subtree once
+                return 0, [(path, sum(n for _, n in unread))]
+            return claimed, unread
+
+        claimed, unread = walk((), self.tree)
+        total = claimed + sum(n for _, n in unread)
+        if not total:
+            return
+        pct = 100.0 * claimed / total
+        unread.sort(key=lambda x: -x[1])
+        self.cfg.meta["xml_coverage"] = (
+            f"{pct:.0f}% of {total} config values read by the converter")
+        shown = 0
+        for path, n in unread:
+            if shown >= 15:
+                rest = len(unread) - shown
+                self.note("info", "coverage",
+                          f"... {rest} further unread subtree(s); see "
+                          "xml_coverage in the report meta")
+                break
+            label = "/".join(path) or "(root)"
+            self.note("info", "coverage",
+                      f"unread subtree: {label} ({n} value(s)) — nothing "
+                      "here was converted or flagged individually")
+            shown += 1
+        if unread:
+            self.note(
+                "warn", "coverage",
+                f"XML coverage: {pct:.0f}% — {total - claimed} of {total} "
+                f"config values sit in {len(unread)} subtree(s) the "
+                "converter does not read; review the unread list")
+        else:
+            self.note("info", "coverage",
+                      f"XML coverage: 100% — all {total} config values "
+                      "were inside subtrees the converter reads")
+
     def report_unconverted_sections(self, device, vsys, rulebase):
         consumed_vsys = {"zone", "address", "address-group", "service",
-                         "service-group", "rulebase", "import", LINE}
+                         "service-group", "rulebase", "import",
+                         "application", "application-group",
+                         "application-filter", LINE}
         for key, node in list(vsys.items()):
             if key in consumed_vsys or not isinstance(node, dict):
                 continue
@@ -1000,5 +1460,20 @@ class PaloParser:
                                    key))
 
 
-def parse(text: str, filename: str = "") -> FirewallConfig:
-    return PaloParser(text, filename).parse()
+def parse(text: str, filename: str = "",
+          vsys: str | None = None,
+          device_group: str | None = None,
+          template: str | None = None) -> FirewallConfig:
+    p = PaloParser(text, filename, vsys=vsys,
+                   device_group=device_group, template=template)
+    cfg = p.parse()
+    if p._sibling_names and vsys is None:
+        # multi-vsys: every additional vsys parses into its own
+        # FirewallConfig; the pipeline turns the set into VDOM blocks
+        cfgs = [(p._vsys_key, cfg)]
+        for n in p._sibling_names:
+            sib = PaloParser(text, filename, vsys=n,
+                             device_group=device_group, template=template)
+            cfgs.append((n, sib.parse()))
+        cfg.meta["vsys_cfgs"] = cfgs
+    return cfg

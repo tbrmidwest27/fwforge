@@ -256,6 +256,41 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.25 — shipped 2026-06-11 (PAN file-only feature wave: #2/#1/#8/#4)
+- [x] **Panorama awareness (#2)**: a managed firewall's export merges
+      Panorama-pushed pre-rulebase -> local -> post-rulebase in PAN
+      evaluation order (pushed objects merge below local); a Panorama
+      export itself converts per device-group — `--pa-device-group` /
+      GUI select (auto when only one), optional `--pa-template` pulls
+      network config + zones from a template; shared objects +
+      shared pre/post rulebases merge in; parent-DG inheritance
+      flagged (not yet traversed). Section-aware scope merge fixed a
+      latent bug where one local address object dropped ALL shared
+      addresses.
+- [x] **vsys -> VDOM (#1)**: every vsys converts (was: first only) into
+      its own FirewallConfig, scoped by the vsys' interface and
+      virtual-router imports (interfaces, subinterfaces, routes, IPsec
+      tunnels follow their vsys); the pipeline assembles one script
+      with a VDOM-creation block + per-vsys `config vdom` blocks, and
+      branch files split per VDOM section, each re-wrapped to paste
+      standalone (`vsys1-firewall-policy.txt` starts with
+      `config vdom / edit vsys1`). `--pa-vsys` converts one vsys only.
+      GUI: vsys badge + per-rule vsys column in Policy Selection.
+- [x] **XML coverage map (#8)**: the parser declares the subtrees it
+      consumes; everything else is counted and named — meta
+      `xml_coverage` ("N% of M config values read"), per-subtree
+      "unread" findings (capped), and a summary warning when below
+      100%. The quantified "nothing dropped silently".
+- [x] **App-ID default-ports upgrade (#4)**: custom `application`
+      objects' own port definitions (in the file) are parsed —
+      including application-groups (recursive) and ip-protocol/icmp
+      idents; `service application-default` rules now synthesize TIGHT
+      port services (union of every app's default ports) instead of
+      broadening to ALL, falling back loudly when any app is
+      dynamic/unknown. Curated public default-ports table for ~80
+      common predefined App-IDs (clean-room, Applipedia facts);
+      application-filters stay unresolvable by design.
+
 ### v0.24 — shipped 2026-06-11
 - [x] **Schema-certified output (opt-in)** — the first "FC structurally
       can't" feature: validate every emitted section and `set` attribute

@@ -85,10 +85,15 @@ def test_xml_rules():
     assert allow.services == ["WEB-ALL"]
 
     out = _policy(cfg, "Out Web")
-    assert out.services == ["ALL"]  # application-default
+    # application-default tightened from the apps' default ports
+    # (web-browsing tcp/80 + ssl tcp/443) instead of broadening to ALL
+    assert out.services == ["appdef-tcp-80_443"]
+    svc = next(s for s in cfg.services if s.name == "appdef-tcp-80_443")
+    assert svc.protocol == "tcp" and svc.dst_ports == "80 443"
     assert "PAN apps: web-browsing, ssl" in out.comment
     assert any("App-ID" in m for _, _, m, _ in findings(cfg))
-    assert any("application-default" in m for _, _, m, _ in findings(cfg))
+    assert any("application-default" in m and "tightened" in m
+               for _, _, m, _ in findings(cfg))
 
     neg = _policy(cfg, "Not Updates")
     assert neg.dst_negate is True
@@ -170,7 +175,7 @@ def test_e2e_cli_paloalto(tmp_path):
     # interface PAT pair (trust -> untrust) gets nat enable
     out = next(b for b in blocks if 'set name "Out_Web"' in b)
     assert "set nat enable" in out
-    assert 'set service "ALL"' in out
+    assert 'set service "appdef-tcp-80_443"' in out  # tightened app-default
     # multi-range + source-port emission
     assert "set tcp-portrange 80 8000-8080" in conf
     assert "set udp-portrange 514:1024-65535" in conf
@@ -181,3 +186,20 @@ def test_e2e_cli_paloalto(tmp_path):
     # routes mapped + inferred
     assert 'set device "wan1"' in conf
     assert 'set device "internal1"' in conf
+
+
+def test_xml_coverage_map():
+    text = (FIX / "pa_sample.xml").read_text(encoding="utf-8")
+    cfg = paloalto.parse(text, "pa_sample.xml")
+    cov = cfg.meta.get("xml_coverage", "")
+    assert "% of" in cov and "read by the converter" in cov
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("XML coverage:" in m for m in msgs)
+    # an unhandled subtree is named with its size
+    text2 = text.replace(
+        "<vsys>",
+        "<botnet><configuration><http><enabled>yes</enabled></http>"
+        "</configuration></botnet><vsys>", 1)
+    cfg2 = paloalto.parse(text2, "pa2.xml")
+    msgs2 = [m for _, _, m, _ in findings(cfg2)]
+    assert any("unread subtree:" in m and "botnet" in m for m in msgs2)

@@ -6,6 +6,8 @@
 {% block tbright %}
   <span class="badge b-vendor">{{ meta.vendor_label or meta.vendor }} {{ meta.confidence }}</span>
   {% if meta.multi_vdom %}<span class="badge b-vdom">multi-VDOM</span>{% endif %}
+  {% if meta.get("vsys") %}<span class="badge b-vdom">{{ meta.vsys|length }} vsys &rarr; VDOMs</span>{% endif %}
+  {% if meta.get("panorama") %}<span class="badge b-info">Panorama</span>{% endif %}
   {% if meta.source_os %}<span class="badge b-info">FortiOS {{ meta.source_os }}</span>{% endif %}
 {% endblock %}
 
@@ -29,7 +31,40 @@
       {% if meta.hostname %}<tr><th>hostname</th><td>{{ meta.hostname }}</td></tr>{% endif %}
       {% if meta.source_os %}<tr><th>FortiOS</th><td>{{ meta.source_os }}</td></tr>{% endif %}
       {% if meta.multi_vdom %}<tr><th>VDOMs</th><td>{{ meta.scopes|join(", ") }}</td></tr>{% endif %}
+      {% if meta.get("vsys") %}<tr><th>vsys</th><td>{{ meta.vsys|join(", ") }}
+        <span class="muted">each becomes a VDOM</span></td></tr>{% endif %}
     </table>
+    {% if meta.get("panorama") %}
+    {% set pano = meta.panorama %}
+    <fieldset style="margin-top:.7rem">
+      <legend>Panorama export</legend>
+      {% if pano.needs_choice %}
+      <p class="grid-note">This is a Panorama config — pick the
+        device-group to convert (shared + pre/post rulebases merge in
+        PAN evaluation order).</p>
+      {% else %}
+      <p class="grid-note">Device-group
+        <code>{{ pano.device_group }}</code> selected; change it or add a
+        template for network config (interfaces/zones).</p>
+      {% endif %}
+      <div class="builder-row">
+        <label>device-group<br>
+          <select name="pa_dg">
+            {% if pano.needs_choice %}<option value="">— choose —</option>{% endif %}
+            {% for dg in pano.device_groups %}
+            <option value="{{ dg }}" {% if dg == pano.get("device_group") %}selected{% endif %}>{{ dg }}</option>
+            {% endfor %}
+          </select></label>
+        <label>template (network config)<br>
+          <select name="pa_template">
+            <option value="">— none —</option>
+            {% for t in pano.templates %}
+            <option value="{{ t }}" {% if t == pano.get("template") %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+          </select></label>
+      </div>
+    </fieldset>
+    {% endif %}
     {% if meta.counts %}
     <div class="kpis" style="margin-top:.8rem">
       {% for k, v in meta.counts.items() %}
@@ -212,13 +247,14 @@
     <span class="muted" id="polcount"></span>
   </div>
   <table id="poltable">
-    <tr><th></th><th>rule</th><th>from</th><th>to</th><th>source</th>
+    <tr><th></th><th>rule</th>{% if meta.get("vsys") %}<th>vsys</th>{% endif %}<th>from</th><th>to</th><th>source</th>
         <th>destination</th><th>service</th><th>action</th></tr>
     {% for p in meta.policies %}
-    <tr data-hay="{{ (p.name ~ ' ' ~ p.src ~ ' ' ~ p.dst ~ ' ' ~ p.srcaddr ~ ' ' ~ p.dstaddr ~ ' ' ~ p.service)|lower }}">
+    <tr data-hay="{{ (p.name ~ ' ' ~ p.get('vsys', '') ~ ' ' ~ p.src ~ ' ' ~ p.dst ~ ' ' ~ p.srcaddr ~ ' ' ~ p.dstaddr ~ ' ' ~ p.service)|lower }}">
       <td><input type="checkbox" name="pol_keep" value="{{ p.name }}" checked></td>
       <td><strong>{{ p.name }}</strong>
         {% if p.disabled %}<span class="badge b-info">disabled</span>{% endif %}</td>
+      {% if meta.get("vsys") %}<td><span class="badge b-vdom">{{ p.get("vsys", "") }}</span></td>{% endif %}
       <td>{{ p.src }}</td><td>{{ p.dst }}</td>
       <td class="muted">{{ p.srcaddr }}</td>
       <td class="muted">{{ p.dstaddr }}</td>
