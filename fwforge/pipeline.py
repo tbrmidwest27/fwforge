@@ -38,7 +38,8 @@ class ConversionResult:
 
 def run_cross(text: str, vendor: str, src_name: str,
               mapping: dict[str, str], target: str = "7.4",
-              tuning: TuningOptions | None = None) -> ConversionResult:
+              tuning: TuningOptions | None = None,
+              nat_mode: str = "policy") -> ConversionResult:
     report = Report()
     report.meta = {
         "tool": f"fwforge {__version__}",
@@ -59,7 +60,10 @@ def run_cross(text: str, vendor: str, src_name: str,
         report.meta["tuning"] = ", ".join(
             f"{k}:{v}" for k, v in stats.items() if v)
     optimize.analyze(cfg, report)
-    out_text = fortios_emit.emit(cfg, report, target=target)
+    if nat_mode == "central":
+        report.meta["nat_mode"] = "central NAT"
+    out_text = fortios_emit.emit(cfg, report, target=target,
+                                 nat_mode=nat_mode)
 
     result = ConversionResult(
         mode="cross", vendor=vendor, out_text=out_text, report=report,

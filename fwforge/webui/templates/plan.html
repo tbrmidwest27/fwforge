@@ -87,6 +87,13 @@
     {% else %}
     <p class="grid-note">Cross-vendor output is a FortiConverter-style
       script package: <code>config-all.txt</code> plus per-branch files.</p>
+    <div class="builder-row">
+      <label>NAT mode<br>
+        <select name="nat_mode">
+          <option value="policy" selected>policy NAT (per-policy + VIPs)</option>
+          <option value="central">central NAT (central-snat-map)</option>
+        </select></label>
+    </div>
     <div class="builder-row" style="align-items:center">
       <label>
         <input type="checkbox" name="fmg_enable" value="1">

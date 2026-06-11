@@ -114,7 +114,8 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
     mapping = portmap.load_map(args.map) if args.map else {}
     result = pipeline.run_cross(text, vendor, src_path, mapping,
                                 target=args.fortios,
-                                tuning=_tuning_from_args(args))
+                                tuning=_tuning_from_args(args),
+                                nat_mode=getattr(args, "nat_mode", "policy"))
     report, cfg = result.report, result.cfg
 
     stem = Path(src_path).stem
@@ -276,7 +277,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("config")
     p.add_argument("-o", "--outdir", default="out")
     p.add_argument("--vendor", default="auto",
-                   choices=["auto", "cisco-asa", "paloalto", "fortios"])
+                   choices=["auto", "cisco-asa", "paloalto", "pfsense",
+                            "fortios"])
     p.add_argument("--fortios", default="7.4",
                    help="target FortiOS version (default 7.4)")
     p.add_argument("--source-os",
@@ -319,6 +321,12 @@ def main(argv: list[str] | None = None) -> int:
                         "(default: a CHANGEME placeholder)")
     p.add_argument("--mode", default="auto",
                    choices=["auto", "cross", "migrate"])
+    p.add_argument("--nat-mode", default="policy",
+                   choices=["policy", "central"],
+                   help="cross-vendor NAT emission: 'policy' = per-policy "
+                        "nat enable + VIPs (default); 'central' = "
+                        "central-nat enable + central-snat-map rules, "
+                        "VIPs as central DNAT")
     p.add_argument("--fmg", metavar="ADOM[/PACKAGE]",
                    help="also write a FortiManager JSON-RPC import bundle "
                         "(<name>.fmg.json) creating the objects + a policy "

@@ -35,7 +35,7 @@ PREVIEW_CAP = 500
 POLICY_CAP = 800
 
 VENDOR_LABELS = {"cisco-asa": "Cisco ASA", "paloalto": "Palo Alto",
-                 "fortios": "FortiOS"}
+                 "pfsense": "pfSense", "fortios": "FortiOS"}
 
 
 def _save_job(jid: str) -> None:
@@ -326,7 +326,8 @@ def create_app() -> Flask:
                 result = pipeline.run_cross(
                     text, meta["vendor"], meta["name"], mapping,
                     target=target,
-                    tuning=_tuning_from_form(request.form, meta))
+                    tuning=_tuning_from_form(request.form, meta),
+                    nat_mode=request.form.get("nat_mode", "policy"))
         except PlanError as e:
             return redirect(url_for("job", jid=jid, error=str(e)))
 

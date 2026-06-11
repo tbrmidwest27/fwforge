@@ -77,10 +77,12 @@ def _intf(cfg: FirewallConfig, zone: str) -> str:
 
 
 class Emitter:
-    def __init__(self, cfg: FirewallConfig, report, target: str = "7.4"):
+    def __init__(self, cfg: FirewallConfig, report, target: str = "7.4",
+                 nat_mode: str = "policy"):
         self.cfg = cfg
         self.report = report
         self.target = target
+        self.nat_mode = nat_mode  # "policy" | "central"
         self.out: list[str] = []
 
     def line(self, s: str = ""):
@@ -94,6 +96,11 @@ class Emitter:
         self.line(f"# source hostname: {cfg.hostname or '(unknown)'}"
                   f" | target: FortiOS {self.target}")
         self.line("# review the companion report before applying")
+        if self.nat_mode == "central":
+            self.line()
+            self.line("config system settings")
+            self.line("    set central-nat enable")
+            self.line("end")
         self.zones()
         self.addresses()
         self.addr_groups()
@@ -101,9 +108,37 @@ class Emitter:
         self.svc_groups()
         self.vpn()
         self.vips()
+        if self.nat_mode == "central":
+            self.central_snat()
         self.routes()
         self.policies()
         return "\n".join(self.out) + "\n"
+
+    def central_snat(self):
+        rules = [n for n in self.cfg.nats if n.kind == "dynamic-interface"]
+        if not rules:
+            return
+        addr_names = {a.name for a in self.cfg.addresses} \
+            | {g.name for g in self.cfg.addr_groups}
+        self.line()
+        self.line("config firewall central-snat-map")
+        for i, n in enumerate(rules, start=1):
+            src = "any" if n.real_ifc == "*" else _intf(self.cfg, n.real_ifc)
+            self.line(f"    edit {i}")
+            self.line(f"        set srcintf {_q(src)}")
+            self.line(f"        set dstintf "
+                      f"{_q(_intf(self.cfg, n.mapped_ifc))}")
+            orig = n.real_obj if n.real_obj in addr_names else "all"
+            self.line(f"        set orig-addr {_q(orig)}")
+            self.line('        set dst-addr "all"')
+            self.line("        set nat enable")
+            self.line("    next")
+        self.line("end")
+        self.report.add(
+            "info", "nat",
+            f"central NAT: {len(rules)} central-snat-map rule(s) generated "
+            "from the source's NAT intent; firewall policies carry no "
+            "per-policy NAT")
 
     def zones(self):
         emittable = [z for z in self.cfg.zones if z.members]
@@ -305,13 +340,20 @@ class Emitter:
                     "not emitted, convert manually", v.source)
         if not emittable:
             return
-        self.report.add(
-            "info", "nat",
-            f"{len(emittable)} VIP(s) created from static NAT. FortiOS "
-            "matches inbound DNAT traffic on the VIP object — review "
-            "policies whose dstaddr is the VIP's internal host and decide "
-            "whether they should reference the VIP instead.",
-        )
+        if self.nat_mode == "central":
+            self.report.add(
+                "info", "nat",
+                f"{len(emittable)} VIP(s) created. In central NAT mode "
+                "they act as the central DNAT table — policies referencing "
+                "the internal hosts (as emitted) are correct.")
+        else:
+            self.report.add(
+                "info", "nat",
+                f"{len(emittable)} VIP(s) created from static NAT. FortiOS "
+                "matches inbound DNAT traffic on the VIP object — review "
+                "policies whose dstaddr is the VIP's internal host and "
+                "decide whether they should reference the VIP instead.",
+            )
         self.line()
         self.line("config firewall vip")
         for v in emittable:
@@ -358,9 +400,11 @@ class Emitter:
     def policies(self):
         if not self.cfg.policies:
             return
-        # apply interface-PAT NAT intents
-        nat_pairs = {(n.real_ifc, n.mapped_ifc) for n in self.cfg.nats
-                     if n.kind == "dynamic-interface"}
+        # apply interface-PAT NAT intents (policy NAT mode only; central
+        # mode carries NAT in central-snat-map instead)
+        nat_pairs = set() if self.nat_mode == "central" else {
+            (n.real_ifc, n.mapped_ifc) for n in self.cfg.nats
+            if n.kind == "dynamic-interface"}
         applied_nat = 0
         self.line()
         self.line("config firewall policy")
@@ -390,7 +434,7 @@ class Emitter:
             self.line("        set logtraffic "
                       + ("all" if p.log else "disable"))
             nat_hit = any(
-                (sz, dz) in nat_pairs
+                (sz, dz) in nat_pairs or ("*", dz) in nat_pairs
                 for sz in (p.src_zones or [])
                 for dz in (p.dst_zones or [])
             )
@@ -416,6 +460,7 @@ class Emitter:
             )
 
 
-def emit(cfg: FirewallConfig, report, target: str = "7.4") -> str:
+def emit(cfg: FirewallConfig, report, target: str = "7.4",
+         nat_mode: str = "policy") -> str:
     map_builtin_services(cfg, report)
-    return Emitter(cfg, report, target).emit()
+    return Emitter(cfg, report, target, nat_mode).emit()

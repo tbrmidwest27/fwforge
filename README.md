@@ -258,8 +258,14 @@ wins — reconcile"). The leftover audit still flags what needs a human
 |---|---|
 | Cisco ASA | interfaces, name aliases, network/service objects, object-groups (incl. nested + protocol groups), extended ACLs → policies, access-group bindings, static routes, object NAT (static → VIP, dynamic → interface PAT), route-based `dstintf` inference, **site-to-site VPN**: crypto maps + tunnel-groups → route-based phase1/phase2-interface (IKEv1+IKEv2 policies → proposals, transform-sets/ipsec-proposals, PFS preserved — including ASA's off-by-default vs FortiOS's on-by-default), plus the ramifications: tunnel routes, bidirectional VPN policies with route-inferred LAN interfaces, masked-PSK detection. Dial-up/dynamic maps and cert auth are flagged, not converted |
 | Palo Alto (XML **and** `display set` formats) | interfaces (incl. L3 subinterfaces), zones → real FortiOS zones (`intrazone allow` to preserve PAN's default behavior, flagged), addresses/groups, services/groups (comma port lists, source ports, predefined service-http/https), security rules incl. negate-source/destination, NAT (interface PAT, bi-directional static + destination translation → VIPs with port-forward), static routes (egress inferred when omitted). **App-ID rules convert on their service match and are loudly flagged** — FortiOS application control must be recreated as profiles. Multi-vsys: first vsys, rest flagged. |
+| pfSense (config.xml) | interfaces (incl. VLANs, logical wan/lan/optN names), aliases → addresses/groups/services (multi-entry, nested, port aliases with colon ranges), per-interface filter rules → policies (`lan net`/`wanip` macros, `<not/>` → negate, reject/block, log/disabled), gateways + static routes (incl. `defaultgw4`), port forwards & 1:1 NAT → VIPs, outbound automatic/hybrid → NAT on WAN-egress policies. Floating rules, rule-level policy routing, manual outbound NAT, IPv6, OpenVPN (no FortiOS equivalent), and IPsec are flagged |
 | FortiOS | full-config lossless tree migration with interface mapping, zone/SD-WAN refactors, multi-VDOM |
-| not yet | ASA twice-NAT (flagged, with a VPN-exemption hint), PAN IPsec, Check Point / Juniper parsers |
+| not yet | ASA twice-NAT (flagged, with a VPN-exemption hint), PAN/pfSense IPsec, Check Point / Juniper parsers |
+
+Cross-vendor conversions choose their **NAT mode**: `--nat-mode policy`
+(default — per-policy `nat enable` + VIPs) or `--nat-mode central`
+(`set central-nat enable` + generated `central-snat-map` rules, VIPs as
+central DNAT, policies free of per-policy NAT). Also a select in the GUI.
 
 Built-in FortiOS services are reused only on **exact** semantic match:
 `tcp/443` becomes `HTTPS`, but `udp/53` is *not* mapped to built-in `DNS`

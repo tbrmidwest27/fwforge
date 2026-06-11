@@ -244,6 +244,18 @@ A maintained open converter has no real competition.
       + ADOM/package fields in the wizard, download on results. Routes
       and VPN tunnels (device-level) flagged as staying in the CLI script.
 
+### v0.17 — shipped 2026-06-11
+- [x] **pfSense parser** (config.xml, hardened expat): logical
+      interface names + VLANs, typed aliases (host/network/port, nested,
+      colon ranges), per-interface inbound rules with `lan net`/`wanip`
+      macros and `<not/>` negation, gateways/defaultgw4/static routes,
+      port forwards + 1:1 → VIPs, outbound automatic → wildcard
+      interface-PAT. Floating/PBR/manual-NAT/IPv6/OpenVPN/IPsec flagged.
+- [x] **NAT mode option** (FortiConverter NAT-merge parity+): cross-vendor
+      `--nat-mode policy|central` — central emits `set central-nat
+      enable` + generated `central-snat-map` rules; VIPs become central
+      DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
+
 ## 🏁 MISSION STATUS (2026-06-11)
 
 **The FortiConverter parity matrix is complete.** Every non-parser
