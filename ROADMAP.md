@@ -256,6 +256,14 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.21.2 — shipped 2026-06-11
+- [x] **Old jobs heal on open**: conversion projects saved before the
+      informed pickers existed carry no `iface_details` in job.json, so
+      the picker columns rendered empty. Opening such a job now
+      re-analyzes it from the stored source (identity and prior results
+      kept) and persists the upgraded meta. Verified against the real
+      601F project (96 interfaces, IPs/aliases/SD-WAN flags restored).
+
 ### v0.21.1 — shipped 2026-06-11 (bug scrub)
 Five parallel review agents over the whole codebase (~35 verified
 findings), all fixed same day; 162 tests (11 new regression tests).

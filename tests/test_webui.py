@@ -323,3 +323,23 @@ def test_untouched_sdwan_row_does_not_block_convert(client):
     assert "plan error" not in page
     conf = client.get(f"/job/{jid}/dl/conf").data.decode()
     assert "config system sdwan" not in conf
+
+
+def test_old_job_without_iface_details_heals_on_open(client):
+    import json as _json
+    jid = _load(client, "fortios_refactor.conf")
+    jdir = webui_app.JOBS_DIR / jid
+    # turn it into a pre-v0.21 job: no iface_details, old source name
+    meta = _json.loads((jdir / "job.json").read_text(encoding="utf-8"))
+    meta.pop("iface_details", None)
+    (jdir / "job.json").write_text(_json.dumps(meta), encoding="utf-8")
+    (jdir / "_source.conf").rename(jdir / "source.conf")
+    webui_app.JOBS[jid].pop("iface_details", None)
+
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "10.10.0.1/16" in page                 # details re-derived
+    det = {d["name"]: d for d in webui_app.JOBS[jid]["iface_details"]}
+    assert det["port1"]["zone"] == "legacy-zone"
+    # and the healed meta is persisted for the next restart
+    saved = _json.loads((jdir / "job.json").read_text(encoding="utf-8"))
+    assert saved["iface_details"]

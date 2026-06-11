@@ -309,6 +309,21 @@ def create_app() -> Flask:
     @app.get("/job/<jid>")
     def job(jid):
         meta = _job(jid)
+        # jobs analyzed before the informed pickers existed have no
+        # iface_details in job.json — re-analyze them from the stored
+        # source once, keeping their identity and any conversion result
+        if meta.get("vendor") == "fortios" \
+                and not meta.get("iface_details"):
+            src = _source_path(JOBS_DIR / jid)
+            if src.is_file():
+                fresh = _analyze(
+                    src.read_text(encoding="utf-8", errors="replace"),
+                    meta.get("name", src.name))
+                fresh["created"] = meta.get("created", fresh["created"])
+                if "result" in meta:
+                    fresh["result"] = meta["result"]
+                JOBS[jid] = meta = fresh
+                _save_job(jid)
         default_target = (meta["source_os"]
                           if meta["source_os"] in FORTIOS_TARGETS else "7.4")
         det = {d["name"]: d for d in meta.get("iface_details", [])}
