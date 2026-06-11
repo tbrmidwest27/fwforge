@@ -256,6 +256,23 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.23 — shipped 2026-06-11
+- [x] **Patch-level (x.y.z) version handling** (per Adam, "what about
+      7.6.x"): versions carry the patch component end to end — the
+      header's full x.y.z is parsed (and preferred when a train-only
+      source override matches its train), `--fortios` / the wizard
+      accept `7.6.3` (the target select became an input with train
+      suggestions), and the rule table supports patch-scoped `since`
+      versions like (7,6,3). Semantics: a patch-less target means "this
+      train" and compares EQUAL within it (target 7.6 for a 7.6.6
+      source is not a downgrade); across trains it counts as .0, so
+      patch rules only fire on provable crossings. Within-train
+      downgrades (7.6.6 -> 7.6.1) now run the scan — closing the
+      previously silent case — and always carry the config-error-log
+      caveat. fortios_versions meta shows full patch labels for
+      within-train moves, train labels across trains. No patch-level
+      rules curated yet; the mechanics are ready as they turn up.
+
 ### v0.22 — shipped 2026-06-11
 - [x] **Downgrade version scan** (per Adam): the version-delta scan now
       runs in BOTH directions. target < source applies the rule table

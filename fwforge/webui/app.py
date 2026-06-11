@@ -89,7 +89,7 @@ def _analyze(text: str, name: str) -> dict:
                           if n is not None]
         src = versiondelta.source_version_from_header(tree)
         if src:
-            meta["source_os"] = f"{src[0]}.{src[1]}"
+            meta["source_os"] = versiondelta.vlabel(src)  # full x.y.z
         meta["inventory"] = fortios_tree.section_inventory(tree)
         # per-interface facts for the zone / SD-WAN member pickers
         zoned = zones.existing_zone_members(tree)
@@ -326,8 +326,9 @@ def create_app() -> Flask:
                     fresh["result"] = meta["result"]
                 JOBS[jid] = meta = fresh
                 _save_job(jid)
-        default_target = (meta["source_os"]
-                          if meta["source_os"] in FORTIOS_TARGETS else "7.4")
+        src_train = ".".join(meta["source_os"].split(".")[:2])
+        default_target = (src_train if src_train in FORTIOS_TARGETS
+                          else "7.4")
         det = {d["name"]: d for d in meta.get("iface_details", [])}
         return render_template(
             "plan.html", jid=jid, meta=meta, targets=FORTIOS_TARGETS,

@@ -144,22 +144,37 @@ RULES: list[DeltaRule] = [
 ]
 
 
-def parse_version(text: str) -> tuple[int, int] | None:
-    m = re.match(r"^\s*v?(\d+)\.(\d+)", str(text))
+def parse_version(text: str) -> tuple | None:
+    """'7.6' -> (7, 6); '7.6.3' / 'v7.6.3' -> (7, 6, 3). A missing patch
+    component means 'the train, patch unspecified' — scan() treats that
+    as equal to any patch of the same train."""
+    m = re.match(r"^\s*v?(\d+)\.(\d+)(?:\.(\d+))?", str(text))
     if not m:
         return None
-    return int(m.group(1)), int(m.group(2))
+    if m.group(3) is None:
+        return int(m.group(1)), int(m.group(2))
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
 
 
-def source_version_from_header(tree: CTree) -> tuple[int, int] | None:
-    """Read the source FortiOS version from #config-version=PLAT-X.Y.Z-…"""
+def source_version_from_header(tree: CTree) -> tuple | None:
+    """Read the source FortiOS version from #config-version=PLAT-X.Y.Z-…
+    Backup headers always carry the patch, so this returns a 3-tuple."""
     for child in tree.children:
         if isinstance(child, CommentLine) \
                 and child.text.startswith("#config-version="):
-            m = re.search(r"-(\d+)\.(\d+)\.\d+-", child.text)
+            m = re.search(r"-(\d+)\.(\d+)\.(\d+)-", child.text)
             if m:
-                return int(m.group(1)), int(m.group(2))
+                return (int(m.group(1)), int(m.group(2)),
+                        int(m.group(3)))
     return None
+
+
+def vlabel(v: tuple) -> str:
+    return ".".join(str(x) for x in v)
+
+
+def _pad(v: tuple) -> tuple[int, int, int]:
+    return (v[0], v[1], v[2] if len(v) > 2 else 0)
 
 
 def _edit_label(edit: EditNode) -> str:
@@ -174,22 +189,34 @@ def _section_entry_count(node: ConfigNode) -> tuple[int, list[str]]:
     return (sets, []) if sets else (0, [])
 
 
-def scan(tree: CTree, source: tuple[int, int], target: tuple[int, int],
-         report) -> dict:
+def scan(tree: CTree, source: tuple, target: tuple, report) -> dict:
     """Apply every rule whose change version lies between source and
-    target — in either direction. Auto-fixes renames in place (forward
-    or reverted). Returns counters."""
-    stats = {"artifacts": 0, "auto_fixed": 0, "rules_hit": 0}
-    if target == source:
+    target — in either direction, at patch granularity when both sides
+    carry one. Auto-fixes renames in place (forward or reverted).
+    Returns counters; stats['direction'] is 'up' / 'down' / 'none'.
+
+    A patch-less version means 'this train, patch unspecified': within
+    the same train it compares equal (picking target '7.6' for a 7.6.6
+    source is not a downgrade), across trains it counts as .0 — so
+    patch-scoped rules only fire when the crossing is provable."""
+    stats = {"artifacts": 0, "auto_fixed": 0, "rules_hit": 0,
+             "direction": "none"}
+    if source[:2] == target[:2] and (len(source) < 3 or len(target) < 3):
         return stats
-    if target < source:
-        return _scan_down(tree, source, target, report, stats)
-    return _scan_up(tree, source, target, report, stats)
+    s, t = _pad(source), _pad(target)
+    if s == t:
+        return stats
+    labels = (vlabel(source), vlabel(target))
+    if t < s:
+        stats["direction"] = "down"
+        return _scan_down(tree, s, t, report, stats, labels)
+    stats["direction"] = "up"
+    return _scan_up(tree, s, t, report, stats)
 
 
-def _scan_up(tree: CTree, source: tuple[int, int],
-             target: tuple[int, int], report, stats: dict) -> dict:
-    active = [r for r in RULES if source < r.since <= target]
+def _scan_up(tree: CTree, source: tuple, target: tuple, report,
+             stats: dict) -> dict:
+    active = [r for r in RULES if source < _pad(r.since) <= target]
 
     for rule in active:
         hits = 0
@@ -260,17 +287,17 @@ def _scan_up(tree: CTree, source: tuple[int, int],
                 where = f" (x{hits})"
             report.add(
                 rule.level, "upgrade",
-                f"[{rule.since[0]}.{rule.since[1]}] {rule.message}{where}")
+                f"[{vlabel(rule.since)}] {rule.message}{where}")
     return stats
 
 
-def _scan_down(tree: CTree, source: tuple[int, int],
-               target: tuple[int, int], report, stats: dict) -> dict:
+def _scan_down(tree: CTree, source: tuple, target: tuple, report,
+               stats: dict, labels: tuple[str, str]) -> dict:
     """Reverse direction: the config was written for `source` and lands
     on the OLDER `target`. Renames revert, default flips warn with the
     reverse wording, introduced features are flagged as dropped."""
-    active = [r for r in RULES if target < r.since <= source]
-    tgt_label = f"{target[0]}.{target[1]}"
+    active = [r for r in RULES if target < _pad(r.since) <= source]
+    src_label, tgt_label = labels
 
     for rule in active:
         hits = 0
@@ -297,7 +324,7 @@ def _scan_down(tree: CTree, source: tuple[int, int],
                                     and len(examples) < 3:
                                 examples.append(_edit_label(child))
             message = (f"'{rule.new}' does not exist before "
-                       f"{rule.since[0]}.{rule.since[1]} — auto-renamed "
+                       f"{vlabel(rule.since)} — auto-renamed "
                        f"back to '{rule.attr}'")
         elif rule.kind == "renamed-section":
             want = rule.path[:-1] + (rule.new,)
@@ -307,7 +334,7 @@ def _scan_down(tree: CTree, source: tuple[int, int],
                     hits += 1
                     stats["auto_fixed"] += 1
             message = (f"'config {' '.join(want)}' does not exist before "
-                       f"{rule.since[0]}.{rule.since[1]} — auto-renamed "
+                       f"{vlabel(rule.since)} — auto-renamed "
                        f"back to 'config {' '.join(rule.path)}'")
         elif rule.kind == "flip-if-absent":
             for path, node in iter_config_nodes(tree):
@@ -332,7 +359,7 @@ def _scan_down(tree: CTree, source: tuple[int, int],
                         hits += 1
             message = rule.down_message or (
                 f"the default for '{rule.attr}' differs on either side "
-                f"of {rule.since[0]}.{rule.since[1]} — set it explicitly "
+                f"of {vlabel(rule.since)} — set it explicitly "
                 "so behavior survives the downgrade")
         elif rule.kind == "introduced-section":
             for path, node in iter_config_nodes(tree):
@@ -377,11 +404,11 @@ def _scan_down(tree: CTree, source: tuple[int, int],
                 where = f" (x{hits})"
             report.add(
                 rule.level, "downgrade",
-                f"[{rule.since[0]}.{rule.since[1]}] {message}{where}")
+                f"[{vlabel(rule.since)}] {message}{where}")
 
     report.add(
         "info", "downgrade",
-        f"downgrade scan ({source[0]}.{source[1]} -> {tgt_label}) is "
+        f"downgrade scan ({src_label} -> {tgt_label}) is "
         "rule-based and partial: any syntax this older FortiOS does not "
         "know is silently skipped on load — after restoring, run "
         "'diag debug config-error-log read' to see what the box "

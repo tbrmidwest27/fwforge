@@ -15,10 +15,12 @@ def load_tree():
 
 
 def test_version_parsing():
-    assert vd.parse_version("7.4") == (7, 4)
-    assert vd.parse_version("v8.0.1") == (8, 0)
+    assert vd.parse_version("7.4") == (7, 4)          # train only
+    assert vd.parse_version("v8.0.1") == (8, 0, 1)    # full patch
+    assert vd.parse_version("7.6.3") == (7, 6, 3)
     assert vd.parse_version("garbage") is None
-    assert vd.source_version_from_header(load_tree()) == (7, 4)
+    # backup headers always carry the patch
+    assert vd.source_version_from_header(load_tree()) == (7, 4, 4)
 
 
 def test_scan_74_to_80_finds_all_artifact_classes():
@@ -205,3 +207,66 @@ def test_cli_refuses_to_overwrite_its_input(tmp_path):
     assert src.read_text(encoding="utf-8") == DOWNGRADE_SRC
     out = (tmp_path / "samebox-converted.conf").read_text(encoding="utf-8")
     assert "set hw-model" in out
+
+
+def test_same_train_patchless_target_is_silent():
+    # picking target "7.6" for a 7.6.6 source is not a downgrade
+    tree = ft.parse_config(DOWNGRADE_SRC)
+    report = Report()
+    stats = vd.scan(tree, (8, 0, 1), (8, 0), report)
+    assert stats["direction"] == "none"
+    assert not report.findings
+
+
+def test_within_train_downgrade_gets_caveat():
+    tree = ft.parse_config(DOWNGRADE_SRC)
+    report = Report()
+    stats = vd.scan(tree, (8, 0, 1), (8, 0, 0), report)
+    assert stats["direction"] == "down"
+    msgs = [f.message for f in report.findings]
+    assert any("8.0.1 -> 8.0.0" in m and "config-error-log" in m
+               for m in msgs)
+    # no train-boundary rules fire inside the train
+    assert not any("gui-dashboard-collection" in m for m in msgs)
+
+
+def test_patch_scoped_rule_fires_within_train():
+    rule = vd.DeltaRule(
+        (7, 6, 3), "introduced-attr", ("system", "global"),
+        attr="fake-new-knob", level="warn")
+    vd.RULES.append(rule)
+    try:
+        text = ("#config-version=FGT601F-7.6.6-FW-build3510-250101:"
+                "opmode=0:vdom=0\n"
+                "config system global\n"
+                "    set fake-new-knob enable\n"
+                "end\n")
+        tree = ft.parse_config(text)
+        report = Report()
+        stats = vd.scan(tree, (7, 6, 6), (7, 6, 1), report)
+        msgs = [f.message for f in report.findings]
+        assert any("[7.6.3]" in m and "fake-new-knob" in m for m in msgs)
+        assert stats["artifacts"] >= 1
+        # and it does NOT fire when the move stays above it
+        report2 = Report()
+        vd.scan(ft.parse_config(text), (7, 6, 6), (7, 6, 4), report2)
+        assert not any("fake-new-knob" in f.message
+                       for f in report2.findings)
+    finally:
+        vd.RULES.remove(rule)
+
+
+def test_e2e_within_train_downgrade_uses_header_patch(tmp_path):
+    # the GUI pre-fills source-os with the train; the header's patch
+    # must still drive within-train comparisons
+    srcdir = tmp_path / "in"
+    srcdir.mkdir()
+    src = srcdir / "train.conf"
+    src.write_text(DOWNGRADE_SRC, encoding="utf-8")
+    rc = cli.main(["convert", str(src), "-o", str(tmp_path),
+                   "--source-os", "8.0", "--fortios", "8.0.0"])
+    assert rc == 0
+    report = json.loads(
+        (tmp_path / "train.report.json").read_text(encoding="utf-8"))
+    assert report["meta"]["fortios_versions"] == "8.0.1 -> 8.0.0"
+    assert "downgrade_artifacts" in report["meta"]

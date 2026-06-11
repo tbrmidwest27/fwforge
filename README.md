@@ -147,9 +147,13 @@ with 2+ VDOMs (a flat config holds one).
 ### Version-upgrade artifact scan
 
 When a FortiGate-to-FortiGate migration also jumps FortiOS versions —
-**in either direction** — the scanner reports what the version change
-leaves behind. Source version is read from the `#config-version` header
-automatically; target comes from `--fortios`:
+**in either direction, down to patch level** — the scanner reports what
+the version change leaves behind. Source version (full x.y.z) is read
+from the `#config-version` header automatically; target comes from
+`--fortios`, which accepts a train (`7.6` — treated as "same train, no
+move" against a 7.6.x source) or an exact patch (`7.6.3`, enabling
+within-train comparisons such as a 7.6.6 backup landing on a 7.6.1
+box):
 
 ```
 python -m fwforge convert old-box.conf --fortios 8.0 --plan m.plan

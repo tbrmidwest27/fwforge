@@ -147,8 +147,14 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                    f"multi-VDOM config; scopes: {', '.join(scopes)}")
 
     # FortiOS version-jump artifact scan
+    hdr_ver = versiondelta.source_version_from_header(tree)
     src_ver = (versiondelta.parse_version(source_os) if source_os
-               else versiondelta.source_version_from_header(tree))
+               else hdr_ver)
+    # a train-only override of the header's own train keeps the header's
+    # patch — the GUI pre-fills '7.6' while the header knows '7.6.6'
+    if (src_ver is not None and len(src_ver) < 3 and hdr_ver
+            and hdr_ver[:2] == src_ver):
+        src_ver = hdr_ver
     tgt_ver = versiondelta.parse_version(target)
     if src_ver is None:
         report.add("info", "upgrade",
@@ -161,12 +167,19 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                    "upgrade-artifact scan skipped")
     else:
         vstats = versiondelta.scan(tree, src_ver, tgt_ver, report)
-        report.meta["fortios_versions"] = (
-            f"{src_ver[0]}.{src_ver[1]} -> {tgt_ver[0]}.{tgt_ver[1]}")
-        if tgt_ver > src_ver:
+        # cross-train moves label by train; within-train moves show the
+        # patch detail that makes them a move at all
+        if src_ver[:2] == tgt_ver[:2] and vstats["direction"] != "none":
+            label = (f"{versiondelta.vlabel(src_ver)} -> "
+                     f"{versiondelta.vlabel(tgt_ver)}")
+        else:
+            label = (f"{src_ver[0]}.{src_ver[1]} -> "
+                     f"{tgt_ver[0]}.{tgt_ver[1]}")
+        report.meta["fortios_versions"] = label
+        if vstats["direction"] == "up":
             report.meta["upgrade_artifacts"] = vstats["artifacts"]
             report.meta["upgrade_auto_fixed"] = vstats["auto_fixed"]
-        elif tgt_ver < src_ver:
+        elif vstats["direction"] == "down":
             report.meta["downgrade_artifacts"] = vstats["artifacts"]
             report.meta["downgrade_auto_fixed"] = vstats["auto_fixed"]
 

@@ -54,11 +54,11 @@
     <h2>Target</h2>
     <div class="builder-row">
       <label>FortiOS version<br>
-        <select name="fortios">
-          {% for t in targets %}
-          <option value="{{ t }}" {% if t == default_target %}selected{% endif %}>{{ t }}</option>
-          {% endfor %}
-        </select>
+        <input name="fortios" list="fos-targets" value="{{ default_target }}"
+               size="7" placeholder="e.g. 7.6 or 7.6.3">
+        <datalist id="fos-targets">
+          {% for t in targets %}<option value="{{ t }}">{% endfor %}
+        </datalist>
       </label>
       {% if meta.vendor == "fortios" %}
       <label>platform code<br>
