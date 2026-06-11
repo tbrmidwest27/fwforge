@@ -20,10 +20,12 @@ Exit codes: 0 clean, 1 finished with errors in the report, 2 fatal.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from . import __version__, pipeline
+from . import schema as schema_mod
 from .emit import fortimanager, package
 from .parsers import CROSS_PARSERS, detect_vendor
 from .parsers import fortios_tree
@@ -102,6 +104,53 @@ def _load_migration_plan(args) -> MigrationPlan:
     return plan
 
 
+def _schema_check(args, out_text: str, report) -> None:
+    """Opt-in: validate the emitted CLI against a target-build schema."""
+    ref = getattr(args, "schema_check", None)
+    if not ref:
+        return
+    try:
+        schema, fetched = schema_mod.resolve(
+            ref, getattr(args, "schema_token", ""))
+        if fetched:
+            print(f"schema fetched from {ref} "
+                  f"(FortiOS {schema['version']} build{schema['build']}) "
+                  f"-> cached at {schema_mod.cache_path(schema)}")
+        schema_mod.check(out_text, schema, report,
+                         target=getattr(args, "fortios", ""))
+    except Exception as e:
+        report.add("error", "schema",
+                   f"schema check failed ({e}) — output written "
+                   "unvalidated")
+
+
+def cmd_schema(args) -> int:
+    if args.list or not args.host:
+        cached = schema_mod.list_cached()
+        if not cached:
+            print("no cached schemas — fetch one with: "
+                  "fwforge schema <host> --token <api-key>")
+            return 0
+        for s in cached:
+            print(f"{s['name']}: FortiOS {s['version']} "
+                  f"build{s['build']}, {s['tables']} tables, fetched "
+                  f"{s['fetched']} from {s['host']}")
+        return 0
+    if not args.token:
+        print("an API token is required (--token or FWFORGE_API_TOKEN)",
+              file=sys.stderr)
+        return 2
+    try:
+        schema, _ = schema_mod.resolve(args.host, args.token)
+    except Exception as e:
+        print(f"schema fetch failed: {e}", file=sys.stderr)
+        return 2
+    print(f"fetched FortiOS {schema['version']} build{schema['build']} "
+          f"({len(schema['tables'])} tables) -> "
+          f"{schema_mod.cache_path(schema)}")
+    return 0
+
+
 def _tuning_from_args(args) -> TuningOptions:
     return TuningOptions(
         prune=getattr(args, "prune", False),
@@ -122,6 +171,7 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
                                 tuning=_tuning_from_args(args),
                                 nat_mode=getattr(args, "nat_mode", "policy"))
     report, cfg = result.report, result.cfg
+    _schema_check(args, result.out_text, report)
 
     # NOTE: outdir/(stem + ext), never base.with_suffix(ext) — with_suffix
     # truncates dotted stems ('fw.example.com-backup' -> 'fw.example')
@@ -164,7 +214,9 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
           f"-> {report_md}")
     if result.unmapped:
         print(f"ACTION: fill in {portmap_path} and re-run with --map")
-    return result.exit_code
+    # the schema check may add error findings after the pipeline set
+    # its exit code
+    return max(result.exit_code, 1 if report.count("error") else 0)
 
 
 def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
@@ -185,6 +237,7 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
         print(f"plan error: {e}", file=sys.stderr)
         return 2
     report = result.report
+    _schema_check(args, result.out_text, report)
 
     stem = Path(src_path).stem
     try:
@@ -224,7 +277,7 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
     errors, warns = report.count("error"), report.count("warn")
     print(f"report: {errors} errors, {warns} warnings "
           f"-> {outdir / (stem + '.report.md')}")
-    return result.exit_code
+    return max(result.exit_code, 1 if errors else 0)
 
 
 def cmd_convert(args) -> int:
@@ -352,6 +405,15 @@ def main(argv: list[str] | None = None) -> int:
                    help="also write a FortiManager JSON-RPC import bundle "
                         "(<name>.fmg.json) creating the objects + a policy "
                         "package in that ADOM (cross-vendor conversions)")
+    p.add_argument("--schema-check", metavar="HOST|FILE",
+                   help="validate the output against the exact CLI schema "
+                        "of a target build: a live FortiGate host[:port] "
+                        "(read-only; fetched schema is cached under "
+                        "~/.fwforge/schemas/) or a cached schema file")
+    p.add_argument("--schema-token",
+                   default=os.environ.get("FWFORGE_API_TOKEN", ""),
+                   help="REST API token for --schema-check live fetch "
+                        "(default: FWFORGE_API_TOKEN env var)")
     tune = p.add_argument_group("tuning (cross-vendor conversions)")
     tune.add_argument("--prune", action="store_true",
                       help="drop address/service objects nothing references")
@@ -371,6 +433,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("config")
     p.add_argument("-o", "--out", help="output file (default <config>.plan)")
     p.set_defaults(fn=cmd_plan)
+
+    p = sub.add_parser(
+        "schema",
+        help="fetch / list target-build CLI schemas for --schema-check")
+    p.add_argument("host", nargs="?",
+                   help="FortiGate host[:port] to fetch from (read-only); "
+                        "omit with --list")
+    p.add_argument("--token",
+                   default=os.environ.get("FWFORGE_API_TOKEN", ""),
+                   help="REST API token (default: FWFORGE_API_TOKEN env)")
+    p.add_argument("--list", action="store_true",
+                   help="list cached schemas")
+    p.set_defaults(fn=cmd_schema)
 
     p = sub.add_parser("gui", help="run the local web UI")
     p.add_argument("--host", default="127.0.0.1")

@@ -19,6 +19,7 @@ from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
 
 from .. import __version__, pipeline
+from .. import schema as schema_mod
 from ..emit import fortimanager, package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
 from ..transforms import portmap, tree_refs, zones
@@ -333,6 +334,7 @@ def create_app() -> Flask:
         return render_template(
             "plan.html", jid=jid, meta=meta, targets=FORTIOS_TARGETS,
             default_target=default_target, det=det,
+            schemas=schema_mod.list_cached(),
             error=request.args.get("error", ""))
 
     @app.post("/job/<jid>/delete")
@@ -389,6 +391,22 @@ def create_app() -> Flask:
             return redirect(url_for("job", jid=jid, error=str(e)))
 
         report = result.report
+        if request.form.get("schema_enable"):
+            try:
+                ref = request.form.get("schema_cached", "").strip() \
+                    or request.form.get("schema_host", "").strip()
+                if not ref:
+                    raise ValueError(
+                        "pick a cached schema or enter a live host")
+                # the token is used for this one fetch and never stored
+                schema, _ = schema_mod.resolve(
+                    ref, request.form.get("schema_token", "").strip())
+                schema_mod.check(result.out_text, schema, report,
+                                 target=target)
+            except Exception as e:
+                report.add("error", "schema",
+                           f"schema check failed ({e}) — output written "
+                           "unvalidated")
         stem = Path(meta["name"]).stem or "config"
         if stem.lower() in ("_source", "source", "report", "diff",
                             "bundle"):

@@ -107,6 +107,36 @@
     <p class="grid-note">Also writes a JSON-RPC import bundle that creates
       the converted objects and a policy package in that ADOM.</p>
     {% endif %}
+
+    <fieldset style="margin-top:.7rem">
+      <legend>Schema check (optional)</legend>
+      <label style="display:block;margin:.15rem 0 .4rem">
+        <input type="checkbox" name="schema_enable" value="1"
+               onchange="document.getElementById('schemaopts').style.display = this.checked ? '' : 'none'">
+        <strong>Certify the output against a target build's CLI
+        schema</strong></label>
+      <div id="schemaopts" style="display:none">
+        <div class="builder-row">
+          <label>cached schema<br>
+            <select name="schema_cached">
+              <option value="">&mdash; fetch live &mdash;</option>
+              {% for s in schemas %}
+              <option value="{{ s.path }}">FortiOS {{ s.version }} build{{ s.build }} ({{ s.tables }} tables, {{ s.fetched }})</option>
+              {% endfor %}
+            </select></label>
+          <label>live host<br>
+            <input type="text" name="schema_host" size="14"
+                   placeholder="10.2.10.1[:443]"></label>
+          <label>API token<br>
+            <input type="password" name="schema_token" size="18"></label>
+        </div>
+        <p class="grid-note">Every emitted section and attribute is
+          checked against the exact firmware build's schema. Live fetch
+          is one read-only GET against your own device; the schema is
+          cached under <code>~/.fwforge/schemas/</code> and the token is
+          used once, never stored.</p>
+      </div>
+    </fieldset>
   </div>
 </div>
 </section>

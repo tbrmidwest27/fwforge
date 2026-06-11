@@ -184,6 +184,27 @@ The rule table (`transforms/versiondelta.py`) is curated from Fortinet's
 release-notes "Changes in CLI / default behavior" pages — deliberately
 conservative; extend it as versions land.
 
+### Schema-certified output (opt-in)
+
+```
+python -m fwforge schema 10.2.10.1 --token <api-key>   # fetch + cache
+python -m fwforge convert box.conf --fortios 8.0 \
+    --schema-check ~/.fwforge/schemas/fortios-8.0.0-b167.json
+```
+
+Every FortiGate exposes the complete CLI schema of its exact firmware
+build over REST. fwforge fetches it from **your own device** (one
+read-only GET), caches it locally, and validates every emitted
+`config` section and `set` attribute against it — so the report can
+say *"schema check CLEAN vs 8.0.0 build167: every section and
+attribute exists on the target"* before anything touches hardware.
+Unknown sections are errors (the whole block is dropped on load),
+unknown attributes are warnings (the line is dropped). `--schema-check`
+takes a cached file or a live host (token via `--schema-token` or the
+`FWFORGE_API_TOKEN` env var); the GUI has the same as a checkbox with
+a cached-schema picker. Schemas are runtime device data — cached under
+`~/.fwforge/schemas/`, never shipped with the tool.
+
 ### FortiManager output
 
 ```

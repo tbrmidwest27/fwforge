@@ -256,6 +256,28 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.24 — shipped 2026-06-11
+- [x] **Schema-certified output (opt-in)** — the first "FC structurally
+      can't" feature: validate every emitted section and `set` attribute
+      against the EXACT CLI schema of a target firmware build, fetched
+      read-only from a live FortiGate (`GET /api/v2/cmdb?action=schema`,
+      one request, 712 tables on 8.0) and cached structure-only under
+      ~/.fwforge/schemas/ (runtime device data, never shipped —
+      clean-room intact). New fwforge/schema.py (stdlib urllib; fetch /
+      cache / resolve / check with nested-table + multi-VDOM walks);
+      `fwforge schema <host>` + `--list` subcommand; `--schema-check
+      HOST|FILE` + `--schema-token` (FWFORGE_API_TOKEN env) on convert;
+      GUI checkbox with cached-schema picker or live host+token (token
+      used once, never stored). Findings: unknown section = error
+      (block dropped on load), unknown attribute = warn (line dropped),
+      train-mismatch guard, capped + aggregated output;
+      meta schema_check summary; error findings raise the exit code.
+      Verified against the live 601F schema: clean fixture certifies
+      ("CLEAN vs 8.0.0 build167 — 72 set lines checked"), injected
+      bogus section/attr flagged at the right severities. NEXT on this
+      axis: schema *diffing* to auto-generate the version-delta rule
+      table per build pair.
+
 ### v0.23 — shipped 2026-06-11
 - [x] **Patch-level (x.y.z) version handling** (per Adam, "what about
       7.6.x"): versions carry the patch component end to end — the
