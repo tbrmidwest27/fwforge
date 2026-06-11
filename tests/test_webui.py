@@ -76,6 +76,66 @@ def test_migrate_convert_with_zone(client):
     assert 'set srcintf "lan"' in conf
 
 
+def test_iface_details_in_analysis(client):
+    jid = _load(client, "fortios_refactor.conf")
+    det = {d["name"]: d for d in webui_app.JOBS[jid]["iface_details"]}
+    assert det["port2"]["ip"] == "10.10.0.1/16"
+    assert det["port2"]["role"] == "lan"
+    assert det["port2"]["policy_refs"] == 3      # srcintf in policies 1-3
+    assert det["vlan30"]["type"] == "vlan"
+    assert det["vlan30"]["vlanid"] == "30"
+    assert det["vlan30"]["parent"] == "port2"
+    assert det["port1"]["zone"] == "legacy-zone"  # disabled in the picker
+    assert det["port3"]["type"] == "physical"
+    # the wizard page ships the details to the member-picker JS
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "legacy-zone" in page
+    assert "10.10.0.1/16" in page
+    assert "alias / description" in page          # mapping hint columns
+
+
+def test_sdwan_from_checkbox_picker(client):
+    jid = _load(client, "fortios_refactor.conf")
+    form = {
+        "fortios": "7.6",
+        "source_os": "7.6",
+        "map_src": ["port1", "port2", "port3", "port4", "vlan30"],
+        "map_dst": ["port1", "port2", "port3", "port4", "vlan30"],
+        "sdwan_name_0": "virtual-wan-link",
+        "sdwan_member_0": ["port3", "port4"],     # checkbox picker
+        "sdwan_gw_0_port3": "",                   # blank = harvest route
+        "sdwan_weight_0_port3": "",
+        "sdwan_gw_0_port4": "198.51.100.1",
+        "sdwan_weight_0_port4": "10",
+        "sdwan_hc_0": "ping 8.8.8.8",
+        "sdwan_rule_0": "auto",
+        "sdwan_vdom_0": "",
+    }
+    resp = client.post(f"/job/{jid}/convert", data=form,
+                       follow_redirects=True)
+    assert "converted" in resp.data.decode()
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert "config system sdwan" in conf
+    assert "set gateway 203.0.113.1" in conf      # harvested for port3
+    assert "set gateway 198.51.100.1" in conf
+    assert "set weight 10" in conf
+
+
+def test_sdwan_legacy_text_syntax_still_accepted(client):
+    jid = _load(client, "fortios_refactor.conf")
+    form = {
+        "fortios": "7.6",
+        "map_src": ["port3"], "map_dst": ["port3"],
+        "sdwan_name_0": "virtual-wan-link",
+        "sdwan_members_0": "port3 gateway=203.0.113.1, port4 weight=10",
+        "sdwan_hc_0": "", "sdwan_rule_0": "auto", "sdwan_vdom_0": "",
+    }
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert "config system sdwan" in conf
+    assert "set weight 10" in conf
+
+
 def test_cross_wizard_has_policy_selection(client):
     jid = _load(client, "asa_sample.cfg")
     page = client.get(f"/job/{jid}").data.decode()

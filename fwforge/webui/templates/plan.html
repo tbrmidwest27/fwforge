@@ -116,12 +116,17 @@
   <p class="grid-note">Source name &rarr; target port. Pre-filled with the
     same name; change what differs on the target model. Empty target =
     leave the name as-is.</p>
-  <table style="max-width:580px">
-    <tr><th>source</th>{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>target</th></tr>
+  <table style="max-width:{% if det %}860px{% else %}580px{% endif %}">
+    <tr><th>source</th>{% if det %}<th>ip</th><th>alias / description</th>{% endif %}{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>target</th></tr>
     {% for ifc in meta.interfaces %}
+    {% set d = det.get(ifc) if det else None %}
     <tr>
       <td><code>{{ ifc }}</code>
         <input type="hidden" name="map_src" value="{{ ifc }}"></td>
+      {% if det %}
+      <td class="muted">{{ d.ip if d else "" }}</td>
+      <td class="muted">{{ (d.alias or d.descr) if d else "" }}</td>
+      {% endif %}
       {% if meta.multi_vdom %}
       <td><span class="badge b-vdom">{{ meta.vdoms.get(ifc, "root") }}</span></td>
       {% endif %}
@@ -229,8 +234,10 @@
     <legend>Zones — fold interfaces into a zone</legend>
     <p class="grid-note">Creates the zone, rewrites every policy reference,
       merges policies that become identical, audits the leftovers.
-      Members are source names; the mapping step is applied
-      automatically.</p>
+      Members are source names; the mapping step is applied automatically.
+      Greyed-out members are already committed — an existing zone, SD-WAN,
+      or another row of this plan. <strong>policies</strong> = how many
+      firewall-policy references the refactor will rewrite.</p>
     <div id="zones"></div>
     <button type="button" class="ghost small" onclick="addZone()">+ add zone</button>
   </fieldset>
@@ -250,10 +257,10 @@
 
   <fieldset>
     <legend>SD-WAN — move interfaces into SD-WAN members</legend>
-    <p class="grid-note">Generates the full construct: members (gateways
-      harvested from old default routes), health check with SLA target,
-      steering rules, pinned rules for member-specific routes.
-      Member syntax: <code>port3 gateway=203.0.113.1, port4 weight=10</code></p>
+    <p class="grid-note">Generates the full construct: members, health
+      check with SLA target, steering rules, pinned rules for
+      member-specific routes. Tick a member to set its gateway and weight
+      — a blank gateway is harvested from the old default routes.</p>
     <div id="sdwans"></div>
     <button type="button" class="ghost small" onclick="addSdwan()">+ add SD-WAN zone</button>
   </fieldset>
@@ -288,7 +295,7 @@
 
 <script>
 const IFACES = {{ meta.interfaces|tojson }};
-let zi = 0, si = 0, cur = 0;
+let cur = 0;
 const steps = Array.from(document.querySelectorAll(".wstep"));
 const stepper = document.getElementById("stepper");
 
@@ -313,44 +320,171 @@ function stepGo(i) {
 }
 stepGo(0);
 
-function ifaceOptions() {
-  return IFACES.map(n => `<option value="${n}">${n}</option>`).join("");
+{% if meta.vendor == "fortios" %}
+const IFDET = {{ meta.get("iface_details", [])|tojson }};
+const MULTI_VDOM = {{ "true" if meta.multi_vdom else "false" }};
+// fall back to bare names for jobs analyzed before detail extraction
+const DET = IFDET.length ? IFDET : IFACES.map(n => ({
+  name: n, ip: "", alias: "", descr: "", type: "", vlanid: "", parent: "",
+  role: "", status: "", vdom: "", zone: "", sdwan: false, policy_refs: ""}));
+let zi = 0, si = 0;
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                  .replace(/"/g, "&quot;");
+}
+function memberTable(kind, idx) {
+  const sdwan = kind === "sdwan";
+  const rows = DET.map(d => {
+    let fixed = "";
+    if (d.zone) fixed = `in zone ${esc(d.zone)}`;
+    else if (d.sdwan) fixed = "SD-WAN member";
+    const typ = d.type === "vlan" && d.vlanid
+      ? `vlan ${esc(d.vlanid)} on ${esc(d.parent)}` : esc(d.type);
+    const hay = (`${d.name} ${d.ip} ${d.alias} ${d.descr} ${typ} ` +
+                 `${d.role} ${d.vdom}`).toLowerCase();
+    return `<tr data-hay="${esc(hay)}"${fixed ? ' class="dis"' : ""}>
+      <td><input type="checkbox" name="${sdwan ? "sdwan_member" : "zone_members"}_${idx}"
+        value="${esc(d.name)}" data-ifc="${esc(d.name)}"
+        ${fixed ? 'disabled data-fixed="1"' : ""} onchange="memberChanged(this)"></td>
+      <td><code>${esc(d.name)}</code></td>
+      <td class="muted">${esc(d.ip)}</td>
+      <td class="muted">${esc(d.alias || d.descr)}</td>
+      <td class="muted">${typ}${d.role && d.role !== "undefined"
+        ? ` <span class="badge b-info">${esc(d.role)}</span>` : ""}</td>
+      ${MULTI_VDOM ? `<td><span class="badge b-vdom">${esc(d.vdom)}</span></td>` : ""}
+      <td class="num">${d.policy_refs ?? ""}</td>
+      <td>${fixed ? `<span class="badge b-info">${fixed}</span>`
+                  : '<span class="dyn muted">free</span>'}${
+        d.status === "down" ? ' <span class="badge b-err">admin down</span>' : ""}</td>
+      ${sdwan ? `
+      <td><input type="text" class="gwin" name="sdwan_gw_${idx}_${esc(d.name)}"
+        placeholder="auto (routes)" disabled></td>
+      <td><input type="text" class="wtin" name="sdwan_weight_${idx}_${esc(d.name)}"
+        placeholder="1" disabled></td>` : ""}
+    </tr>`;
+  }).join("");
+  return `
+  <div class="searchbar">
+    <input type="text" placeholder="filter members&hellip;" style="width:210px"
+      oninput="filterMembers(this)">
+    <button type="button" class="ghost small"
+      onclick="setAllMembers(this, true)">select visible</button>
+    <button type="button" class="ghost small"
+      onclick="setAllMembers(this, false)">clear</button>
+    <span class="muted mcount"></span>
+  </div>
+  <div class="mwrap"><table>
+    <thead><tr><th></th><th>interface</th><th>ip</th>
+      <th>alias / description</th><th>type</th>
+      ${MULTI_VDOM ? "<th>vdom</th>" : ""}<th>policies</th><th>in use</th>
+      ${sdwan ? "<th>gateway</th><th>weight</th>" : ""}</tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
 }
 function addZone() {
   const d = document.createElement("div");
-  d.className = "builder-row";
+  d.className = "zbuild";
+  d.dataset.kind = "zone";
   d.innerHTML = `
-    <label>name<br><input type="text" name="zone_name_${zi}" placeholder="lan"></label>
-    <label>members<br><select name="zone_members_${zi}" multiple>${ifaceOptions()}</select></label>
-    <label>intrazone<br><select name="zone_intrazone_${zi}">
-      <option value="deny" selected>deny</option>
-      <option value="allow">allow</option></select></label>
-    <label>vdom (optional)<br><input type="text" name="zone_vdom_${zi}" size="8"></label>
-    <button type="button" class="ghost small" style="margin-top:1.3rem"
-      onclick="this.parentNode.remove()">remove</button>`;
+    <div class="builder-row">
+      <label>zone name<br><input type="text" name="zone_name_${zi}"
+        placeholder="lan" oninput="refreshClaims()"></label>
+      <label>intrazone<br><select name="zone_intrazone_${zi}">
+        <option value="deny" selected>deny</option>
+        <option value="allow">allow</option></select></label>
+      <label>vdom (optional)<br><input type="text" name="zone_vdom_${zi}" size="8"></label>
+      <span style="flex:1"></span>
+      <button type="button" class="ghost small" style="margin-top:1.15rem"
+        onclick="this.closest('.zbuild').remove(); refreshClaims()">remove</button>
+    </div>
+    ${memberTable("zone", zi)}`;
   document.getElementById("zones").appendChild(d);
   zi++;
 }
 function addSdwan() {
   const d = document.createElement("div");
-  d.className = "builder-row";
+  d.className = "zbuild";
+  d.dataset.kind = "sdwan";
   d.innerHTML = `
-    <label>zone name<br><input type="text" name="sdwan_name_${si}" value="virtual-wan-link"></label>
-    <label>members<br><input type="text" name="sdwan_members_${si}" size="38"
-      placeholder="wan1 gateway=203.0.113.1, wan2 weight=10"></label>
-    <label>health-check<br><input type="text" name="sdwan_hc_${si}" size="12"
-      placeholder="ping 8.8.8.8"></label>
-    <label>steering<br><select name="sdwan_rule_${si}">
-      <option value="auto" selected>auto (SLA)</option>
-      <option value="sla">sla</option>
-      <option value="load-balance">load-balance</option>
-      <option value="none">none</option></select></label>
-    <label>vdom (optional)<br><input type="text" name="sdwan_vdom_${si}" size="7"></label>
-    <button type="button" class="ghost small" style="margin-top:1.3rem"
-      onclick="this.parentNode.remove()">remove</button>`;
+    <div class="builder-row">
+      <label>zone name<br><input type="text" name="sdwan_name_${si}"
+        value="virtual-wan-link" oninput="refreshClaims()"></label>
+      <label>health-check<br><input type="text" name="sdwan_hc_${si}" size="12"
+        placeholder="ping 8.8.8.8"></label>
+      <label>steering<br><select name="sdwan_rule_${si}">
+        <option value="auto" selected>auto (SLA)</option>
+        <option value="sla">sla</option>
+        <option value="load-balance">load-balance</option>
+        <option value="none">none</option></select></label>
+      <label>vdom (optional)<br><input type="text" name="sdwan_vdom_${si}" size="7"></label>
+      <span style="flex:1"></span>
+      <button type="button" class="ghost small" style="margin-top:1.15rem"
+        onclick="this.closest('.zbuild').remove(); refreshClaims()">remove</button>
+    </div>
+    ${memberTable("sdwan", si)}`;
   document.getElementById("sdwans").appendChild(d);
   si++;
 }
+function cardLabel(card) {
+  const inp = card.querySelector(
+    'input[name^="zone_name_"], input[name^="sdwan_name_"]');
+  const kind = card.dataset.kind === "zone" ? "zone" : "SD-WAN";
+  return inp && inp.value ? `${kind} "${inp.value}"` : `new ${kind}`;
+}
+function memberChanged(cb) {
+  const tr = cb.closest("tr");
+  tr.querySelectorAll("input.gwin, input.wtin")
+    .forEach(inp => { inp.disabled = !cb.checked; });
+  refreshClaims();
+}
+function refreshClaims() {
+  const claims = {};
+  document.querySelectorAll(".zbuild").forEach(card => {
+    card.querySelectorAll("input[type=checkbox][data-ifc]").forEach(cb => {
+      if (cb.checked && !cb.dataset.fixed)
+        claims[cb.dataset.ifc] = {label: cardLabel(card), card: card};
+    });
+  });
+  document.querySelectorAll(".zbuild").forEach(card => {
+    let n = 0;
+    card.querySelectorAll("input[type=checkbox][data-ifc]").forEach(cb => {
+      if (cb.dataset.fixed) return;
+      if (cb.checked) n++;
+      const cl = claims[cb.dataset.ifc];
+      const taken = !!(cl && cl.card !== card);
+      cb.disabled = taken;
+      cb.closest("tr").classList.toggle("dis", taken);
+      const dyn = cb.closest("tr").querySelector(".dyn");
+      if (!dyn) return;
+      if (taken) { dyn.className = "dyn badge b-info";
+                   dyn.textContent = "in " + cl.label; }
+      else if (cb.checked) { dyn.className = "dyn badge b-ok";
+                             dyn.textContent = "selected"; }
+      else { dyn.className = "dyn muted"; dyn.textContent = "free"; }
+    });
+    const mc = card.querySelector(".mcount");
+    if (mc) mc.textContent = n ? `${n} member(s)` : "";
+  });
+}
+function filterMembers(inp) {
+  const q = inp.value.toLowerCase();
+  inp.closest(".zbuild").querySelectorAll("tr[data-hay]").forEach(tr => {
+    tr.style.display = !q || tr.dataset.hay.includes(q) ? "" : "none";
+  });
+}
+function setAllMembers(btn, on) {
+  btn.closest(".zbuild").querySelectorAll("tr[data-hay]").forEach(tr => {
+    if (tr.style.display === "none") return;
+    const cb = tr.querySelector("input[type=checkbox]");
+    if (!cb.disabled && cb.checked !== on) {
+      cb.checked = on;
+      tr.querySelectorAll("input.gwin, input.wtin")
+        .forEach(inp => { inp.disabled = !on; });
+    }
+  });
+  refreshClaims();
+}
+{% endif %}
 function filterPolicies() {
   const q = document.getElementById("polsearch").value.toLowerCase();
   let shown = 0;

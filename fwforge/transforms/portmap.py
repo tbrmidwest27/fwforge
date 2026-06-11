@@ -217,3 +217,52 @@ def tree_interface_names(tree: CTree) -> list[str]:
                 if isinstance(child, EditNode):
                     names.append(child.name.value)
     return names
+
+
+def _mask_bits(mask: str) -> str:
+    try:
+        return str(sum(bin(int(o)).count("1") for o in mask.split(".")))
+    except ValueError:
+        return mask
+
+
+def tree_interface_details(tree: CTree) -> list[dict]:
+    """Per-interface facts from `config system interface`, for informed
+    member selection (zone/SD-WAN builders, mapping grids)."""
+    out: list[dict] = []
+    for path, node in iter_config_nodes(tree):
+        if not path_endswith(path, ("system", "interface")):
+            continue
+        for edit in node.children:
+            if not isinstance(edit, EditNode):
+                continue
+            d = {"name": edit.name.value, "ip": "", "alias": "",
+                 "descr": "", "type": "", "vlanid": "", "parent": "",
+                 "role": "", "status": "", "vdom": ""}
+            mode = ""
+            for line in edit.children:
+                if not isinstance(line, SetLine) or not line.values:
+                    continue
+                v = line.values[0].value
+                if line.attr == "ip":
+                    if "/" in v:
+                        d["ip"] = v
+                    elif len(line.values) >= 2 and v != "0.0.0.0":
+                        d["ip"] = f"{v}/{_mask_bits(line.values[1].value)}"
+                elif line.attr == "mode":
+                    mode = v
+                elif line.attr == "alias":
+                    d["alias"] = " ".join(t.value for t in line.values)
+                elif line.attr == "description":
+                    d["descr"] = " ".join(t.value for t in line.values)
+                elif line.attr in ("type", "vlanid", "role", "status",
+                                   "vdom"):
+                    d[line.attr] = v
+                elif line.attr == "interface":
+                    d["parent"] = v
+            if not d["ip"] and mode in ("dhcp", "pppoe"):
+                d["ip"] = mode
+            if not d["type"]:
+                d["type"] = "vlan" if d["vlanid"] else "physical"
+            out.append(d)
+    return out

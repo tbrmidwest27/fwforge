@@ -256,6 +256,22 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.21 — shipped 2026-06-11
+- [x] **Informed zone / SD-WAN member pickers** (GUI Restructure step):
+      the multi-select and free-text member inputs are now searchable
+      checkbox tables showing, per interface: IP/CIDR (or dhcp/pppoe),
+      alias/description, type (vlan id + parent, aggregate, tunnel...) +
+      role badge, owning VDOM (multi-VDOM sources), firewall-policy
+      reference count, and in-use status. Members already in a zone or
+      SD-WAN are disabled with the reason; picking an interface in one
+      builder row live-disables it in every other row (zone vs SD-WAN
+      cross-claims included). SD-WAN rows grow per-member gateway/weight
+      inputs when ticked (blank gateway = harvested from old default
+      routes). Backed by portmap.tree_interface_details +
+      tree_refs.interface_policy_refs; analysis meta ships
+      `iface_details`; Interface Mapping grid gained ip + alias hint
+      columns. Legacy text member syntax still accepted on POST.
+
 ### v0.20 — shipped 2026-06-11
 - [x] **IPv6 support** (last priority-list gap): emitter family-aware —
       addresses -> address6, groups -> addrgrp6, routes -> static6,

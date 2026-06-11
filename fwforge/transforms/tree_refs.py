@@ -225,6 +225,25 @@ def is_multi_vdom(tree: CTree) -> bool:
     return False
 
 
+def interface_policy_refs(tree: CTree) -> dict[str, int]:
+    """interface/zone name -> number of srcintf/dstintf references across
+    the firewall policy tables. Informs member selection: every reference
+    is a policy the zone/SD-WAN refactor will rewrite."""
+    counts: dict[str, int] = {}
+    for path, node in iter_config_nodes(tree):
+        if not any(path_endswith(path, p) for p in ZONE_CAPABLE_PATHS):
+            continue
+        for edit in node.children:
+            if not isinstance(edit, EditNode):
+                continue
+            for line in edit.children:
+                if isinstance(line, SetLine) and line.attr in ("srcintf",
+                                                               "dstintf"):
+                    for tok in line.values:
+                        counts[tok.value] = counts.get(tok.value, 0) + 1
+    return counts
+
+
 def interface_vdoms(tree: CTree) -> dict[str, str]:
     """interface name -> owning VDOM, read from `set vdom` in
     `config system interface` ('root' when unset)."""

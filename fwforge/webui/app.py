@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 import shutil
 import time
 import uuid
@@ -20,10 +21,10 @@ from flask import (Flask, abort, redirect, render_template, request,
 from .. import __version__, pipeline
 from ..emit import fortimanager, package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
-from ..transforms import portmap, tree_refs
+from ..transforms import portmap, tree_refs, zones
 from ..transforms import plan as plan_mod
-from ..transforms.plan import (MigrationPlan, PlanError, SdwanZoneSpec,
-                               ZoneSpec)
+from ..transforms.plan import (MigrationPlan, PlanError, SdwanMember,
+                               SdwanZoneSpec, ZoneSpec)
 from ..transforms import versiondelta
 from ..transforms.tuning import TuningOptions
 
@@ -76,6 +77,7 @@ def _analyze(text: str, name: str) -> dict:
         "counts": {},
         "policies": [],
         "policies_truncated": 0,
+        "iface_details": [],
         "lines": len(text.splitlines()),
     }
     if vendor == "fortios":
@@ -89,6 +91,17 @@ def _analyze(text: str, name: str) -> dict:
         if src:
             meta["source_os"] = f"{src[0]}.{src[1]}"
         meta["inventory"] = fortios_tree.section_inventory(tree)
+        # per-interface facts for the zone / SD-WAN member pickers
+        zoned = zones.existing_zone_members(tree)
+        in_sdwan = zones.existing_sdwan_members(tree)
+        refs = tree_refs.interface_policy_refs(tree)
+        details = portmap.tree_interface_details(tree)
+        for d in details:
+            d["vdom"] = d["vdom"] or meta["vdoms"].get(d["name"], "root")
+            d["zone"] = zoned.get(d["name"], "")
+            d["sdwan"] = d["name"] in in_sdwan
+            d["policy_refs"] = refs.get(d["name"], 0)
+        meta["iface_details"] = details
     elif vendor in CROSS_PARSERS:
         cfg = CROSS_PARSERS[vendor](text, name)
         meta["interfaces"] = [i.name for i in cfg.interfaces]
@@ -160,6 +173,14 @@ def _parse_hc(text: str):
         "health-check must be 'none' or '<ping|http|dns> <server>'")
 
 
+def _form_indexes(form, prefix: str) -> list[int]:
+    """Row indexes present in the form (gap-tolerant: rows can be removed
+    from the middle of the builder)."""
+    pat = re.compile(re.escape(prefix) + r"_(\d+)$")
+    return sorted({int(m.group(1))
+                   for k in form.keys() for m in [pat.match(k)] if m})
+
+
 def _plan_from_form(form) -> MigrationPlan:
     plan = MigrationPlan()
     for src, dst in zip(form.getlist("map_src"), form.getlist("map_dst")):
@@ -170,8 +191,7 @@ def _plan_from_form(form) -> MigrationPlan:
         src, dst = src.strip(), dst.strip()
         if src and dst and src != dst:
             plan.vdommap[src] = dst
-    i = 0
-    while f"zone_name_{i}" in form:
+    for i in _form_indexes(form, "zone_name"):
         name = form.get(f"zone_name_{i}", "").strip()
         members = [m for m in form.getlist(f"zone_members_{i}") if m]
         if name and members:
@@ -180,26 +200,34 @@ def _plan_from_form(form) -> MigrationPlan:
                 intrazone=form.get(f"zone_intrazone_{i}", "deny"),
                 vdom=form.get(f"zone_vdom_{i}", "").strip() or None))
         elif name or members:
-            raise PlanError(f"zone row {i + 1}: needs both a name and "
+            raise PlanError(f"zone '{name or '?'}': needs both a name and "
                             "members")
-        i += 1
-    i = 0
-    while f"sdwan_name_{i}" in form:
+    for i in _form_indexes(form, "sdwan_name"):
         name = form.get(f"sdwan_name_{i}", "").strip()
+        picked = [m for m in form.getlist(f"sdwan_member_{i}") if m]
         member_text = form.get(f"sdwan_members_{i}", "").strip()
-        if name and member_text:
+        if name and (picked or member_text):
             spec = SdwanZoneSpec(name=name)
-            spec.members = [
-                plan_mod._parse_sdwan_member(e, f"sdwan {name}")
-                for e in plan_mod._split_members(member_text)]
+            if picked:
+                # checkbox picker: per-member gateway/weight inputs
+                for ifc in picked:
+                    spec.members.append(SdwanMember(
+                        interface=ifc,
+                        gateway=form.get(f"sdwan_gw_{i}_{ifc}", "").strip(),
+                        weight=form.get(f"sdwan_weight_{i}_{ifc}",
+                                        "").strip()))
+            else:
+                # legacy plan-file syntax (kept for scripted POSTs)
+                spec.members = [
+                    plan_mod._parse_sdwan_member(e, f"sdwan {name}")
+                    for e in plan_mod._split_members(member_text)]
             spec.health_check = _parse_hc(form.get(f"sdwan_hc_{i}", ""))
             spec.rule_mode = form.get(f"sdwan_rule_{i}", "auto")
             spec.vdom = form.get(f"sdwan_vdom_{i}", "").strip() or None
             plan.sdwan.append(spec)
-        elif name or member_text:
-            raise PlanError(f"SD-WAN row {i + 1}: needs both a zone name "
-                            "and members")
-        i += 1
+        elif name or picked or member_text:
+            raise PlanError(f"SD-WAN zone '{name or '?'}': needs both a "
+                            "zone name and members")
     plan.translate_members()
     return plan
 
@@ -279,9 +307,10 @@ def create_app() -> Flask:
         meta = _job(jid)
         default_target = (meta["source_os"]
                           if meta["source_os"] in FORTIOS_TARGETS else "7.4")
+        det = {d["name"]: d for d in meta.get("iface_details", [])}
         return render_template(
             "plan.html", jid=jid, meta=meta, targets=FORTIOS_TARGETS,
-            default_target=default_target,
+            default_target=default_target, det=det,
             error=request.args.get("error", ""))
 
     @app.post("/job/<jid>/delete")

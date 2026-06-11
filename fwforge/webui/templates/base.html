@@ -168,6 +168,20 @@ legend { font-weight:700; font-size:.9rem; padding:0 .35rem; }
 .tile.on { border-color:var(--brand); background:var(--brand-l); }
 .searchbar { display:flex; gap:.6rem; margin:.2rem 0 .7rem;
   align-items:center; }
+
+/* ---- member picker (zone / sdwan builders) ---- */
+.zbuild { border:1px solid var(--line); border-radius:8px;
+  padding:.7rem .9rem .6rem; margin:.5rem 0 .8rem; background:#fbfcfd; }
+.zbuild .builder-row { margin-bottom:.3rem; }
+.mwrap { max-height:300px; overflow:auto; border:1px solid var(--line);
+  border-radius:7px; margin:.25rem 0 .55rem; background:#fff; }
+.mwrap table { margin:0; }
+.mwrap thead th { position:sticky; top:0; z-index:1; }
+.mwrap tr.dis td { opacity:.5; }
+.mwrap tr.dis:hover td { background:inherit; }
+.mwrap td.num { text-align:right; }
+.mwrap .gwin { width:135px; } .mwrap .wtin { width:60px; }
+.mwrap input:disabled { background:#f1f3f6; color:#9aa4b1; }
 </style>
 </head>
 <body>

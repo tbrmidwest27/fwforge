@@ -289,9 +289,16 @@ own), styled and structured like a management tool:
 - **Conversions home**: persistent project list (survives restarts) with
   vendor/status chips, re-open, results, delete
 - **Step wizard** per conversion: Source & Target → Interface Mapping
-  (grid with VDOM badges) → *cross-vendor:* Policy Selection (searchable
-  checkbox table — untick rules to exclude them) and Tuning → *FortiOS:*
-  Restructure (zones, SD-WAN, hw-switch, SSL-VPN→IPsec) → Convert
+  (grid with ip/alias/VDOM hints) → *cross-vendor:* Policy Selection
+  (searchable checkbox table — untick rules to exclude them) and Tuning →
+  *FortiOS:* Restructure (zones, SD-WAN, hw-switch, SSL-VPN→IPsec) →
+  Convert
+- **Informed member pickers** for zones and SD-WAN: searchable checkbox
+  tables showing each interface's IP, alias/description, type + role,
+  VDOM, and firewall-policy reference count. Interfaces already committed
+  (existing zone, SD-WAN, or another row of the plan) are greyed out with
+  the reason; ticked SD-WAN members get per-member gateway/weight fields
+  (blank gateway = harvested from the old default routes)
 - **Tabbed results**: Summary (downloads + apply instructions), Findings
   (search + severity filter), Output (line-numbered preview), Changes
   (colorized diff for migrations)
