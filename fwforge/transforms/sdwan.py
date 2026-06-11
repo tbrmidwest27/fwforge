@@ -17,6 +17,8 @@ SD-WAN member, and what this transform therefore does to the config:
 """
 from __future__ import annotations
 
+import ipaddress
+
 from ..parsers.fortios_tree import (
     ConfigNode,
     CTree,
@@ -43,6 +45,15 @@ def validate(tree: CTree, specs: list[SdwanZoneSpec]) -> None:
     already = existing_sdwan_members(tree)
     claimed: set[str] = set()
     for spec in specs:
+        if spec.rule_mode == "priority" and spec.rule_member not in [
+                m.interface for m in spec.members]:
+            raise PlanError(
+                f"[sdwan {spec.name}]: rule 'priority {spec.rule_member}' — "
+                "that interface is not one of this zone's members")
+        if spec.rule_mode == "sla" and spec.health_check == ("none", ""):
+            raise PlanError(
+                f"[sdwan {spec.name}]: rule sla needs a health-check "
+                "(remove 'health-check = none' or use load-balance)")
         for m in spec.members:
             ifc = m.interface
             if ifc not in interfaces:
@@ -114,11 +125,13 @@ def _is_default_route(attrs: dict) -> bool:
 def convert_member_routes(scope, member_ifcs: set[str],
                           zone_of: dict[str, str], report) -> dict:
     """Within one VDOM's scope: remove member default routes (returning
-    their gateways) and create the replacement sdwan-zone route."""
+    their gateways) and create the replacement sdwan-zone route.
+    Specific-prefix member routes are removed and returned for pinning."""
     gateways: dict[str, str] = {}
     distances: set[str] = set()
     priorities: set[str] = set()
     zones_hit: list[str] = []
+    specifics: list[dict] = []
     converted = 0
 
     node = find_config_under(scope, "router", "static")
@@ -151,14 +164,17 @@ def convert_member_routes(scope, member_ifcs: set[str],
                     f"default route {child.name.value} via '{dev}' removed; "
                     f"its gateway moves onto SD-WAN member '{dev}'")
                 continue  # drop the edit
+            # a specific-prefix route on a member can't stay: it becomes a
+            # zone route + a steering rule pinned to that member (generated
+            # after member IDs exist)
+            dstv = attrs.get("dst")
+            if dstv and len(dstv) == 2:
+                specifics.append({
+                    "dev": dev, "net": dstv[0].value, "mask": dstv[1].value,
+                    "id": child.name.value})
+                converted += 1
+                continue  # drop the edit; replacement generated later
             keep.append(child)
-            dst = " ".join(t.value for t in attrs.get("dst", []))
-            report.add(
-                "warn", "sdwan",
-                f"static route {child.name.value} ({dst} via '{dev}') kept, "
-                "but FortiOS may reject routes on SD-WAN member interfaces "
-                "— consider an SD-WAN rule or move the route to the zone",
-            )
         node.children = keep
 
         if converted and zones_hit:
@@ -191,7 +207,64 @@ def convert_member_routes(scope, member_ifcs: set[str],
             "no default routes were found on the new members — no "
             "sdwan-zone route created; add one if these links should "
             "carry the default route")
-    return {"gateways": gateways, "converted": converted}
+    return {"gateways": gateways, "converted": converted,
+            "specifics": specifics}
+
+
+def _ensure_sla_target(hc_node: ConfigNode, hc_name: str) -> None:
+    """Give the named health-check an SLA target (id 1) so sla-mode
+    steering rules have something to reference."""
+    for edit in hc_node.children:
+        if not isinstance(edit, EditNode) or edit.name.value != hc_name:
+            continue
+        if any(isinstance(c, ConfigNode) and c.path == ["sla"]
+               for c in edit.children):
+            return
+        sla = ConfigNode(["sla"])
+        entry = EditNode(Token("1", False))
+        entry.children = [
+            SetLine("latency-threshold", [Token("250", False)]),
+            SetLine("jitter-threshold", [Token("50", False)]),
+            SetLine("packetloss-threshold", [Token("5", False)]),
+        ]
+        sla.children.append(entry)
+        edit.children.append(sla)
+        return
+
+
+def _service_rule(service_node: ConfigNode, name: str, mode: str,
+                  member_ids: list[int], dst: str = "all",
+                  hc_name: str = "") -> int:
+    rid = _next_edit_id(service_node)
+    edit = EditNode(Token(str(rid), False))
+    edit.children.append(SetLine("name", [Token(name[:35], True)]))
+    edit.children.append(SetLine("mode", [Token(mode, False)]))
+    edit.children.append(SetLine("dst", [Token(dst, True)]))
+    if mode == "sla" and hc_name:
+        sla = ConfigNode(["sla"])
+        entry = EditNode(Token(hc_name, True))
+        entry.children = [SetLine("id", [Token("1", False)])]
+        sla.children.append(entry)
+        edit.children.append(sla)
+    edit.children.append(SetLine(
+        "priority-members", [Token(str(i), False) for i in member_ids]))
+    service_node.children.append(edit)
+    return rid
+
+
+def _ensure_address(scope, name: str, net: str, mask: str) -> str:
+    addr_node = find_config_under(scope, "firewall", "address")
+    if addr_node is None:
+        addr_node = ConfigNode(["firewall", "address"])
+        insert_in_scope(scope, addr_node)
+    for e in addr_node.children:
+        if isinstance(e, EditNode) and e.name.value == name:
+            return name
+    edit = EditNode(Token(name, True))
+    edit.children.append(SetLine(
+        "subnet", [Token(net, False), Token(mask, False)]))
+    addr_node.children.append(edit)
+    return name
 
 
 def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
@@ -226,6 +299,8 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
         existing_zones = {c.name.value for c in zone_node.children
                           if isinstance(c, EditNode)}
         health_specs: list[tuple[str, str, str, list[int]]] = []
+        mid_of: dict[str, int] = {}  # member interface -> member id
+        spec_rules: list[tuple] = []  # (spec, new_ids, hc_name)
 
         for spec in vdom_specs:
             if spec.name not in existing_zones:
@@ -235,6 +310,7 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
             for m in spec.members:
                 mid = _next_edit_id(members_node)
                 new_ids.append(mid)
+                mid_of[m.interface] = mid
                 edit = EditNode(Token(str(mid), False))
                 edit.children.append(
                     SetLine("interface", [Token(m.interface, True)]))
@@ -268,18 +344,21 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
                         "DHCP/PPPoE links, otherwise set one")
 
             hc = spec.health_check
+            hc_name = ""
             if hc is None:
-                health_specs.append(
-                    (f"fwforge_{spec.name}", "ping", "8.8.8.8", new_ids))
+                hc_name = f"fwforge_{spec.name}"
+                health_specs.append((hc_name, "ping", "8.8.8.8", new_ids))
                 report.add(
                     "info", "sdwan",
                     f"no health-check specified for [{spec.name}] — "
                     "generated a ping check to 8.8.8.8 (edit the plan to "
                     "change or use 'health-check = none')")
             elif hc[0] != "none":
-                health_specs.append(
-                    (f"fwforge_{spec.name}", hc[0], hc[1], new_ids))
+                hc_name = f"fwforge_{spec.name}"
+                health_specs.append((hc_name, hc[0], hc[1], new_ids))
+            spec_rules.append((spec, new_ids, hc_name))
 
+        hc_node = None
         if health_specs:
             hc_node = _ensure_subsection(sdwan, "health-check")
             existing_hc = {c.name.value for c in hc_node.children
@@ -297,6 +376,77 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
                     SetLine("members",
                             [Token(str(i), False) for i in ids]))
                 hc_node.children.append(edit)
+
+        # --- generate the steering: pinned-prefix rules FIRST (they must
+        # match before the catch-all zone rule), then per-zone rules ---
+        specifics = route_info["specifics"]
+        need_rules = bool(specifics) or any(
+            s.rule_mode != "none" for s, _, _ in spec_rules)
+        service_node = _ensure_subsection(sdwan, "service") if need_rules \
+            else None
+
+        for s in specifics:
+            mid = mid_of.get(s["dev"])
+            if mid is None:
+                continue
+            try:
+                plen = ipaddress.IPv4Network(
+                    f"{s['net']}/{s['mask']}").prefixlen
+            except ValueError:
+                report.add("warn", "sdwan",
+                           f"member route {s['id']}: bad prefix "
+                           f"{s['net']}/{s['mask']} — dropped", None)
+                continue
+            addr_name = _ensure_address(
+                scope, f"sdwan-{s['net']}-{plen}", s["net"], s["mask"])
+            _service_rule(service_node, f"pin-{s['net']}-{plen}", "manual",
+                          [mid], dst=addr_name)
+            rt_node = find_config_under(scope, "router", "static")
+            if rt_node is not None:
+                redit = EditNode(Token(str(_next_edit_id(rt_node)), False))
+                redit.children = [
+                    SetLine("dst", [Token(s["net"], False),
+                                    Token(s["mask"], False)]),
+                    SetLine("sdwan-zone",
+                            [Token(zone_of[s["dev"]], True)]),
+                ]
+                rt_node.children.append(redit)
+            report.add(
+                "info", "sdwan",
+                f"member route {s['id']} ({s['net']}/{plen} via "
+                f"'{s['dev']}') replaced by a pinned steering rule "
+                f"(member {mid}) + an sdwan-zone route — member static "
+                "routes are not valid on SD-WAN members")
+
+        for spec, new_ids, hc_name in spec_rules:
+            mode = spec.rule_mode
+            if mode == "auto":
+                mode = "sla" if hc_name else "load-balance"
+            if mode == "none":
+                report.add("info", "sdwan",
+                           f"[{spec.name}] rule=none — no steering rule "
+                           "generated; implicit SD-WAN load balancing "
+                           "applies")
+                continue
+            ordered = list(new_ids)
+            emit_mode = mode
+            if mode == "priority":
+                # ordered preference = FortiOS 'manual' mode (first alive
+                # member wins); 'priority' in FortiOS is link-cost-based
+                pref = mid_of[spec.rule_member]
+                ordered = [pref] + [i for i in new_ids if i != pref]
+                emit_mode = "manual"
+            if mode == "sla" and hc_node is not None:
+                _ensure_sla_target(hc_node, hc_name)
+            _service_rule(service_node, f"{spec.name}-steer", emit_mode,
+                          ordered, dst="all",
+                          hc_name=hc_name if mode == "sla" else "")
+            report.add(
+                "info", "sdwan",
+                f"[{spec.name}] generated '{mode}' steering rule over "
+                f"member(s) {', '.join(str(i) for i in ordered)}"
+                + (f" with SLA target on '{hc_name}'"
+                   if mode == "sla" else ""))
 
     touched = rewrite_policy_refs(tree, mapping, report, "sdwan")
     vdom_note = f" across VDOM(s) {', '.join(sorted(by_vdom))}" \

@@ -54,6 +54,10 @@ class SdwanZoneSpec:
     # (protocol, server) — None = create a default ping check,
     # ("none", "") = explicitly no health check
     health_check: tuple[str, str] | None = None
+    # steering rule: auto = sla when a health check exists, else
+    # load-balance; or explicit sla / load-balance / priority / none
+    rule_mode: str = "auto"
+    rule_member: str = ""  # preferred member for rule_mode == "priority"
     vdom: str | None = None  # optional assertion; derived from members
 
 
@@ -70,6 +74,9 @@ class MigrationPlan:
         for s in self.sdwan:
             for m in s.members:
                 m.interface = self.portmap.get(m.interface, m.interface)
+            if s.rule_member:
+                s.rule_member = self.portmap.get(s.rule_member,
+                                                 s.rule_member)
 
 
 _MEMBER_KEYS = {"gateway", "cost", "weight", "priority"}
@@ -152,6 +159,18 @@ def load_plan(path: str) -> MigrationPlan:
                         raise PlanError(
                             f"[{section}]: health-check must be "
                             "'none' or '<ping|http|dns> <server>'")
+                elif key == "rule":
+                    v = value.split()
+                    if v and v[0] in ("sla", "load-balance", "none") \
+                            and len(v) == 1:
+                        spec.rule_mode = v[0]
+                    elif len(v) == 2 and v[0] == "priority":
+                        spec.rule_mode = "priority"
+                        spec.rule_member = v[1]
+                    else:
+                        raise PlanError(
+                            f"[{section}]: rule must be sla, load-balance, "
+                            "none, or 'priority <member>'")
                 elif key == "vdom":
                     spec.vdom = value.strip()
                 else:

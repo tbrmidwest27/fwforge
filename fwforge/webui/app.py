@@ -144,6 +144,7 @@ def _plan_from_form(form) -> MigrationPlan:
                 plan_mod._parse_sdwan_member(e, f"sdwan {name}")
                 for e in plan_mod._split_members(member_text)]
             spec.health_check = _parse_hc(form.get(f"sdwan_hc_{i}", ""))
+            spec.rule_mode = form.get(f"sdwan_rule_{i}", "auto")
             spec.vdom = form.get(f"sdwan_vdom_{i}", "").strip() or None
             plan.sdwan.append(spec)
         elif name or member_text:

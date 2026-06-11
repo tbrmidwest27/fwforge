@@ -31,6 +31,7 @@ Tracks every FortiConverter capability that is NOT "another source vendor".
 | Hardware-switch → software-switch conversion | ✅ done — `--hw-switch convert`, drops dead switch infra, member renames flow |
 | Merge into an existing target config | ⏳ todo — source + target backup, no overlap |
 | SSL-VPN → IPsec migration assistant | ✅ done — `--sslvpn-to-ipsec` builds an IKEv2 dial-up scaffold (mode-cfg pool, authusrgrp, split-include), rewires policies |
+| Merge into an existing target config | ❌ **declined by design owner** (2026-06-10): not a wanted feature — fwforge outputs are standalone configs/scripts, not in-place edits of a running box's backup |
 | virtual-router → VRF conversion | ⏳ todo (pairs with Juniper/PAN parsers) |
 | FortiManager (.fmg) output target | ⏳ todo — emit per-ADOM policy package |
 | Audit / documentation report (polished) | ⏳ todo — we have md/JSON; add a print/PDF doc |
@@ -200,8 +201,19 @@ A maintained open converter has no real competition.
       after the header (restore-safe). GUI: mode-aware download + all-files
       .zip bundle.
 
-### next (parity matrix ⏳ items, fleet-first order)
-- [ ] merge-into-existing-target-config
+### v0.13 — shipped 2026-06-10
+- [x] **SD-WAN refactor now GENERATES the new construct** (per Adam:
+      "changing an interface to an sdwan member means creating an
+      entirely new config and policies"): steering rules in
+      `config service` (sla default w/ SLA target added to the health
+      check; `rule = sla|load-balance|priority <member>|none` per zone),
+      specific-prefix member routes converted to address-object +
+      pinned manual rule (before the catch-all) + sdwan-zone route,
+      conflicting post-rewrite policies flagged ("first wins").
+- merge-into-existing-config: built, then **withdrawn same day** —
+  declined by design owner; reverted cleanly to v0.12.
+
+### next (parity matrix ⏳ items)
 - [ ] FortiManager output target; polished audit/doc report
 - [ ] **Load the converted config on the actual 701G** when hardware
       arrives: restore, then `diag debug config-error-log read`

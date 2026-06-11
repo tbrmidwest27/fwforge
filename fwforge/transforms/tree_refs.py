@@ -153,6 +153,43 @@ def dedup_policies(tree: CTree, report) -> int:
     return merged
 
 
+_MATCH_ATTRS = ("srcintf", "dstintf", "srcaddr", "dstaddr", "service",
+                "schedule", "action")
+
+
+def flag_conflicting_policies(tree: CTree, report) -> int:
+    """After a zone/SD-WAN rewrite, policies that now match IDENTICAL
+    traffic but differ in other settings (NAT, profiles, logging) are not
+    exact duplicates — FortiOS keeps both and only the first ever matches.
+    Flag them; a human has to reconcile the differing settings."""
+    flagged = 0
+    for path, node in iter_config_nodes(tree):
+        if not path_endswith(path, ("firewall", "policy")):
+            continue
+        groups: dict[tuple, list[EditNode]] = {}
+        for child in node.children:
+            if not isinstance(child, EditNode):
+                continue
+            match = tuple(
+                (line.attr, tuple(t.value for t in line.values))
+                for line in child.children
+                if isinstance(line, SetLine) and line.attr in _MATCH_ATTRS)
+            groups.setdefault(tuple(sorted(match)), []).append(child)
+        for edits in groups.values():
+            if len(edits) < 2:
+                continue
+            flagged += 1
+            labels = ", ".join(_edit_label(e) for e in edits)
+            report.add(
+                "warn", "policies",
+                f"policies {labels} now match identical traffic (same "
+                "interfaces/addresses/service) but differ in other "
+                "settings (NAT/profiles/logging) — only the first ever "
+                "matches; reconcile them into one policy",
+            )
+    return flagged
+
+
 def audit_leftovers(tree: CTree, moved: set[str], allowed: frozenset,
                     report, area: str) -> int:
     """Warn about every remaining reference to a moved interface that is

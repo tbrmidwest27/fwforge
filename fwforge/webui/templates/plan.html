@@ -198,6 +198,11 @@ function addSdwan() {
       placeholder="wan1 gateway=203.0.113.1, wan2 weight=10"></label>
     <label>health-check<br><input type="text" name="sdwan_hc_${si}" size="14"
       placeholder="ping 8.8.8.8"></label>
+    <label>steering<br><select name="sdwan_rule_${si}">
+      <option value="auto" selected>auto (SLA)</option>
+      <option value="sla">sla</option>
+      <option value="load-balance">load-balance</option>
+      <option value="none">none</option></select></label>
     <label>vdom (optional)<br><input type="text" name="sdwan_vdom_${si}" size="8"></label>
     <button type="button" class="ghost small" style="margin-top:1.3rem"
       onclick="this.parentNode.remove()">remove</button>`;

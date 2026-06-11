@@ -194,6 +194,7 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
         merged = tree_refs.dedup_policies(tree, report)
         if merged:
             report.meta["policies_merged"] = merged
+        tree_refs.flag_conflicting_policies(tree, report)
         if plan.zones:
             tree_refs.audit_leftovers(
                 tree, moved,

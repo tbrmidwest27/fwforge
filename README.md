@@ -223,14 +223,20 @@ route conversion stays within it, and members spanning VDOMs are rejected.
 Validated against a real 73k-line, 3-VDOM FortiGate-121G config (lossless
 roundtrip, zero parse warnings).
 
-**`[sdwan …]`** moves interfaces into SD-WAN members with the provisions
-that entails: `config system sdwan` created/extended (status, zone,
-members), per-member default routes removed and their gateways harvested
-onto the members, a single `sdwan-zone` static route created in their
-place, kept member routes flagged, a health check generated (or
-`health-check = none`), policies rewritten to the SD-WAN zone, duplicates
-merged, and the same leftover audit run (a VIP pinned to a member gets
-flagged, for example).
+**`[sdwan …]`** moves interfaces into SD-WAN members by **generating the
+new construct**, not just rewriting references: `config system sdwan`
+(status, zone, members with gateways harvested from the removed default
+routes), a health check **with an SLA target**, and **steering rules**
+(`config service`) — SLA-mode by default, controllable per zone with
+`rule = sla | load-balance | priority <member> | none`. Specific-prefix
+routes that lived on a member (e.g. `10.50/16 via port3`) are converted
+properly: an address object + a `manual` steering rule **pinned to that
+member** (placed before the catch-all rule) + an `sdwan-zone` route — the
+now-invalid member static route is removed. Existing policies are
+rewritten to the zone, exact duplicates merged, and policies that now
+match identical traffic but differ in NAT/profiles are flagged ("first
+wins — reconcile"). The leftover audit still flags what needs a human
+(e.g. a VIP pinned to a member).
 
 ## What's converted today (v1)
 

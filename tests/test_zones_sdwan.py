@@ -6,7 +6,7 @@ import pytest
 from fwforge import cli
 from fwforge.parsers import fortios_tree as ft
 from fwforge.report import Report
-from fwforge.transforms import sdwan, zones
+from fwforge.transforms import sdwan, tree_refs, zones
 from fwforge.transforms.plan import (
     PlanError,
     SdwanMember,
@@ -125,7 +125,7 @@ def test_sdwan_refactor():
     out = ft.serialize(tree)
 
     assert stats["members_added"] == 2
-    assert stats["routes_converted"] == 2
+    assert stats["routes_converted"] == 3  # 2 defaults + 1 pinned specific
     assert "config system sdwan" in out
     assert "set status enable" in out
     assert 'edit "virtual-wan-link"' in out
@@ -136,16 +136,116 @@ def test_sdwan_refactor():
     assert "set weight 10" in out
     # one sdwan-zone route replaces the two member default routes
     assert 'set sdwan-zone "virtual-wan-link"' in out
-    # the specific route on port3 is kept (and warned about)
-    assert "set dst 10.50.0.0 255.255.0.0" in out
-    assert any("may reject routes" in f.message for f in report.findings)
-    # health check with both member ids
+    # health check with both member ids + a generated SLA target
     assert 'edit "fwforge_virtual-wan-link"' in out
     assert 'set server "8.8.8.8"' in out
     assert "set members 1 2" in out
+    assert "set latency-threshold 250" in out
+    # generated steering: SLA rule over both members
+    assert "config service" in out
+    assert 'set name "virtual-wan-link-steer"' in out
+    assert "set mode sla" in out
+    assert "set priority-members 1 2" in out
     # policies now point at the sdwan zone
     assert 'set dstintf "virtual-wan-link"' in out
     assert 'set dstintf "port3"' not in out
+
+
+def test_member_specific_route_pinned():
+    """The 10.50/16-via-port3 route becomes: address object + manual
+    steering rule pinned to that member + an sdwan-zone route — not an
+    (invalid) static route on the member."""
+    tree = load_tree()
+    report = Report()
+    spec = SdwanZoneSpec(
+        name="virtual-wan-link",
+        members=[SdwanMember(interface="port3"),
+                 SdwanMember(interface="port4")],
+        health_check=("ping", "8.8.8.8"),
+    )
+    sdwan.apply_sdwan(tree, [spec], report)
+    out = ft.serialize(tree)
+
+    assert 'set device "port3"' not in out          # old member route gone
+    assert 'edit "sdwan-10.50.0.0-16"' in out       # generated address obj
+    assert "set subnet 10.50.0.0 255.255.0.0" in out
+    assert 'set name "pin-10.50.0.0-16"' in out     # pinned steering rule
+    assert "set mode manual" in out
+    assert "set priority-members 1" in out          # port3 = member 1
+    assert 'set dst "sdwan-10.50.0.0-16"' in out
+    assert "set dst 10.50.0.0 255.255.0.0" in out   # zone route for prefix
+    # the pin rule must come BEFORE the catch-all steer rule
+    assert out.index("pin-10.50.0.0-16") < out.index("virtual-wan-link-steer")
+    assert any("pinned steering rule" in f.message for f in report.findings)
+
+
+def test_rule_modes():
+    # priority: preferred member first, FortiOS mode 'manual'
+    tree = load_tree()
+    spec = SdwanZoneSpec(
+        name="vwl", members=[SdwanMember(interface="port3"),
+                             SdwanMember(interface="port4")],
+        health_check=("none", ""), rule_mode="priority", rule_member="port4")
+    sdwan.apply_sdwan(tree, [spec], Report())
+    out = ft.serialize(tree)
+    steer = out[out.index('set name "vwl-steer"'):]
+    assert "set mode manual" in steer.split("next")[0]
+    assert "set priority-members 2 1" in steer  # port4 (id 2) preferred
+
+    # none: no steer rule (pins still allowed)
+    tree2 = load_tree()
+    spec2 = SdwanZoneSpec(
+        name="vwl", members=[SdwanMember(interface="port4")],
+        health_check=("none", ""), rule_mode="none")
+    sdwan.apply_sdwan(tree2, [spec2], Report())
+    assert '"vwl-steer"' not in ft.serialize(tree2)
+
+    # auto with no health-check -> load-balance
+    tree3 = load_tree()
+    spec3 = SdwanZoneSpec(
+        name="vwl", members=[SdwanMember(interface="port4")],
+        health_check=("none", ""))
+    sdwan.apply_sdwan(tree3, [spec3], Report())
+    out3 = ft.serialize(tree3)
+    assert 'set name "vwl-steer"' in out3
+    assert "set mode load-balance" in out3
+
+
+def test_rule_validation():
+    tree = load_tree()
+    with pytest.raises(PlanError, match="not one of this zone's members"):
+        sdwan.apply_sdwan(tree, [SdwanZoneSpec(
+            name="vwl", members=[SdwanMember(interface="port4")],
+            rule_mode="priority", rule_member="port9")], Report())
+    tree2 = load_tree()
+    with pytest.raises(PlanError, match="needs a health-check"):
+        sdwan.apply_sdwan(tree2, [SdwanZoneSpec(
+            name="vwl", members=[SdwanMember(interface="port4")],
+            health_check=("none", ""), rule_mode="sla")], Report())
+
+
+def test_conflicting_policies_flagged():
+    text = (
+        "config system interface\n"
+        "    edit \"port1\"\n        set vdom \"root\"\n    next\nend\n"
+        "config firewall policy\n"
+        "    edit 1\n        set name \"a\"\n"
+        "        set srcintf \"lan\"\n        set dstintf \"wan\"\n"
+        "        set srcaddr \"all\"\n        set dstaddr \"all\"\n"
+        "        set action accept\n        set schedule \"always\"\n"
+        "        set service \"ALL\"\n        set nat enable\n    next\n"
+        "    edit 2\n        set name \"b\"\n"
+        "        set srcintf \"lan\"\n        set dstintf \"wan\"\n"
+        "        set srcaddr \"all\"\n        set dstaddr \"all\"\n"
+        "        set action accept\n        set schedule \"always\"\n"
+        "        set service \"ALL\"\n    next\nend\n"
+    )
+    tree = ft.parse_config(text)
+    report = Report()
+    n = tree_refs.flag_conflicting_policies(tree, report)
+    assert n == 1
+    assert any("only the first ever matches" in f.message
+               for f in report.findings)
 
 
 # -- the full plan through the CLI -------------------------------------------
@@ -169,7 +269,7 @@ def test_full_plan_cli(tmp_path):
     assert report["meta"]["policies_merged"] == 1
     assert report["meta"]["zones_created"] == 1
     assert report["meta"]["sdwan_members_added"] == 2
-    assert report["meta"]["default_routes_converted"] == 2
+    assert report["meta"]["default_routes_converted"] == 3
 
     # leftover-reference audit catches what we must fix by hand
     messages = [f["message"] for f in report["findings"]]
