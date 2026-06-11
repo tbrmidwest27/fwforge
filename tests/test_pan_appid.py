@@ -1,0 +1,125 @@
+from pathlib import Path
+
+from fwforge import cli
+from fwforge.parsers import pan_appid, paloalto
+
+FIX = Path(__file__).parent / "fixtures"
+
+APPCFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip>
+      <entry name="10.0.0.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="trust"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <rulebase><security><rules>
+      <entry name="App Rule">
+        <from><member>trust</member></from>
+        <to><member>trust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application>
+          <member>web-browsing</member>
+          <member>facebook-base</member>
+          <member>youtube-base</member>
+          <member>ssl</member>
+          <member>custom-internal-app</member>
+        </application>
+        <service><member>any</member></service>
+        <action>allow</action>
+      </entry>
+      <entry name="Web Only">
+        <from><member>trust</member></from>
+        <to><member>trust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>web-browsing</member></application>
+        <service><member>any</member></service>
+        <action>allow</action>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_map_apps():
+    cats, ids, transport, unmapped = pan_appid.map_apps(
+        ["web-browsing", "facebook-base", "ssl", "custom-app", "any"])
+    assert cats == ["Web.Client", "Social.Media"]
+    assert ids == [23, 25]
+    assert transport == ["ssl"]
+    assert unmapped == ["custom-app"]
+
+
+def test_category_ids_known():
+    # every mapped category resolves to an id
+    for cat in set(pan_appid.APP_TO_CAT.values()):
+        assert cat in pan_appid.CATEGORY_ID
+
+
+def test_applist_built_and_deduped():
+    cfg = paloalto.parse(APPCFG, "app.xml")
+    app_rule = next(p for p in cfg.policies if p.name == "App Rule")
+    web_rule = next(p for p in cfg.policies if p.name == "Web Only")
+    assert app_rule.app_list == "pan-appctrl-1"
+    # categories: web-browsing, facebook, youtube -> 3 cats
+    al = next(a for a in cfg.app_lists if a.name == "pan-appctrl-1")
+    assert al.categories == [23, 25, 5]  # Web.Client, Social.Media, Video
+    # the web-only rule maps to a DIFFERENT set -> its own profile
+    assert web_rule.app_list == "pan-appctrl-2"
+    assert len(cfg.app_lists) == 2
+
+    msgs = [m for _, _, m, _ in cfg.meta["findings"]]
+    assert any("transport app(s) ignored: ssl" in m for m in msgs)
+    assert any("UNMAPPED (add manually): custom-internal-app" in m
+               for m in msgs)
+
+
+def test_applist_dedup_same_set(tmp_path):
+    # two rules with the same app set share one profile
+    cfg = paloalto.parse(
+        APPCFG.replace("<member>web-browsing</member></application>",
+                       "<member>web-browsing</member>"
+                       "<member>facebook-base</member>"
+                       "<member>youtube-base</member>"
+                       "<member>ssl</member>"
+                       "<member>custom-internal-app</member></application>"),
+        "x.xml")
+    assert len({p.app_list for p in cfg.policies}) == 1
+    assert len(cfg.app_lists) == 1
+
+
+def test_e2e_emits_application_list(tmp_path):
+    (tmp_path / "app.xml").write_text(APPCFG, encoding="utf-8")
+    rc = cli.main(["convert", str(tmp_path / "app.xml"), "-o", str(tmp_path),
+                   "--map", str(_write_map(tmp_path))])
+    assert rc == 0
+    conf = (tmp_path / "app.config-all.txt").read_text(encoding="utf-8")
+    assert "config application list" in conf
+    assert 'edit "pan-appctrl-1"' in conf
+    assert "set category 23 25 5" in conf
+    assert "set other-application-action block" in conf
+    blocks = conf.split("    edit ")
+    apppol = next(b for b in blocks if 'set name "App_Rule"' in b)
+    assert 'set application-list "pan-appctrl-1"' in apppol
+    assert "set utm-status enable" in apppol
+
+
+def _write_map(tmp_path):
+    m = tmp_path / "ports.map"
+    m.write_text("ethernet1/1 = port1\n", encoding="utf-8")
+    return m
+
+
+def test_pa_sample_still_maps(tmp_path):
+    # the original sample's 'Out Web' rule (web-browsing, ssl) now also
+    # gets an application-list, and existing behavior is intact
+    cfg = paloalto.parse((FIX / "pa_sample.xml").read_text(encoding="utf-8"),
+                         "pa_sample.xml")
+    out = next(p for p in cfg.policies if p.name == "Out Web")
+    assert out.app_list == "pan-appctrl-1"
+    al = cfg.app_lists[0]
+    assert al.categories == [23]  # web-browsing -> Web.Client; ssl ignored
+    assert "PAN apps: web-browsing, ssl" in out.comment  # comment preserved

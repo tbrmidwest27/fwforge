@@ -97,6 +97,17 @@ class ServiceGroup:
 
 
 @dataclass
+class AppList:
+    """FortiOS application-control profile (from PAN App-ID conversion)."""
+
+    name: str
+    categories: list[int] = field(default_factory=list)
+    cat_names: list[str] = field(default_factory=list)
+    apps: list[str] = field(default_factory=list)  # source PAN app names
+    source: SourceRef | None = None
+
+
+@dataclass
 class Policy:
     name: str = ""
     src_zones: list[str] = field(default_factory=list)  # interface/zone names
@@ -112,6 +123,7 @@ class Policy:
     dst_negate: bool = False
     comment: str | None = None
     dst_inferred: bool = False  # dstintf derived from routing, not the source
+    app_list: str = ""  # FortiOS application-list profile name (App-ID)
     source: SourceRef | None = None
 
 
@@ -193,6 +205,7 @@ class FirewallConfig:
     addr_groups: list[AddressGroup] = field(default_factory=list)
     services: list[Service] = field(default_factory=list)
     svc_groups: list[ServiceGroup] = field(default_factory=list)
+    app_lists: list[AppList] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
     vips: list[Vip] = field(default_factory=list)
     nats: list[NatRule] = field(default_factory=list)

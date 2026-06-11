@@ -256,6 +256,16 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.19 — shipped 2026-06-11
+- [x] **Palo Alto App-ID -> application-control mapping** (parsers/
+      pan_appid.py): curated PAN-app -> FortiOS category table (clean-room;
+      FC's licensed numeric ID file not reused). Rules using App-ID get a
+      generated `config application list` profile (set category + action
+      pass, other-application-action block) wired onto the policy via
+      `set application-list` + utm-status; profiles deduped across rules.
+      Transport apps (ssl/tls) ignored, unmapped apps flagged by name.
+      Category-level (coarser than per-signature) and reported as such.
+
 ### v0.18 — shipped 2026-06-11
 - [x] **PAN-OS + pfSense IPsec conversion** (closing a FC-edge gap):
       shared parsers/_vpn_common.py builds route-based phase1/phase2 +

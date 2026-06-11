@@ -106,6 +106,7 @@ class Emitter:
         self.addr_groups()
         self.services()
         self.svc_groups()
+        self.app_lists()
         self.vpn()
         self.vips()
         if self.nat_mode == "central":
@@ -265,6 +266,34 @@ class Emitter:
                 self.line(f"        set comment {_q(g.comment[:255])}")
             self.line("    next")
         self.line("end")
+
+    def app_lists(self):
+        if not self.cfg.app_lists:
+            return
+        self.line()
+        self.line("config application list")
+        for al in self.cfg.app_lists:
+            self.line(f"    edit {_q(al.name)}")
+            self.line("        set other-application-action block")
+            if al.apps:
+                self.line("        set comment "
+                          + _q(("from PAN App-ID: "
+                                + ", ".join(al.apps))[:255]))
+            self.line("        config entries")
+            self.line("            edit 1")
+            self.line("                set category "
+                      + " ".join(str(c) for c in al.categories))
+            self.line("                set action pass")
+            self.line("            next")
+            self.line("        end")
+            self.line("    next")
+        self.line("end")
+        self.report.add(
+            "info", "policies",
+            f"{len(self.cfg.app_lists)} application-list profile(s) created "
+            "from PAN App-ID (category-level). Policies using them get "
+            "'set application-list'; attach a deep-inspection ssl-ssh "
+            "profile if you need control over encrypted apps.")
 
     def vpn(self):
         cfg = self.cfg
@@ -433,6 +462,9 @@ class Emitter:
                       + " ".join(_q(s) for s in (p.services or ["ALL"])))
             self.line("        set logtraffic "
                       + ("all" if p.log else "disable"))
+            if p.app_list:
+                self.line("        set utm-status enable")
+                self.line(f"        set application-list {_q(p.app_list)}")
             nat_hit = any(
                 (sz, dz) in nat_pairs or ("*", dz) in nat_pairs
                 for sz in (p.src_zones or [])

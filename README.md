@@ -261,7 +261,8 @@ wins — reconcile"). The leftover audit still flags what needs a human
 | pfSense (config.xml) | interfaces (incl. VLANs, logical wan/lan/optN names), aliases → addresses/groups/services (multi-entry, nested, port aliases with colon ranges), per-interface filter rules → policies (`lan net`/`wanip` macros, `<not/>` → negate, reject/block, log/disabled), gateways + static routes (incl. `defaultgw4`), port forwards & 1:1 NAT → VIPs, outbound automatic/hybrid → NAT on WAN-egress policies. Floating rules, rule-level policy routing, manual outbound NAT, IPv6, OpenVPN (no FortiOS equivalent), and IPsec are flagged |
 | FortiOS | full-config lossless tree migration with interface mapping, zone/SD-WAN refactors, multi-VDOM |
 | site-to-site IPsec | converted to route-based phase1/phase2-interface for **all three** cross-vendor sources (ASA crypto-maps, PAN ike-gateway/tunnel, pfSense phase1/phase2) — proposals, PFS, PSK (encrypted-export → placeholder), tunnel routes + bidirectional policies with route-inferred LAN side |
-| not yet | ASA twice-NAT (flagged), IPv6 rules, PA App-ID translation table, Check Point / Juniper parsers |
+| Palo Alto App-ID | mapped to FortiOS application-control **categories** — rules generate a `config application list` profile wired onto the policy (`set application-list`); transport apps ignored, unmapped flagged. Category-level (coarser than FortiConverter's licensed per-signature ID table, which can't be reused clean-room) |
+| not yet | ASA twice-NAT (flagged), IPv6 rules, Check Point / Juniper parsers |
 
 Cross-vendor conversions choose their **NAT mode**: `--nat-mode policy`
 (default — per-policy `nat enable` + VIPs) or `--nat-mode central`

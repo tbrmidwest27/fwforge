@@ -26,6 +26,7 @@ import xml.parsers.expat
 from ..model import (
     Address,
     AddressGroup,
+    AppList,
     FirewallConfig,
     Interface,
     NatRule,
@@ -37,6 +38,7 @@ from ..model import (
     Zone,
 )
 from . import _vpn_common as vpn
+from . import pan_appid
 
 LINE = "__line__"
 
@@ -652,15 +654,10 @@ class PaloParser:
             desc = r.get("description")
             if isinstance(desc, str):
                 comment_bits.append(desc)
+            app_list = self._app_list_for(apps, name, ref)
             if apps != ["any"]:
                 shown = ", ".join(apps[:6]) + (" …" if len(apps) > 6 else "")
                 comment_bits.append(f"PAN apps: {shown}")
-                self.note(
-                    "warn", "policies",
-                    f"rule '{name}' matches App-ID ({shown}) — FortiOS "
-                    "policies match services; converted on the service "
-                    "match only. Recreate app control with an "
-                    "application-list profile.", ref)
             if app_default:
                 self.note(
                     "warn", "policies",
@@ -687,6 +684,7 @@ class PaloParser:
                 disabled=str(r.get("disabled", "no")) == "yes",
                 src_negate=str(r.get("negate-source", "no")) == "yes",
                 dst_negate=str(r.get("negate-destination", "no")) == "yes",
+                app_list=app_list,
                 source=ref,
             )
             if action not in ("allow", "deny", "drop"):
@@ -696,6 +694,42 @@ class PaloParser:
             if comment_bits:
                 pol.comment = "; ".join(comment_bits)[:1023]
             self.cfg.policies.append(pol)
+
+    def _app_list_for(self, apps: list[str], rule: str,
+                      ref: SourceRef) -> str:
+        """Map a rule's PAN App-IDs to a FortiOS application-list profile
+        (deduped across rules). Returns the profile name, or ''."""
+        if apps == ["any"] or not apps:
+            return ""
+        cats, ids, transport, unmapped = pan_appid.map_apps(apps)
+        if not cats:
+            if unmapped:
+                self.note("warn", "policies",
+                          f"rule '{rule}': App-ID(s) {', '.join(unmapped)} "
+                          "have no FortiOS app-control category mapping — "
+                          "add application control manually", ref)
+            return ""
+        key = tuple(sorted(ids))
+        cache = self.cfg.meta.setdefault("_applist_cache", {})
+        if key not in cache:
+            name = f"pan-appctrl-{len(self.cfg.app_lists) + 1}"
+            self.cfg.app_lists.append(AppList(
+                name=name, categories=ids, cat_names=cats,
+                apps=[a for a in apps if a not in ("any",
+                                                   "application-default")],
+                source=ref))
+            cache[key] = name
+        name = cache[key]
+        msg = (f"rule '{rule}': App-ID -> application-list '{name}' "
+               f"(categories: {', '.join(cats)})")
+        if transport:
+            msg += f"; transport app(s) ignored: {', '.join(transport)}"
+        if unmapped:
+            msg += (f"; UNMAPPED (add manually): {', '.join(unmapped)}")
+        self.note("warn", "policies", msg
+                  + ". Category-level control approximates PAN's per-app "
+                  "match; verify and tighten.", ref)
+        return name
 
     def _zone_single_member(self, zone_name: str) -> str:
         for z in self.cfg.zones:
