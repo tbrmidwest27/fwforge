@@ -51,6 +51,7 @@
     <a class="btn" href="{{ url_for('download', jid=jid, which='conf') }}">download config (.conf)</a>
     {% endif %}
     <a class="btn" href="{{ url_for('bundle', jid=jid) }}">all files (.zip)</a>
+    <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.html') }}">audit report (.html)</a>
     <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.md') }}">report.md</a>
     <a class="btn ghost" href="{{ url_for('download', jid=jid, which='report.json') }}">report.json</a>
     {% if r.mode == "migrate" %}
@@ -115,12 +116,21 @@
 
 <!-- ============ Output ============ -->
 <div class="tabpane" id="pane-output">
-  <p class="muted">{{ r.main_name }}
+  <div class="searchbar">
+    {% if files|length > 1 %}
+    <select onchange="location='?file='+encodeURIComponent(this.value)">
+      {% for f in files %}
+      <option value="{{ f }}" {% if f == sel %}selected{% endif %}>{{ f }}</option>
+      {% endfor %}
+    </select>
+    {% else %}<strong>{{ sel }}</strong>{% endif %}
+    <span class="muted">
     {% if preview_total > preview|length %}
-      — showing first {{ preview|length }} of {{ preview_total }} lines
+      showing first {{ preview|length }} of {{ preview_total }} lines
       (download for the full file)
-    {% else %} — {{ preview_total }} lines{% endif %}
-  </p>
+    {% else %}{{ preview_total }} lines{% endif %}
+    </span>
+  </div>
   <pre class="code">{% for line in preview %}<div><span class="ln">{{ loop.index }}</span>{{ line }}</div>{% endfor %}</pre>
 </div>
 
@@ -146,6 +156,11 @@ document.querySelectorAll("#rtabs button").forEach(btn => {
       p => p.classList.toggle("show", p.id === "pane-" + btn.dataset.pane));
   };
 });
+const ACTIVE = "{{ active_tab }}";
+if (ACTIVE && ACTIVE !== "summary") {
+  const b = document.querySelector(`#rtabs button[data-pane="${ACTIVE}"]`);
+  if (b) b.onclick();
+}
 function filterFindings() {
   const q = document.getElementById("fsearch").value.toLowerCase();
   const lvl = document.getElementById("flevel").value;

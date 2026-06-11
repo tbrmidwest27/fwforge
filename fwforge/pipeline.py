@@ -100,6 +100,12 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 + (f" (VDOM '{vstats.get('vdom_name', vdom_name)}')"
                    if vdom_mode == 'multi' else ""))
 
+    if plan.vdommap:
+        rstats = vdommode.rename_vdoms(tree, plan.vdommap, report)
+        if rstats["edits"]:
+            report.meta["vdoms_renamed"] = ", ".join(
+                f"{s}->{d}" for s, d in plan.vdommap.items() if s != d)
+
     if hw_switch == "convert":
         hstats = hwswitch.convert(tree, report)
         if hstats["converted"]:

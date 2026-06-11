@@ -144,6 +144,40 @@ def test_upgrade_artifacts_shown(client):
     assert "7.4 -&gt; 8.0" in page or "7.4 -> 8.0" in page
 
 
+def test_vdom_mapping_step(client):
+    jid = _load(client, "fortios_multivdom.conf")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "VDOM Mapping" in page
+    assert 'name="vmap_src" value="FGSP"' in page
+
+    form = {"fortios": "8.0",
+            "map_src": ["port1"], "map_dst": ["port1"],
+            "vmap_src": ["root", "FGSP"],
+            "vmap_dst": ["root", "EDGE"]}
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert 'edit "EDGE"' in conf
+    assert "FGSP" not in conf
+
+
+def test_output_tab_branch_selector(client):
+    jid = _load(client, "asa_sample.cfg")
+    client.post(f"/job/{jid}/convert",
+                data={"fortios": "7.4",
+                      "map_src": ["outside"], "map_dst": ["wan1"]},
+                follow_redirects=True)
+    page = client.get(f"/job/{jid}/result").data.decode()
+    assert ".branches/" in page  # selector lists branch files
+    branch = "asa_sample.branches/01-firewall-address.txt"
+    page2 = client.get(f"/job/{jid}/result?file={branch}").data.decode()
+    assert "config firewall address" in page2
+    assert 'ACTIVE = "output"' in page2  # lands on the Output tab
+    # html audit report downloadable
+    rep = client.get(f"/job/{jid}/dl/report.html")
+    assert rep.status_code == 200
+    assert b"fwforge conversion report" in rep.data
+
+
 def test_jobs_persist_across_restart(client, tmp_path, monkeypatch):
     jid = _load(client, "fortios_sample.conf")
     # simulate a fresh server start against the same jobs dir

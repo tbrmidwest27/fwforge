@@ -89,6 +89,11 @@ def _load_migration_plan(args) -> MigrationPlan:
     if args.map:
         plan.portmap.update(portmap.load_map(args.map))
         plan.translate_members()
+    if getattr(args, "vdom_map", None):
+        for pair in args.vdom_map.split(","):
+            if "=" in pair:
+                s, d = pair.split("=", 1)
+                plan.vdommap[s.strip()] = d.strip()
     return plan
 
 
@@ -119,6 +124,8 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
         report.to_markdown(cfg, text), encoding="utf-8")
     (base.with_suffix(".report.json")).write_text(
         report.to_json(cfg), encoding="utf-8")
+    (base.with_suffix(".report.html")).write_text(
+        report.to_html(cfg, text), encoding="utf-8")
     if result.sample_portmap:
         (base.with_suffix(".portmap")).write_text(
             result.sample_portmap, encoding="utf-8")
@@ -163,6 +170,8 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
         report.to_markdown(), encoding="utf-8")
     (base.with_suffix(".report.json")).write_text(
         report.to_json(), encoding="utf-8")
+    (base.with_suffix(".report.html")).write_text(
+        report.to_html(), encoding="utf-8")
     if result.sample_portmap:
         (outdir / (stem + ".portmap")).write_text(
             result.sample_portmap, encoding="utf-8")
@@ -173,8 +182,8 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
         print(f"interface renames: {report.meta.get('interface_renames', 0)} "
               f"edits, {report.meta.get('reference_rewrites', 0)} "
               "references rewritten")
-    for key in ("vdom_mode", "hw_switch_converted", "sslvpn_tunnels",
-                "zones_created", "sdwan_members_added",
+    for key in ("vdom_mode", "vdoms_renamed", "hw_switch_converted",
+                "sslvpn_tunnels", "zones_created", "sdwan_members_added",
                 "default_routes_converted", "policies_merged",
                 "fortios_versions", "upgrade_artifacts",
                 "upgrade_auto_fixed"):
@@ -283,6 +292,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="with --vdom-mode multi, drop global-scope sections "
                         "so the output loads into an existing VDOM without "
                         "overwriting the box's global config")
+    p.add_argument("--vdom-map", metavar="SRC=DST[,SRC=DST...]",
+                   help="rename VDOMs during a multi-VDOM migration "
+                        "(FortiConverter's VDOM Mapping)")
     p.add_argument("--hw-switch", default="keep",
                    choices=["keep", "convert"],
                    help="'convert' rewrites hardware-switch interfaces as "

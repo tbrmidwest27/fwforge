@@ -1,12 +1,93 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from fwforge import cli
 from fwforge.parsers import fortios_tree as ft
 from fwforge.report import Report
 from fwforge.transforms import tree_refs, vdommode
+from fwforge.transforms.plan import PlanError, load_plan
 
 FIX = Path(__file__).parent / "fixtures"
+
+
+def test_rename_vdoms():
+    tree = ft.parse_config(
+        (FIX / "fortios_multivdom.conf").read_text(encoding="utf-8"))
+    report = Report()
+    stats = vdommode.rename_vdoms(tree, {"FGSP": "EDGE"}, report)
+    out = ft.serialize(tree)
+    assert stats["edits"] == 2   # declaration edit + body edit
+    assert stats["refs"] == 2    # port3 + port4 `set vdom`
+    assert 'edit "EDGE"' in out
+    assert 'set vdom "EDGE"' in out
+    assert "FGSP" not in out
+    names = [n for n, _ in ft.vdom_scopes(tree)]
+    assert "EDGE" in names and "FGSP" not in names
+
+
+def test_rename_vdoms_covers_mgmt_and_properties():
+    text = (
+        "#config-version=FG121G-8.0.0-FW-build0167-260420:opmode=0:vdom=1\n"
+        "config vdom\nedit root\nnext\nedit LAB\nnext\nend\n"
+        "config global\n"
+        "    config system global\n"
+        "        set management-vdom \"LAB\"\n"
+        "    end\n"
+        "    config system vdom-property\n"
+        "        edit \"LAB\"\n            set description \"x\"\n"
+        "        next\n    end\n"
+        "    config system interface\n"
+        "        edit \"port1\"\n            set vdom \"LAB\"\n"
+        "        next\n    end\nend\n"
+        "config vdom\nedit root\nconfig system settings\nend\nnext\nend\n"
+        "config vdom\nedit LAB\nconfig system settings\nend\nnext\nend\n"
+    )
+    tree = ft.parse_config(text)
+    vdommode.rename_vdoms(tree, {"LAB": "PROD"}, Report())
+    out = ft.serialize(tree)
+    assert 'set management-vdom "PROD"' in out
+    assert 'edit "PROD"' in out      # vdom-property entry renamed too
+    assert "LAB" not in out
+
+
+def test_rename_vdoms_validation():
+    def mv():
+        return ft.parse_config(
+            (FIX / "fortios_multivdom.conf").read_text(encoding="utf-8"))
+    with pytest.raises(PlanError, match="not in this config"):
+        vdommode.rename_vdoms(mv(), {"NOPE": "X"}, Report())
+    with pytest.raises(PlanError, match="invalid"):
+        vdommode.rename_vdoms(mv(), {"FGSP": "way-too-long-name"}, Report())
+    with pytest.raises(PlanError, match="already exists"):
+        vdommode.rename_vdoms(mv(), {"FGSP": "root"}, Report())
+    with pytest.raises(PlanError, match="multi-VDOM source"):
+        flat = ft.parse_config(
+            (FIX / "fortios_sample.conf").read_text(encoding="utf-8"))
+        vdommode.rename_vdoms(flat, {"root": "X"}, Report())
+
+
+def test_plan_vdommap_section(tmp_path):
+    f = tmp_path / "m.plan"
+    f.write_text("[vdommap]\nFGSP = EDGE\n", encoding="utf-8")
+    plan = load_plan(str(f))
+    assert plan.vdommap == {"FGSP": "EDGE"}
+
+
+def test_cli_vdom_map(tmp_path):
+    rc = cli.main([
+        "convert", str(FIX / "fortios_multivdom.conf"), "-o", str(tmp_path),
+        "--vdom-map", "FGSP=EDGE",
+    ])
+    assert rc == 0
+    conf = (tmp_path / "fortios_multivdom.conf").read_text(encoding="utf-8")
+    report = json.loads(
+        (tmp_path / "fortios_multivdom.report.json").read_text(
+            encoding="utf-8"))
+    assert 'edit "EDGE"' in conf
+    assert "FGSP" not in conf
+    assert report["meta"]["vdoms_renamed"] == "FGSP->EDGE"
 
 
 def flat_tree():

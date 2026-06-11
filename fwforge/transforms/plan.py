@@ -64,6 +64,7 @@ class SdwanZoneSpec:
 @dataclass
 class MigrationPlan:
     portmap: dict[str, str] = field(default_factory=dict)
+    vdommap: dict[str, str] = field(default_factory=dict)
     zones: list[ZoneSpec] = field(default_factory=list)
     sdwan: list[SdwanZoneSpec] = field(default_factory=list)
 
@@ -117,6 +118,9 @@ def load_plan(path: str) -> MigrationPlan:
 
         if kind == "portmap":
             plan.portmap.update(dict(cp.items(section)))
+
+        elif kind == "vdommap":
+            plan.vdommap.update(dict(cp.items(section)))
 
         elif kind == "zone":
             if len(parts) < 2:

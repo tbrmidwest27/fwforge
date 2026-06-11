@@ -89,6 +89,22 @@ def test_rerun_clears_stale_branches(tmp_path):
         ["01-firewall-address.txt"]
 
 
+def test_html_report(tmp_path):
+    from fwforge import cli
+    report = Report()
+    report.add("error", "nat", "x <b>not</b> converted")
+    html = report.to_html()
+    assert "fwforge conversion report" in html
+    assert "&lt;b&gt;not&lt;/b&gt;" in html  # escaped, not injected
+    # CLI writes it alongside the other reports
+    rc = cli.main(["convert", str(FIX / "fortios_sample.conf"),
+                   "-o", str(tmp_path)])
+    assert rc in (0, 1)
+    out = (tmp_path / "fortios_sample.report.html").read_text(
+        encoding="utf-8")
+    assert "Summary" in out and "print this page to PDF" in out
+
+
 def test_restorable_header_stays_first_line(tmp_path):
     """A migrate backup must keep #config-version on line 1 so restore
     accepts it — comments go after the header block, not before."""

@@ -34,7 +34,8 @@ Tracks every FortiConverter capability that is NOT "another source vendor".
 | Merge into an existing target config | ❌ **declined by design owner** (2026-06-10): not a wanted feature — fwforge outputs are standalone configs/scripts, not in-place edits of a running box's backup |
 | virtual-router → VRF conversion | ⏳ todo (pairs with Juniper/PAN parsers) |
 | FortiManager (.fmg) output target | ⏳ todo — emit per-ADOM policy package |
-| Audit / documentation report (polished) | ⏳ todo — we have md/JSON; add a print/PDF doc |
+| Audit / documentation report (polished) | ✅ done — self-contained `report.html`, print-to-PDF friendly, escaped/colored findings |
+| VDOM Mapping page | ✅ done — wizard step + `[vdommap]` plan section + `--vdom-map`; renames config vdom edits, interface `set vdom`, management-vdom, vdom-property |
 | **Modern extras FC lacks** | route-based dstintf inference, version-upgrade
   artifact scan (silent default-flips), zone/SD-WAN restructuring,
   per-line provenance, deterministic diff, fully local, free |
@@ -225,8 +226,18 @@ A maintained open converter has no real competition.
       line-numbered preview / Changes diff), **persistent jobs**
       (job.json per job, reloaded at startup).
 
+### v0.15 — shipped 2026-06-11
+- [x] **VDOM Mapping** (FortiConverter's page): rename_vdoms transform
+      (config vdom edits, `set vdom`, management-vdom, vdom-property;
+      11-char/charset validation), `[vdommap]` plan section, `--vdom-map`
+      CLI flag, wizard step for multi-VDOM sources.
+- [x] **Polished HTML audit report**: self-contained print-to-PDF
+      `report.html` written by CLI + GUI, download button on results.
+- [x] **Output-tab file selector**: browse config-all + every per-branch
+      script in the results preview.
+
 ### next (parity matrix ⏳ items)
-- [ ] FortiManager output target; polished audit/doc report
+- [ ] FortiManager output target (last remaining matrix row)
 - [ ] **Load the converted config on the actual 701G** when hardware
       arrives: restore, then `diag debug config-error-log read`
 - [ ] (later) more parsers: Check Point, Juniper, SonicWall

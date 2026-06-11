@@ -166,6 +166,10 @@ def _plan_from_form(form) -> MigrationPlan:
         src, dst = src.strip(), dst.strip()
         if src and dst:
             plan.portmap[src] = dst
+    for src, dst in zip(form.getlist("vmap_src"), form.getlist("vmap_dst")):
+        src, dst = src.strip(), dst.strip()
+        if src and dst and src != dst:
+            plan.vdommap[src] = dst
     i = 0
     while f"zone_name_{i}" in form:
         name = form.get(f"zone_name_{i}", "").strip()
@@ -337,10 +341,14 @@ def create_app() -> Flask:
                 report.to_markdown(result.cfg, text), encoding="utf-8")
             (jdir / "report.json").write_text(
                 report.to_json(result.cfg), encoding="utf-8")
+            (jdir / "report.html").write_text(
+                report.to_html(result.cfg, text), encoding="utf-8")
         else:
             (jdir / "report.md").write_text(report.to_markdown(),
                                             encoding="utf-8")
             (jdir / "report.json").write_text(report.to_json(),
+                                              encoding="utf-8")
+            (jdir / "report.html").write_text(report.to_html(),
                                               encoding="utf-8")
 
         diff_render, diff_changed, diff_full = [], 0, ""
@@ -383,16 +391,28 @@ def create_app() -> Flask:
         meta = _job(jid)
         if "result" not in meta:
             return redirect(url_for("job", jid=jid))
-        # output preview for the Output tab
-        main = JOBS_DIR / jid / meta["result"]["main_name"]
+        r = meta["result"]
+        # files available for the Output tab (main + branch scripts)
+        files = [r["main_name"]]
+        if r.get("split"):
+            bdir = JOBS_DIR / jid / f"{r['stem']}.branches"
+            if bdir.is_dir():
+                files += [f"{r['stem']}.branches/{p.name}"
+                          for p in sorted(bdir.glob("*.txt"))]
+        sel = request.args.get("file", "")
+        if sel not in files:
+            sel = files[0]
+        fpath = JOBS_DIR / jid / sel
         preview: list[str] = []
-        if main.is_file():
-            preview = main.read_text(
+        if fpath.is_file():
+            preview = fpath.read_text(
                 encoding="utf-8", errors="replace").splitlines()
         shown = preview[:PREVIEW_CAP]
         return render_template(
-            "result.html", jid=jid, meta=meta, r=meta["result"],
-            preview=shown, preview_total=len(preview))
+            "result.html", jid=jid, meta=meta, r=r,
+            preview=shown, preview_total=len(preview),
+            files=files, sel=sel,
+            active_tab="output" if request.args.get("file") else "summary")
 
     @app.get("/job/<jid>/dl/<which>")
     def download(jid, which):
@@ -405,6 +425,8 @@ def create_app() -> Flask:
             "report.md": ("report.md", "text/markdown", f"{stem}.report.md"),
             "report.json": ("report.json", "application/json",
                             f"{stem}.report.json"),
+            "report.html": ("report.html", "text/html",
+                            f"{stem}.report.html"),
             "diff": ("diff.patch", "text/plain", f"{stem}.diff.patch"),
         }
         if which not in files:

@@ -39,6 +39,9 @@ from ..parsers.fortios_tree import (
     RawLine,
     SetLine,
     Token,
+    iter_config_nodes,
+    iter_set_lines,
+    path_endswith,
     vdom_scopes,
 )
 
@@ -224,6 +227,75 @@ def to_single_vdom(tree: CTree, report) -> dict:
                f"({len(global_children)} global + {len(vedit.children)} "
                "per-VDOM section(s) merged)")
     return {"converted": True, "vdom_name": vdom_name}
+
+
+VDOM_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,11}$")
+
+
+def rename_vdoms(tree: CTree, mapping: dict[str, str], report) -> dict:
+    """Rename VDOMs across a multi-VDOM tree (FortiConverter's "VDOM
+    Mapping"): `config vdom` edit names, every interface's `set vdom`,
+    `management-vdom`, and `system vdom-property` entries.
+
+    Raises PlanError on invalid mappings (FortiOS VDOM names are max 11
+    chars of letters/digits/_-)."""
+    from .plan import PlanError
+
+    mapping = {s: d for s, d in mapping.items() if s and d and s != d}
+    if not mapping:
+        return {"edits": 0, "refs": 0}
+    if not is_multi_vdom(tree):
+        raise PlanError("[vdommap]: VDOM mapping needs a multi-VDOM source "
+                        "config")
+    existing = [n for n, _ in vdom_scopes(tree) if n not in (None, "global")]
+    for s, d in mapping.items():
+        if s not in existing:
+            raise PlanError(
+                f"[vdommap]: source VDOM '{s}' is not in this config "
+                f"(found: {', '.join(existing)})")
+        if not VDOM_NAME_RE.match(d):
+            raise PlanError(
+                f"[vdommap]: target VDOM name '{d}' invalid — max 11 "
+                "characters, letters/digits/_/- only")
+        if d in existing and d not in mapping:
+            raise PlanError(
+                f"[vdommap]: target VDOM name '{d}' already exists in the "
+                "config")
+    targets = list(mapping.values())
+    if len(set(targets)) != len(targets):
+        raise PlanError("[vdommap]: two VDOMs are mapped to the same "
+                        "target name")
+
+    edits = 0
+    refs = 0
+    for child in tree.children:
+        if isinstance(child, ConfigNode) and child.path == ["vdom"]:
+            for e in child.children:
+                if isinstance(e, EditNode) and e.name.value in mapping:
+                    e.name = Token(mapping[e.name.value], e.name.quoted)
+                    edits += 1
+    for path, node in iter_config_nodes(tree):
+        if path_endswith(path, ("system", "vdom-property")):
+            for e in node.children:
+                if isinstance(e, EditNode) and e.name.value in mapping:
+                    e.name = Token(mapping[e.name.value], True)
+                    edits += 1
+    for path, line in iter_set_lines(tree):
+        if line.attr in ("vdom", "management-vdom"):
+            new_vals = []
+            for t in line.values:
+                if t.value in mapping:
+                    new_vals.append(Token(mapping[t.value], t.quoted))
+                    refs += 1
+                else:
+                    new_vals.append(t)
+            line.values = new_vals
+
+    report.add("info", "vdom",
+               "renamed VDOM(s): "
+               + ", ".join(f"{s} -> {d}" for s, d in mapping.items())
+               + f" ({edits} edit(s), {refs} reference(s) updated)")
+    return {"edits": edits, "refs": refs}
 
 
 def apply(tree: CTree, mode: str, report, vdom_name: str = "root",
