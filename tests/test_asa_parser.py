@@ -138,3 +138,34 @@ def test_route_based_dstintf_inference():
     assert find_policy(cfg, "INSIDE-OUT-5").dst_zones == ["any"]
     assert any(f.level == "warn" and "INSIDE-OUT-5" in f.message
                for f in report.findings)
+
+
+def test_object_nat_static_interface_is_flagged():
+    text = """object network WEB
+ host 10.1.1.10
+ nat (inside,outside) static interface service tcp 3389 3389
+"""
+    cfg = cisco_asa.parse(text, "t.cfg")
+    vip = cfg.vips[0]
+    assert vip.ext_ip.startswith("<")          # placeholder, not 'interface'
+    assert vip.mapped_ip == "10.1.1.10"
+    msgs = [m for lvl, _, m, _ in cfg.meta["findings"] if lvl == "error"]
+    assert any("interface address" in m for m in msgs)
+
+
+def test_truncated_ace_does_not_crash():
+    text = "access-list X extended permit ip host\n"
+    cfg = cisco_asa.parse(text, "t.cfg")   # must not raise
+    assert not cfg.policies
+    msgs = [m for lvl, _, m, _ in cfg.meta["findings"] if lvl == "error"]
+    assert any("unsupported address token" in m for m in msgs)
+
+
+def test_numeric_icmp_type_in_ace():
+    text = """access-list T extended permit icmp any any 8
+access-group T in interface outside
+"""
+    cfg = cisco_asa.parse(text, "t.cfg")
+    svc = cfg.policies[0].services
+    assert svc != ["ALL_ICMP"]             # echo-only, not all ICMP
+    assert any("icmp_8" in s for s in svc)

@@ -43,6 +43,9 @@ class DeltaRule:
     new: str = ""  # rename target
     level: str = "warn"
     message: str = ""
+    # flip-if-absent only: the path is an edit-keyed table, so an EMPTY
+    # section means "no entries", not "entry relying on the default"
+    edit_table: bool = False
 
 
 RULES: list[DeltaRule] = [
@@ -60,13 +63,13 @@ RULES: list[DeltaRule] = [
     # ----- FortiOS 8.0 -------------------------------------------------
     DeltaRule(
         (8, 0), "flip-if-absent", ("vpn", "ipsec", "phase1-interface"),
-        attr="dhgrp", level="warn",
+        attr="dhgrp", level="warn", edit_table=True,
         message="phase1 has no explicit 'set dhgrp': the default changed "
                 "14 -> 20 in FortiOS 8.0, so tunnels to peers pinned at "
                 "DH14 stop negotiating — set dhgrp explicitly"),
     DeltaRule(
         (8, 0), "flip-if-absent", ("vpn", "ipsec", "phase2-interface"),
-        attr="dhgrp", level="warn",
+        attr="dhgrp", level="warn", edit_table=True,
         message="phase2 has no explicit 'set dhgrp': the default changed "
                 "5 -> 21 in FortiOS 8.0 — set dhgrp explicitly to match "
                 "the peer"),
@@ -200,6 +203,10 @@ def scan(tree: CTree, source: tuple[int, int], target: tuple[int, int],
                             hits += 1
                             if len(examples) < 3:
                                 examples.append(_edit_label(e))
+                elif rule.edit_table:
+                    # empty edit-keyed table = no entries; nothing relies
+                    # on the flipped default
+                    continue
                 else:
                     if not any(isinstance(c, SetLine)
                                and c.attr == rule.attr

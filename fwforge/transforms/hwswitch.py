@@ -66,9 +66,49 @@ def _drop_sections(tree: CTree, paths: set[tuple], report) -> int:
     return dropped
 
 
+def _vswitch_ports(tree: CTree) -> dict[str, list[str]]:
+    """switch name -> member ports, from `config system virtual-switch`.
+    Real devices keep the membership there (config port sub-entries), not
+    inline on the interface."""
+    ports: dict[str, list[str]] = {}
+    for path, node in iter_config_nodes(tree):
+        if not path_endswith(path, ("system", "virtual-switch")):
+            continue
+        for edit in node.children:
+            if not isinstance(edit, EditNode):
+                continue
+            for sub in edit.children:
+                if isinstance(sub, ConfigNode) and sub.path == ["port"]:
+                    ports.setdefault(edit.name.value, []).extend(
+                        p.name.value for p in sub.children
+                        if isinstance(p, EditNode))
+    return ports
+
+
+def _merge_members(edit: EditNode, ports: list[str], report) -> None:
+    for c in edit.children:
+        if isinstance(c, SetLine) and c.attr == "member":
+            have = {t.value for t in c.values}
+            missing = [p for p in ports if p not in have]
+            if missing:
+                c.values += [Token(p, True) for p in missing]
+                report.add(
+                    "info", "hw-switch",
+                    f"'{edit.name.value}': merged virtual-switch port(s) "
+                    f"{', '.join(missing)} into set member")
+            return
+    edit.children.append(
+        SetLine("member", [Token(p, True) for p in ports]))
+    report.add(
+        "info", "hw-switch",
+        f"'{edit.name.value}': member list rebuilt from system "
+        f"virtual-switch ports: {', '.join(ports)}")
+
+
 def convert(tree: CTree, report) -> dict:
     converted: list[str] = []
     remaining = 0
+    vswitch = _vswitch_ports(tree)
 
     for path, node in iter_config_nodes(tree):
         if not path_endswith(path, ("system", "interface")):
@@ -83,6 +123,22 @@ def convert(tree: CTree, report) -> dict:
             if kind == "hard-switch":
                 tline.values = [Token("switch", False)]
                 converted.append(edit.name.value)
+                ports = vswitch.get(edit.name.value, [])
+                if ports:
+                    # membership lives in system virtual-switch, which is
+                    # dropped below — fold it into the interface first
+                    _merge_members(edit, ports, report)
+                else:
+                    has_inline = any(
+                        isinstance(c, SetLine) and c.attr == "member"
+                        for c in edit.children)
+                    if not has_inline:
+                        report.add(
+                            "warn", "hw-switch",
+                            f"'{edit.name.value}': no member ports found "
+                            "(neither inline nor in system virtual-switch) "
+                            "— the software switch is created empty; add "
+                            "members manually")
             elif kind == "hard-switch-vlan":
                 remaining += 1
                 report.add(

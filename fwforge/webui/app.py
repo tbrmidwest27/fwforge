@@ -206,6 +206,8 @@ def _plan_from_form(form) -> MigrationPlan:
         name = form.get(f"sdwan_name_{i}", "").strip()
         picked = [m for m in form.getlist(f"sdwan_member_{i}") if m]
         member_text = form.get(f"sdwan_members_{i}", "").strip()
+        if name == "virtual-wan-link" and not picked and not member_text:
+            continue  # an added-but-untouched row (the name is pre-filled)
         if name and (picked or member_text):
             spec = SdwanZoneSpec(name=name)
             if picked:
@@ -292,7 +294,9 @@ def create_app() -> Flask:
         jid = uuid.uuid4().hex[:12]
         jdir = JOBS_DIR / jid
         jdir.mkdir(parents=True, exist_ok=True)
-        (jdir / "source.conf").write_text(text, encoding="utf-8")
+        # underscore prefix: an upload named e.g. 'source.conf' must not
+        # collide with the converted output written into the same dir
+        (jdir / "_source.conf").write_text(text, encoding="utf-8")
         JOBS[jid] = meta
         _save_job(jid)
         return redirect(url_for("job", jid=jid))
@@ -320,11 +324,17 @@ def create_app() -> Flask:
         JOBS.pop(jid, None)
         return redirect(url_for("index"))
 
+    def _source_path(jdir: Path) -> Path:
+        p = jdir / "_source.conf"
+        if p.is_file():
+            return p
+        return jdir / "source.conf"  # jobs saved before the rename
+
     @app.post("/job/<jid>/convert")
     def convert(jid):
         meta = _job(jid)
         jdir = JOBS_DIR / jid
-        text = (jdir / "source.conf").read_text(encoding="utf-8")
+        text = _source_path(jdir).read_text(encoding="utf-8")
         target = request.form.get("fortios", "7.4")
 
         try:
@@ -362,16 +372,26 @@ def create_app() -> Flask:
 
         report = result.report
         stem = Path(meta["name"]).stem or "config"
+        if stem.lower() in ("_source", "source", "report", "diff",
+                            "bundle"):
+            stem += "-converted"  # keep clear of the job's own artifacts
         fmg_written = False
+        (jdir / f"{stem}.fmg.json").unlink(missing_ok=True)  # stale run
         if result.mode == "cross" and request.form.get("fmg_enable"):
-            bundle = fortimanager.build_bundle(
-                result.cfg, report,
-                adom=request.form.get("fmg_adom", "").strip() or "root",
-                package=request.form.get("fmg_pkg", "").strip()
-                or f"{stem}-converted")
-            (jdir / f"{stem}.fmg.json").write_text(
-                fortimanager.render(bundle), encoding="utf-8")
-            fmg_written = True
+            try:
+                bundle = fortimanager.build_bundle(
+                    result.cfg, report,
+                    adom=request.form.get("fmg_adom", "").strip() or "root",
+                    package=request.form.get("fmg_pkg", "").strip()
+                    or f"{stem}-converted",
+                    nat_mode=request.form.get("nat_mode", "policy"))
+                (jdir / f"{stem}.fmg.json").write_text(
+                    fortimanager.render(bundle), encoding="utf-8")
+                fmg_written = True
+            except Exception as e:  # must not sink the whole conversion
+                report.add("error", "fortimanager",
+                           f"FortiManager bundle failed ({e}) — output and "
+                           "reports written without it")
         if result.mode == "migrate":
             pkg = package.write_full(jdir, stem, result.out_text, report)
         else:
@@ -490,6 +510,7 @@ def create_app() -> Flask:
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
             for p in sorted(jdir.rglob("*")):
                 if p.is_file() and p.name not in ("bundle.zip",
+                                                  "_source.conf",
                                                   "source.conf",
                                                   "job.json"):
                     z.write(p, p.relative_to(jdir))

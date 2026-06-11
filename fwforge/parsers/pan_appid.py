@@ -13,7 +13,9 @@ APP_TO_CAT as needed.
 """
 from __future__ import annotations
 
-# FortiOS application-control category name -> FortiGuard category id
+# FortiOS application-control category name -> FortiGuard category id.
+# Verified against a live FortiOS 8.0 FortiGuard application DB
+# (cmdb/application/name) on 2026-06-11.
 CATEGORY_ID = {
     "P2P": 2,
     "VoIP": 3,
@@ -26,10 +28,10 @@ CATEGORY_ID = {
     "Update": 17,
     "Email": 21,
     "Storage.Backup": 22,
-    "Web.Client": 23,
-    "Social.Media": 25,
-    "Collaboration": 26,
-    "Business": 28,
+    "Social.Media": 23,
+    "Web.Client": 25,
+    "Collaboration": 28,
+    "Business": 29,
     "Cloud.IT": 30,
 }
 
@@ -45,7 +47,7 @@ APP_TO_CAT = {
     "syslog": "Network.Service", "tftp": "Network.Service",
     "icmp": "Network.Service", "ping": "Network.Service",
     "netbios-ns": "Network.Service", "netbios-dg": "Network.Service",
-    "ssh": "Remote.Access", "telnet": "Remote.Access",
+    "ssh": "Network.Service", "telnet": "Remote.Access",
     "ms-rdp": "Remote.Access", "vnc": "Remote.Access",
     "citrix": "Remote.Access", "ica": "Remote.Access",
     "teamviewer": "Remote.Access", "pcanywhere": "Remote.Access",
@@ -73,8 +75,8 @@ APP_TO_CAT = {
     "box": "Storage.Backup", "icloud": "Storage.Backup",
     "ms-ds-smb": "Storage.Backup", "smb": "Storage.Backup",
     "nfs": "Storage.Backup",
-    "github": "Cloud.IT", "amazon-aws": "Cloud.IT", "aws": "Cloud.IT",
-    "azure": "Cloud.IT", "gcp": "Cloud.IT", "salesforce": "Cloud.IT",
+    "github": "Storage.Backup", "amazon-aws": "Cloud.IT", "aws": "Cloud.IT",
+    "azure": "Cloud.IT", "gcp": "Cloud.IT", "salesforce": "Business",
     "windows-update": "Update", "apple-update": "Update",
     "ms-update": "Update", "adobe-update": "Update",
     "mysql": "Business", "mssql": "Business", "ms-sql": "Business",
@@ -113,7 +115,9 @@ def map_apps(apps: list[str]) -> tuple[list[str], list[int], list[str],
         if n in TRANSPORT or app in TRANSPORT:
             transport.append(app)
             continue
-        cat = APP_TO_CAT.get(n)
+        # exact name wins over the suffix-stripped form (http-video must
+        # not degrade to the missing 'http' entry)
+        cat = APP_TO_CAT.get(app.lower()) or APP_TO_CAT.get(n)
         if cat and cat not in cats:
             cats.append(cat)
         elif not cat:

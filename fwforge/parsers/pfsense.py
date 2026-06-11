@@ -288,6 +288,15 @@ class PfSenseParser:
                     members.append(entry)
             if len(entries) == 1 and literals and not members:
                 value = literals[0]
+                try:
+                    ipaddress.ip_network(value, strict=False)
+                except ValueError:
+                    # hostnames are allowed in pfSense host aliases
+                    self.cfg.addresses.append(Address(
+                        name=name, type="fqdn", value=value,
+                        comment=descr, source=ref))
+                    self._addr_names.add(name)
+                    continue
                 is_host = ("/" not in value or value.endswith(("/32", "/128")))
                 if not is_host:
                     self.cfg.addresses.append(Address(
@@ -327,12 +336,23 @@ class PfSenseParser:
         for flag, dest in (("defaultgw4", "0.0.0.0/0"),
                            ("defaultgw6", "::/0")):
             default = _s(system, flag)
-            if default and default in gw_ip:
-                self.cfg.routes.append(Route(
-                    dest=dest, gateway=gw_ip[default],
-                    interface=gw_if.get(default, ""),
-                    comment=f"default via gateway '{default}'",
-                    source=self.ref(system, flag)))
+            if not default:
+                continue
+            gw = gw_ip.get(default, "")
+            if not gw or gw == "dynamic":
+                # DHCP/PPPoE gateway: pfSense stores no usable IP for it
+                self.note(
+                    "warn", "routes",
+                    f"{flag} '{default}' is a dynamic gateway (DHCP/PPPoE) "
+                    "- default route not emitted; the FortiGate learns it "
+                    "from the WAN or set one manually",
+                    self.ref(system, flag))
+                continue
+            self.cfg.routes.append(Route(
+                dest=dest, gateway=gw,
+                interface=gw_if.get(default, ""),
+                comment=f"default via gateway '{default}'",
+                source=self.ref(system, flag)))
         if not _s(system, "defaultgw4") and gw_ip:
             self.note("warn", "routes",
                       "no defaultgw4 set — IPv4 default route not emitted; "
@@ -345,6 +365,12 @@ class PfSenseParser:
                 self.note("warn", "routes",
                           f"route {network}: gateway '{gw}' not found in "
                           "gateways — skipped", ref)
+                continue
+            if gw_ip[gw] in ("", "dynamic"):
+                self.note("warn", "routes",
+                          f"route {network}: gateway '{gw}' is dynamic "
+                          "(DHCP/PPPoE) - route not emitted; recreate it "
+                          "manually", ref)
                 continue
             try:
                 if ":" in network:
@@ -547,10 +573,26 @@ class PfSenseParser:
 
         for i, r in enumerate(_items(nat, "rule"), start=1):
             ref = self.ref(r, f"port forward {i}")
+            if "disabled" in r:
+                self.note("info", "nat",
+                          f"port forward {i} is disabled in pfSense — "
+                          "skipped", ref)
+                continue
             target = _s(r, "target")
             proto = _s(r, "protocol", "tcp")
             dest = r.get("destination", {})
             extport = _s(dest, "port").replace(":", "-")
+            extports = [extport] if extport else [""]
+            if extport in self._port_aliases:
+                # a VIP takes one port/range; a multi-range alias becomes
+                # one VIP per range (local ports follow the dest ports,
+                # matching pfSense's same-port behavior for alias forwards)
+                extports = self._port_aliases[extport].split()
+                if len(extports) > 1:
+                    self.note("warn", "nat",
+                              f"port forward {i}: port alias '{extport}' "
+                              f"split into {len(extports)} VIPs (one per "
+                              "range) - verify local ports", ref)
             ext_ip = ""
             dnet = _s(dest, "network")
             if dnet.endswith("ip"):
@@ -567,18 +609,30 @@ class PfSenseParser:
                 continue
             protos = ["tcp", "udp"] if proto == "tcp/udp" else [proto]
             for p in protos:
-                suffix = f"-{p}" if len(protos) > 1 else ""
-                self.cfg.vips.append(Vip(
-                    name=f"vip-pf-{i}{suffix}", ext_ip=ext_ip,
-                    mapped_ip=target,
-                    ext_intf=_s(r, "interface") or "wan",
-                    protocol=p if extport else None,
-                    ext_port=extport.split(" ")[0] if extport else None,
-                    mapped_port=_s(r, "local-port") or None,
-                    comment=_s(r, "descr") or None, source=ref))
+                for j, ep in enumerate(extports, start=1):
+                    suffix = f"-{p}" if len(protos) > 1 else ""
+                    if len(extports) > 1:
+                        suffix += f"-{j}"
+                    # an alias-split forward maps each range to itself;
+                    # a plain forward keeps the configured local port
+                    mapped = (_s(r, "local-port") or None) \
+                        if len(extports) == 1 else (ep or None)
+                    self.cfg.vips.append(Vip(
+                        name=f"vip-pf-{i}{suffix}", ext_ip=ext_ip,
+                        mapped_ip=target,
+                        ext_intf=_s(r, "interface") or "wan",
+                        protocol=p if ep else None,
+                        ext_port=ep or None,
+                        mapped_port=mapped,
+                        comment=_s(r, "descr") or None, source=ref))
 
         for i, r in enumerate(_items(nat, "onetoone"), start=1):
             ref = self.ref(r, f"1:1 NAT {i}")
+            if "disabled" in r:
+                self.note("info", "nat",
+                          f"1:1 NAT {i} is disabled in pfSense — skipped",
+                          ref)
+                continue
             ext = _s(r, "external")
             internal = _s(r, "source", "")
             if isinstance(r.get("source"), dict):
@@ -632,6 +686,12 @@ class PfSenseParser:
             return
         p2_by_ike: dict[str, list] = {}
         for p2 in _items(ipsec, "phase2"):
+            if "disabled" in p2:
+                self.note("info", "vpn",
+                          f"IPsec phase2 (ikeid {_s(p2, 'ikeid')}) is "
+                          "disabled in pfSense — skipped",
+                          self.ref(p2, "ipsec phase2"))
+                continue
             p2_by_ike.setdefault(_s(p2, "ikeid"), []).append(p2)
 
         from ..transforms.routes import RouteTable
@@ -640,6 +700,11 @@ class PfSenseParser:
         for p1 in phase1s:
             ikeid = _s(p1, "ikeid")
             ref = self.ref(p1, f"ipsec phase1 ikeid {ikeid}")
+            if "disabled" in p1:
+                self.note("info", "vpn",
+                          f"IPsec phase1 ikeid {ikeid} is disabled in "
+                          "pfSense — skipped", ref)
+                continue
             peer = _s(p1, "remote-gateway")
             iface = _s(p1, "interface") or "wan"
             ike_version = 2 if "ikev2" in _s(p1, "iketype") else 1
@@ -711,7 +776,8 @@ class PfSenseParser:
                 for h in ([ha] if isinstance(ha, str) else ha or []):
                     if vpn.HASH.get(h):
                         p2_hashes.append(vpn.HASH[h])
-                if _s(p2, "pfsgroup") and not pfs:
+                # '0' is pfSense's PFS-off value, not a DH group
+                if _s(p2, "pfsgroup") not in ("", "0") and not pfs:
                     pfs = _s(p2, "pfsgroup")
 
             p1_props = vpn.esp_combos(encs, hashes) or ["aes256-sha256"]

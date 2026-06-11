@@ -117,13 +117,19 @@ def filter_policies(cfg: FirewallConfig, exclude: list[str],
         for m in sorted(missing):
             report.add("warn", "tuning",
                        f"--only named policy '{m}' which does not exist")
+    elif excl:
+        for m in sorted(excl - {p.name or "" for p in dropped}):
+            report.add("warn", "tuning",
+                       f"--exclude named policy '{m}' which does not exist")
     return len(dropped)
 
 
 def split_interface_pairs(cfg: FirewallConfig, report) -> int:
     """A policy with multiple src/dst interfaces -> one policy per pair."""
+    from .names import POLICY_MAX
     new_policies = []
     split = 0
+    used = {p.name for p in cfg.policies if p.name}
     for pol in cfg.policies:
         srcs = pol.src_zones or ["any"]
         dsts = pol.dst_zones or ["any"]
@@ -136,8 +142,18 @@ def split_interface_pairs(cfg: FirewallConfig, report) -> int:
             for d in dsts:
                 n += 1
                 base = pol.name or "policy"
+                # this runs after name sanitization, so re-enforce the
+                # 35-char policy-name limit (and keep names unique)
+                suffix = f"-{n}"
+                cand = base[:POLICY_MAX - len(suffix)] + suffix
+                k = 0
+                while cand in used:
+                    k += 1
+                    suffix = f"-{n}x{k}"
+                    cand = base[:POLICY_MAX - len(suffix)] + suffix
+                used.add(cand)
                 new_policies.append(replace(
-                    pol, name=f"{base}-{n}", src_zones=[s], dst_zones=[d]))
+                    pol, name=cand, src_zones=[s], dst_zones=[d]))
     cfg.policies[:] = new_policies
     if split:
         report.add("info", "tuning",

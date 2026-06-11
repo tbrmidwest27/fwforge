@@ -45,6 +45,11 @@ def validate(tree: CTree, specs: list[SdwanZoneSpec]) -> None:
     already = existing_sdwan_members(tree)
     claimed: set[str] = set()
     for spec in specs:
+        if spec.name in interfaces:
+            raise PlanError(
+                f"[sdwan {spec.name}]: an interface with that name exists "
+                "— FortiOS zones and interfaces share one reference "
+                "namespace; pick another zone name")
         if spec.rule_mode == "priority" and spec.rule_member not in [
                 m.interface for m in spec.members]:
             raise PlanError(
@@ -75,15 +80,23 @@ def validate(tree: CTree, specs: list[SdwanZoneSpec]) -> None:
             claimed.add(ifc)
 
 
-def _ensure_sdwan_node(scope) -> ConfigNode:
+def _ensure_sdwan_node(scope, report) -> ConfigNode:
     node = find_config_under(scope, "system", "sdwan")
     if node is None:
         node = ConfigNode(["system", "sdwan"])
         insert_in_scope(scope, node)
-    has_status = any(
-        isinstance(c, SetLine) and c.attr == "status" for c in node.children)
-    if not has_status:
+    status = next((c for c in node.children
+                   if isinstance(c, SetLine) and c.attr == "status"), None)
+    if status is None:
         node.children.insert(0, SetLine("status", [Token("enable", False)]))
+    elif status.values and status.values[0].value == "disable":
+        # member routes are converted to sdwan-zone routes, which only
+        # work with SD-WAN on — leaving it disabled would strand them
+        status.values = [Token("enable", False)]
+        report.add("info", "sdwan",
+                   "source config had 'set status disable' under system "
+                   "sdwan — flipped to enable (the generated zone routes "
+                   "and rewritten policies need it)")
     return node
 
 
@@ -147,6 +160,25 @@ def convert_member_routes(scope, member_ifcs: set[str],
             if dev not in member_ifcs:
                 keep.append(child)
                 continue
+            if "internet-service" in attrs \
+                    or "internet-service-custom" in attrs:
+                # ISDB routes have no address-object equivalent to pin;
+                # keep the line (FortiOS will reject it) and say so loudly
+                keep.append(child)
+                report.add(
+                    "warn", "sdwan",
+                    f"static route {child.name.value} on member '{dev}' "
+                    "uses internet-service - not valid on an SD-WAN "
+                    "member; recreate it as an SD-WAN service rule "
+                    "(route kept for reference)")
+                continue
+            if "dstaddr" in attrs:
+                # address-object route: pin it like a prefix route
+                specifics.append({"dev": dev,
+                                  "obj": attrs["dstaddr"][0].value,
+                                  "id": child.name.value})
+                converted += 1
+                continue  # drop the edit; replacement generated later
             if _is_default_route(attrs):
                 gw = attrs.get("gateway")
                 if gw:
@@ -292,7 +324,7 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
                                            report)
         routes_converted += route_info["converted"]
 
-        sdwan = _ensure_sdwan_node(scope)
+        sdwan = _ensure_sdwan_node(scope, report)
         zone_node = _ensure_subsection(sdwan, "zone")
         members_node = _ensure_subsection(sdwan, "members")
 
@@ -388,6 +420,26 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
         for s in specifics:
             mid = mid_of.get(s["dev"])
             if mid is None:
+                continue
+            if "obj" in s:
+                # dstaddr route: the address object already exists
+                _service_rule(service_node, f"pin-{s['obj']}"[:35],
+                              "manual", [mid], dst=s["obj"])
+                rt_node = find_config_under(scope, "router", "static")
+                if rt_node is not None:
+                    redit = EditNode(
+                        Token(str(_next_edit_id(rt_node)), False))
+                    redit.children = [
+                        SetLine("dstaddr", [Token(s["obj"], True)]),
+                        SetLine("sdwan-zone",
+                                [Token(zone_of[s["dev"]], True)]),
+                    ]
+                    rt_node.children.append(redit)
+                report.add(
+                    "info", "sdwan",
+                    f"member route {s['id']} (dstaddr '{s['obj']}' via "
+                    f"'{s['dev']}') replaced by a pinned steering rule "
+                    f"(member {mid}) + an sdwan-zone route")
                 continue
             try:
                 plen = ipaddress.IPv4Network(

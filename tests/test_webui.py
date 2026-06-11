@@ -272,9 +272,54 @@ def test_jobs_persist_across_restart(client, tmp_path, monkeypatch):
 
 def test_delete_job(client):
     jid = _load(client, "fortios_sample.conf")
-    assert (webui_app.JOBS_DIR / jid / "source.conf").is_file()
+    assert (webui_app.JOBS_DIR / jid / "_source.conf").is_file()
     resp = client.post(f"/job/{jid}/delete", follow_redirects=True)
     assert resp.status_code == 200
     assert "fortios_sample.conf" not in resp.data.decode()
     assert not (webui_app.JOBS_DIR / jid).exists()
     assert client.get(f"/job/{jid}").status_code == 404
+
+
+def test_upload_named_source_conf_does_not_clobber(client):
+    import io
+    text = (FIX / "fortios_sample.conf").read_bytes()
+    resp = client.post("/load", data={
+        "config": (io.BytesIO(text), "source.conf")},
+        content_type="multipart/form-data", follow_redirects=False)
+    jid = resp.headers["Location"].rstrip("/").split("/")[-1]
+    client.post(f"/job/{jid}/convert",
+                data={"fortios": "7.4", "map_src": ["port1"],
+                      "map_dst": ["port1"]},
+                follow_redirects=True)
+    # the saved source survives the conversion untouched
+    saved = (webui_app.JOBS_DIR / jid / "_source.conf").read_text(
+        encoding="utf-8")
+    assert "fwforge conversion" not in saved
+    # and the converted output is a separate, downloadable artifact
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert "fwforge conversion" in conf
+    # re-running converts the ORIGINAL, not the previous output
+    client.post(f"/job/{jid}/convert",
+                data={"fortios": "7.4", "map_src": ["port1"],
+                      "map_dst": ["port1"]},
+                follow_redirects=True)
+    conf2 = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert conf2.count("fwforge conversion") == 1
+
+
+def test_untouched_sdwan_row_does_not_block_convert(client):
+    jid = _load(client, "fortios_refactor.conf")
+    form = {
+        "fortios": "7.6",
+        "map_src": ["port1"], "map_dst": ["port1"],
+        # an added-but-untouched SD-WAN card posts the pre-filled name
+        "sdwan_name_0": "virtual-wan-link",
+        "sdwan_members_0": "", "sdwan_hc_0": "",
+        "sdwan_rule_0": "auto", "sdwan_vdom_0": "",
+    }
+    resp = client.post(f"/job/{jid}/convert", data=form,
+                       follow_redirects=True)
+    page = resp.data.decode()
+    assert "plan error" not in page
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert "config system sdwan" not in conf

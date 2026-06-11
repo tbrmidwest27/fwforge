@@ -19,6 +19,10 @@ def detect_fortios(text: str) -> float:
         score += 0.8
     if re.search(r"^config system global", text, re.M):
         score += 0.3
+    # multi-VDOM dumps indent `config system global` inside `config global`,
+    # so headerless multi-VDOM sources need their own structural signal
+    if re.search(r"^config (vdom|global)$", text, re.M):
+        score += 0.3
     if re.search(r"^\s*set vdom ", text, re.M):
         score += 0.1
     return min(score, 1.0)

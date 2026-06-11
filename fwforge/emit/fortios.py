@@ -25,9 +25,11 @@ BUILTIN_SERVICES = {
     ("tcp", "445", "", None, None): "SMB",
     ("tcp/udp", "53", "", None, None): "DNS",
     ("tcp/udp", "88", "", None, None): "KERBEROS",
-    ("udp", "123", "", None, None): "NTP",
+    # built-in NTP is tcp+udp/123 and SNMP is tcp+udp/161-162 — mapping
+    # plain udp/123 / udp/161 to them would silently broaden the rule
+    ("tcp/udp", "123", "", None, None): "NTP",
+    ("tcp/udp", "161-162", "", None, None): "SNMP",
     ("udp", "514", "", None, None): "SYSLOG",
-    ("udp", "161", "", None, None): "SNMP",
     ("icmp", "", "", 8, None): "PING",
     ("icmp", "", "", None, None): "ALL_ICMP",
     ("ip", "", "", None, 47): "GRE",
@@ -253,13 +255,29 @@ class Emitter:
         for section, groups in (("addrgrp", v4), ("addrgrp6", v6)):
             if not groups:
                 continue
+            gfam = 6 if section == "addrgrp6" else 4
             self.line()
             self.line(f"config firewall {section}")
             for g in groups:
+                # FortiOS groups are single-family: a member of the other
+                # family doesn't exist in this table and would sink the
+                # whole group on load
+                members = [m for m in g.members
+                           if fam.get(m, gfam) == gfam]
+                dropped = [m for m in g.members if m not in members]
+                if dropped:
+                    self.report.add(
+                        "error", "addresses",
+                        f"group '{g.name}': member(s) "
+                        f"{', '.join(dropped)} are IPv"
+                        f"{6 if gfam == 4 else 4} — removed (FortiOS "
+                        "groups are single-family); create a separate "
+                        f"{'addrgrp6' if gfam == 4 else 'addrgrp'} if "
+                        "needed", g.source)
                 self.line(f"    edit {_q(g.name)}")
-                if g.members:
+                if members:
                     self.line("        set member "
-                              + " ".join(_q(m) for m in g.members))
+                              + " ".join(_q(m) for m in members))
                 else:
                     self.report.add(
                         "warn", "addresses",
@@ -311,6 +329,13 @@ class Emitter:
             if g.members:
                 self.line("        set member "
                           + " ".join(_q(m) for m in g.members))
+            else:
+                self.report.add(
+                    "warn", "services",
+                    f"service group '{g.name}' has no members — FortiOS "
+                    "rejects empty groups; emitted with placeholder 'ALL'",
+                    g.source)
+                self.line('        set member "ALL"')
             if g.comment:
                 self.line(f"        set comment {_q(g.comment[:255])}")
             self.line("    next")
@@ -409,13 +434,14 @@ class Emitter:
 
     def vips(self):
         emittable = [v for v in self.cfg.vips
-                     if v.ext_ip and not v.mapped_ip.startswith("<")]
+                     if v.ext_ip and not v.ext_ip.startswith("<")
+                     and v.mapped_ip and not v.mapped_ip.startswith("<")]
         for v in self.cfg.vips:
             if v not in emittable:
                 self.report.add(
                     "error", "nat",
-                    f"VIP '{v.name}' incomplete (mapped ip unresolved) — "
-                    "not emitted, convert manually", v.source)
+                    f"VIP '{v.name}' incomplete (external or mapped ip "
+                    "unresolved) — not emitted, convert manually", v.source)
         if not emittable:
             return
         if self.nat_mode == "central":
@@ -509,6 +535,7 @@ class Emitter:
         applied_nat = 0
         fam = self._family_map()
         v6_policies = 0
+        mixed_policies = 0
         self.line()
         self.line("config firewall policy")
         for i, p in enumerate(self.cfg.policies, start=1):
@@ -517,6 +544,8 @@ class Emitter:
             pfam = self._policy_family(p, fam)
             if pfam == 6:
                 v6_policies += 1
+            elif pfam == 0:
+                mixed_policies += 1
             self.line(f"    edit {i}")
             if p.name:
                 self.line(f"        set name {_q(p.name)}")
@@ -526,12 +555,18 @@ class Emitter:
                       + " ".join(_q(z) for z in dst_i))
             self._addr_lines("srcaddr", p.src_addrs or ["all"], pfam, fam)
             if p.src_negate:
-                neg = "srcaddr6-negate" if pfam == 6 else "srcaddr-negate"
-                self.line(f"        set {neg} enable")
+                for neg in (("srcaddr-negate", "srcaddr6-negate")
+                            if pfam == 0 else
+                            ("srcaddr6-negate",) if pfam == 6 else
+                            ("srcaddr-negate",)):
+                    self.line(f"        set {neg} enable")
             self._addr_lines("dstaddr", p.dst_addrs or ["all"], pfam, fam)
             if p.dst_negate:
-                neg = "dstaddr6-negate" if pfam == 6 else "dstaddr-negate"
-                self.line(f"        set {neg} enable")
+                for neg in (("dstaddr-negate", "dstaddr6-negate")
+                            if pfam == 0 else
+                            ("dstaddr6-negate",) if pfam == 6 else
+                            ("dstaddr-negate",)):
+                    self.line(f"        set {neg} enable")
             if p.action == "accept":
                 self.line("        set action accept")
             self.line('        set schedule "always"')
@@ -572,6 +607,13 @@ class Emitter:
                 "info", "policies",
                 f"{v6_policies} IPv6 policy(ies) emitted with srcaddr6/"
                 "dstaddr6 (unified policy table; target FortiOS 7.0+)")
+        if mixed_policies:
+            self.report.add(
+                "info", "policies",
+                f"{mixed_policies} mixed-family policy(ies) emitted with "
+                "complete v4 AND v6 address pairs (a side with no objects "
+                "of one family gets the built-in 'none' so that leg "
+                "matches nothing, as in the source)")
 
     def _policy_family(self, p, fam: dict[str, int]) -> int:
         if p.family in (4, 6):
@@ -593,15 +635,18 @@ class Emitter:
         elif pfam == 4:
             self.line(f"        set {attr} "
                       + " ".join(_q(a) for a in names))
-        else:  # mixed: split by each name's family ("all"/unknown -> v4)
-            v4 = [a for a in names if fam.get(a, 4) != 6]
-            v6 = [a for a in names if fam.get(a) == 6]
-            if v4:
-                self.line(f"        set {attr} "
-                          + " ".join(_q(a) for a in v4))
-            if v6:
-                self.line(f"        set {attr}6 "
-                          + " ".join(_q(a) for a in v6))
+        else:  # mixed: FortiOS needs a COMPLETE src/dst pair per family,
+            # so emit this side for both. "all" passes to both tables; a
+            # side with no names of one family gets the built-in "none"
+            # so that family's leg keeps matching nothing — exactly the
+            # source semantics, and still correct under negate (NOT none
+            # = everything, matching how the source rule evaluates).
+            v4 = [a for a in names if fam.get(a, 4) != 6 or a == "all"]
+            v6 = [a for a in names if fam.get(a) == 6 or a == "all"]
+            self.line(f"        set {attr} "
+                      + " ".join(_q(a) for a in (v4 or ["none"])))
+            self.line(f"        set {attr}6 "
+                      + " ".join(_q(a) for a in (v6 or ["none"])))
 
 
 def emit(cfg: FirewallConfig, report, target: str = "7.4",

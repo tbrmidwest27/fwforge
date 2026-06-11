@@ -256,6 +256,82 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.21.1 — shipped 2026-06-11 (bug scrub)
+Five parallel review agents over the whole codebase (~35 verified
+findings), all fixed same day; 162 tests (11 new regression tests).
+Highlights, worst first:
+- **pan_appid category IDs**: 4 of 16 FortiGuard IDs were wrong
+  (Web.Client/Social.Media swapped; Collaboration/Business off by one) —
+  verified against a live FortiOS 8.0 FortiGuard app DB and corrected
+  (also ssh->Network.Service, github->Storage.Backup,
+  salesforce->Business per the live DB; exact app name now wins over
+  the suffix-stripped lookup).
+- **PAN parser**: loopback/tunnel/vlan interfaces live under `<units>` —
+  were parsed as one bogus "units" interface and dropped; `no-pfs` now
+  means PFS off (was emitted as `set dhgrp no-pfs`); per-rule schedules
+  flagged; 15-char tunnel-name truncation no longer silently merges
+  tunnels.
+- **pfSense parser**: `<disabled/>` respected on port forwards / 1:1 /
+  phase1/phase2 (disabled tunnels no longer come up enabled); pfsgroup 0
+  = PFS off; dynamic (DHCP/PPPoE) gateways no longer emit `set gateway
+  dynamic` or silently drop the default route; FQDN host aliases emit
+  fqdn objects; port-alias forwards split into one VIP per range.
+- **ASA parser**: `nat ... static interface` -> placeholder + error (was
+  literal `set extip interface`); `service-object neq` no longer
+  broadens to any-port; numeric ICMP types honored; service group in the
+  source-port position flagged + policy disabled (was mis-read as the
+  destination service, dropping a following dst group); truncated ACEs
+  no longer crash.
+- **FortiOS tree**: a stray quote inside a `#` comment no longer
+  swallows the following config lines (roundtrip fidelity).
+- **transforms**: SD-WAN no longer deletes `set dstaddr` member routes
+  as "defaults" (pinned rule + dstaddr zone route; internet-service
+  routes kept + warned); pre-existing `set status disable` flipped on;
+  hw-switch harvests member ports from `system virtual-switch` before
+  dropping it (real devices keep membership there); `--prune` keeps
+  NAT-referenced addresses; portmap renames `set intf`
+  (local-in-policy), switch-interface members, dns-server /
+  virtual-switch port edit names, and the leftover scan now flags
+  un-renamed edit names; zone/SD-WAN names colliding with interface
+  names rejected; vdom-mode: system sflow is global (vdom-sflow et al
+  added per-VDOM), cert-scope warning could never fire; SSL-VPN:
+  multi-object split tunnels wrapped in a generated addrgrp (was
+  truncated to the first object), ALL `vpn ssl *` sections removed;
+  versiondelta: no more dhgrp warnings from EMPTY phase1/2 tables;
+  plan members translated exactly once over the merged --map (chained
+  renames double-applied before).
+- **emitter/outputs**: mixed-family policies emit COMPLETE v4+v6
+  address pairs ('none' for an absent side — FortiOS rejected the
+  half-pairs before); mixed-family groups drop wrong-family members
+  loudly; udp/123 / udp/161 no longer broadened to built-in NTP/SNMP;
+  empty service groups get a placeholder; VIPs with unresolved
+  external/mapped IPs are skipped with an error; findings embedded in
+  CLI files are ASCII-folded; `--split-interface-pairs` re-enforces the
+  35-char policy-name limit; `--exclude`/`--only` match source rule
+  names again (translated through sanitization) and missing excludes
+  warn; dotted input stems no longer truncate report/bundle filenames;
+  FMG bundle is family-aware (address6/addrgrp6, srcaddr6/dstaddr6),
+  applies the same interface-PAT `nat enable` as the CLI script, skips
+  unresolved VIPs, warns that app-lists/central-SNAT stay in the CLI
+  script, and a bundle failure can no longer crash the run.
+- **GUI**: a new zone/SD-WAN card now greys out members other rows
+  already claimed (and claims release on remove/uncheck — checked
+  members could silently drop from the POST before); Enter in a text
+  field no longer submits the wizard early; an added-but-untouched
+  SD-WAN card no longer aborts the conversion (and a PlanError no
+  longer wipes the form for that case); "clear" clears hidden
+  (filtered-out) members too; policy-selection buttons relabeled
+  "select/clear visible"; an upload named `source.conf` no longer gets
+  clobbered by its own conversion output (source stored as
+  `_source.conf`); stale FortiManager bundles from earlier runs are
+  removed; headerless multi-VDOM configs are now vendor-detected.
+- Deferred (known, by design): ASA source-port groups convert
+  disabled-for-review (no mirrored src-port services); SD-WAN
+  internet-service member routes are kept + warned, not auto-converted
+  to rules; FMG bundle still omits app-list profiles / central-SNAT
+  (warned); PlanError redirects still reset wizard state for genuine
+  validation errors (form echo-back is future work).
+
 ### v0.21 — shipped 2026-06-11
 - [x] **Informed zone / SD-WAN member pickers** (GUI Restructure step):
       the multi-select and free-text member inputs are now searchable

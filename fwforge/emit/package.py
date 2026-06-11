@@ -50,6 +50,21 @@ def split_branches(text: str) -> list[tuple[str, str]]:
     return out
 
 
+# finding messages use a few typographic characters; fold them to ASCII —
+# these comments land inside emitted CLI files, which must paste safely
+# into any console
+_ASCII_FOLD = str.maketrans({
+    "—": "-", "–": "-", "…": "...",
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+    "→": "->", "×": "x",
+})
+
+
+def _ascii(text: str) -> str:
+    return text.translate(_ASCII_FOLD).encode(
+        "ascii", "replace").decode("ascii")
+
+
 def _finding_comments(report: Report, stem: str) -> list[str]:
     errs, warns = report.count("error"), report.count("warn")
     block = [
@@ -67,7 +82,7 @@ def _finding_comments(report: Report, stem: str) -> list[str]:
             continue
         tag = "ERROR" if f.level == "error" else "WARN"
         loc = f" [{f.loc}]" if f.loc else ""
-        msg = f.message.replace("\n", " ")
+        msg = _ascii(f.message.replace("\n", " "))
         block.append(f"# [{tag}] {f.area}: {msg}{loc}")
     block.append("#")
     block.append("")

@@ -258,12 +258,16 @@ class AsaParser:
         if tok == "any6":
             return "all"  # FortiOS 'all' built-in covers IPv6 too
         if tok == "host":
+            if not toks:
+                return None  # truncated line
             ip = toks.pop(0)
             ip = self.name_map.get(ip, ip)
             return self.addr_for_host(ip, ref)
         if tok in ("object", "object-group"):
-            return toks.pop(0)
+            return toks.pop(0) if toks else None
         if tok == "interface":
+            if not toks:
+                return None
             ifc = toks.pop(0)
             self.note(
                 "warn", "policies",
@@ -484,8 +488,18 @@ class AsaParser:
                           "handles interface PAT only)", ref)
         else:  # static
             mapped = rest_toks[0] if rest_toks else ""
+            ext_ip = self.name_map.get(mapped, mapped)
+            if mapped == "interface":
+                # NAT to the egress interface address — the IP is not in
+                # this config, so it cannot be carried over automatically
+                ext_ip = f"<{mapped_ifc}-interface-ip>"
+                self.note(
+                    "error", "nat",
+                    f"static NAT on '{obj_name}' maps to the {mapped_ifc} "
+                    f"interface address - set the VIP extip to that "
+                    "interface's IP manually", ref)
             vip = Vip(
-                name=f"vip-{obj_name}", ext_ip=self.name_map.get(mapped, mapped),
+                name=f"vip-{obj_name}", ext_ip=ext_ip,
                 ext_intf=mapped_ifc, comment=f"from object NAT on {obj_name}",
                 source=ref,
             )
@@ -640,13 +654,16 @@ class AsaParser:
                 if proto in ("tcp", "udp", "tcp-udp"):
                     proto_ir = "tcp/udp" if proto == "tcp-udp" else proto
                     dst = src = ""
+                    bad = False
                     while t:
                         if t[0] == "destination":
                             t.pop(0)
-                            dst, _ = self.parse_port_spec(t, sref)
+                            dst, ok = self.parse_port_spec(t, sref)
+                            bad = bad or not ok
                         elif t[0] == "source":
                             t.pop(0)
-                            src, _ = self.parse_port_spec(t, sref)
+                            src, ok = self.parse_port_spec(t, sref)
+                            bad = bad or not ok
                         else:
                             # bare `eq 80` shorthand = destination
                             d, ok = self.parse_port_spec(t, sref)
@@ -654,6 +671,15 @@ class AsaParser:
                                 dst = d
                             else:
                                 t.pop(0) if t else None
+                    if bad:
+                        # converting (e.g.) `neq 80` as any-port would
+                        # silently broaden the group
+                        self.note(
+                            "error", "services",
+                            f"group {name}: member '{raw.strip()}' has a "
+                            "non-convertible port spec (neq/unknown name) - "
+                            "member skipped, recreate manually", sref)
+                        continue
                     svc = Service(
                         name=f"{proto_ir.replace('/', '')}_{dst or 'any'}",
                         protocol=proto_ir, dst_ports=dst, src_ports=src, source=sref,
@@ -722,21 +748,37 @@ class AsaParser:
         src = self.parse_addr_spec(t, ref)
         src_ports, sp_ok = ("", True)
         # ASA allows a *service* object-group in port position; the only way
-        # to distinguish it from a destination network group is the registry
-        svc_grp_ref = self._take_svc_group(t)
-        if not svc_grp_ref and t and t[0] in ("eq", "range", "gt", "lt", "neq"):
+        # to distinguish it from a destination network group is the registry.
+        # In this position (between src and dst) ASA matches SOURCE ports.
+        src_svc_grp = self._take_svc_group(t)
+        if not src_svc_grp and t and t[0] in ("eq", "range", "gt", "lt",
+                                              "neq"):
             src_ports, sp_ok = self.parse_port_spec(t, ref)
         dst = self.parse_addr_spec(t, ref)
         dst_ports, dp_ok = ("", True)
         icmp_type: int | None = None
-        if not svc_grp_ref:
-            svc_grp_ref = self._take_svc_group(t)
+        dst_svc_grp = self._take_svc_group(t)
         if t and t[0] in ("eq", "range", "gt", "lt", "neq"):
             dst_ports, dp_ok = self.parse_port_spec(t, ref)
-        elif t and protos[0][0] == "icmp" and t[0] in ICMP_TYPE_NAMES:
-            icmp_type = ICMP_TYPE_NAMES[t.pop(0)]
-        if svc_grp_ref:
-            svc_ref = svc_ref or svc_grp_ref
+        elif t and protos[0][0] == "icmp" \
+                and (t[0] in ICMP_TYPE_NAMES or t[0].isdigit()):
+            tok = t.pop(0)
+            icmp_type = ICMP_TYPE_NAMES.get(tok)
+            if icmp_type is None:
+                icmp_type = int(tok)
+        if src_svc_grp:
+            # source-port group: FortiOS services match destination ports,
+            # so this constraint cannot be carried over as-is
+            sp_ok = False
+            self.note(
+                "error", "policies",
+                f"service group '{src_svc_grp}' is in the source-port "
+                "position (ASA matches SOURCE ports there); not convertible "
+                "- policy emitted disabled for review", ref)
+        if dst_svc_grp:
+            svc_ref = svc_ref or dst_svc_grp
+        elif src_svc_grp:
+            svc_ref = svc_ref or src_svc_grp
 
         disabled = False
         log = False

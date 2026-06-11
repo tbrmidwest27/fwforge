@@ -53,9 +53,13 @@ def run_cross(text: str, vendor: str, src_name: str,
     report.meta["source_hostname"] = cfg.hostname
 
     unmapped = portmap.apply_ir(cfg, mapping, report)
-    names_tf.apply(cfg, report)
+    renames = names_tf.apply(cfg, report)
     routes_tf.infer_dst_zones(cfg, report)
     if tuning and tuning.any():
+        # exclude/only are given as SOURCE rule names; sanitization has
+        # already renamed the policies, so translate the filters too
+        tuning.exclude[:] = [renames.get(n, n) for n in tuning.exclude]
+        tuning.only[:] = [renames.get(n, n) for n in tuning.only]
         stats = tuning_tf.apply(cfg, tuning, report)
         report.meta["tuning"] = ", ".join(
             f"{k}:{v}" for k, v in stats.items() if v)

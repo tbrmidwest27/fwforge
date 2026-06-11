@@ -75,6 +75,11 @@ def validate(tree: CTree, specs: list[ZoneSpec]) -> None:
     sdwan = existing_sdwan_members(tree)
     claimed: dict[str, str] = {}
     for spec in specs:
+        if spec.name in interfaces:
+            raise PlanError(
+                f"[zone {spec.name}]: an interface with that name exists — "
+                "FortiOS zones and interfaces share one reference "
+                "namespace; pick another zone name")
         for m in spec.members:
             if m not in interfaces:
                 raise PlanError(

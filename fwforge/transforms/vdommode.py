@@ -46,12 +46,15 @@ from ..parsers.fortios_tree import (
 )
 
 # `config system <sub>` blocks that live INSIDE a VDOM, not in config global
+# (system sflow — the collector settings — is GLOBAL; the per-VDOM table
+# is system vdom-sflow)
 VDOM_SYSTEM = {
-    "settings", "zone", "sdwan", "dhcp", "session-ttl", "gre-tunnel",
-    "ipip-tunnel", "vxlan", "geneve", "virtual-wire-pair",
+    "settings", "zone", "sdwan", "dhcp", "dhcp6", "session-ttl",
+    "gre-tunnel", "ipip-tunnel", "vxlan", "geneve", "virtual-wire-pair",
     "replacemsg-group", "proxy-arp", "dns-database", "dns-server",
-    "sit-tunnel", "mobile-tunnel", "pppoe-interface", "sflow", "nat64",
-    "ike", "ipv6-tunnel",
+    "sit-tunnel", "mobile-tunnel", "pppoe-interface", "vdom-sflow",
+    "nat64", "ike", "ipv6-tunnel", "arp-table", "wccp",
+    "vdom-dns", "vdom-radius-server",
 }
 # top-level roots (outside system.*) that are global despite not being system
 GLOBAL_ROOTS = {"log"}
@@ -155,10 +158,15 @@ def to_multi_vdom(tree: CTree, report, vdom_name: str = "root",
     _set_vdom_mode(global_sections, True, report)
 
     for amb in AMBIGUOUS:
-        if any(tuple(n.path[:len(amb)]) == amb for n in global_sections):
-            report.add("warn", "vdom-mode",
-                       f"section '{' '.join(amb)}' placed in global scope — "
-                       "verify; it may belong per-VDOM in your deployment")
+        for group, where in ((global_sections, "global"),
+                             (vdom_sections, "VDOM")):
+            if any(tuple(n.path[:len(amb)]) == amb for n in group):
+                report.add(
+                    "warn", "vdom-mode",
+                    f"section '{' '.join(amb)}' placed in {where} scope — "
+                    "verify; FortiOS keeps both a global and a per-VDOM "
+                    "variant of it")
+                break
 
     _rewrite_header(tree, 1)
     new_children: list = list(header)

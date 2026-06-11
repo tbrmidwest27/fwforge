@@ -122,3 +122,45 @@ def test_e2e_hw_switch_keep_is_default(tmp_path):
         encoding="utf-8")
     assert "set type hard-switch" in conf              # untouched by default
     assert "config system virtual-switch" in conf
+
+
+VSWITCH_STYLE = """#config-version=FGT60F-7.4.5-FW-build2702-240101:opmode=0:vdom=0:user=admin
+config system interface
+    edit "lan"
+        set vdom "root"
+        set type hard-switch
+        set ip 10.0.0.1 255.255.255.0
+    next
+    edit "internal1"
+        set vdom "root"
+    next
+    edit "internal2"
+        set vdom "root"
+    next
+end
+config system virtual-switch
+    edit "lan"
+        set physical-switch "sw0"
+        config port
+            edit "internal1"
+            next
+            edit "internal2"
+            next
+        end
+    next
+end
+"""
+
+
+def test_virtual_switch_membership_harvested():
+    # real devices keep hard-switch membership in system virtual-switch,
+    # NOT inline on the interface — it must survive the drop
+    tree = ft.parse_config(VSWITCH_STYLE)
+    report = Report()
+    stats = hwswitch.convert(tree, report)
+    assert stats["converted"] == 1
+    lan = _iface(tree, "lan")
+    assert _attr(lan, "type") == ["switch"]
+    assert _attr(lan, "member") == ["internal1", "internal2"]
+    out = ft.serialize(tree)
+    assert "config system virtual-switch" not in out

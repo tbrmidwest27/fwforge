@@ -16,6 +16,11 @@ def _referenced_names(cfg: FirewallConfig) -> tuple[set[str], set[str]]:
         addr_refs.update(pol.src_addrs)
         addr_refs.update(pol.dst_addrs)
         svc_refs.update(pol.services)
+    # NAT intents reference address objects too — pruning those would
+    # silently widen the emitted SNAT match to 'all'
+    for n in cfg.nats:
+        if n.real_obj:
+            addr_refs.add(n.real_obj)
 
     # group membership counts as a reference, but only if the group itself
     # is (transitively) referenced

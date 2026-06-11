@@ -293,3 +293,68 @@ def test_plan_scaffold_command(tmp_path):
     assert "[portmap]" in text
     assert "port1" in text and "vlan30" in text
     assert "[sdwan virtual-wan-link]" in text.replace("# ", "")
+
+
+DSTADDR_CFG = """#config-version=FGT601F-7.6.6-FW-build3510-250101:opmode=0:vdom=0:user=admin
+config system interface
+    edit "wan1"
+        set vdom "root"
+        set ip 198.18.0.2 255.255.255.248
+    next
+    edit "wan2"
+        set vdom "root"
+        set ip 198.51.100.2 255.255.255.248
+    next
+end
+config firewall address
+    edit "branch-nets"
+        set subnet 10.50.0.0 255.255.0.0
+    next
+end
+config router static
+    edit 1
+        set gateway 198.18.0.1
+        set device "wan1"
+    next
+    edit 2
+        set dstaddr "branch-nets"
+        set gateway 198.51.100.1
+        set device "wan2"
+    next
+end
+"""
+
+
+def test_sdwan_dstaddr_route_pinned_not_deleted():
+    # a `set dstaddr` route has no `set dst` either — it must not be
+    # mistaken for a default route and silently removed
+    tree = ft.parse_config(DSTADDR_CFG)
+    report = Report()
+    spec = SdwanZoneSpec(name="vwl", members=[
+        SdwanMember(interface="wan1"), SdwanMember(interface="wan2")])
+    sdwan.apply_sdwan(tree, [spec], report)
+    out = ft.serialize(tree)
+    assert 'set dstaddr "branch-nets"' in out      # replacement route
+    assert 'set name "pin-branch-nets"' in out     # pinned steering rule
+    assert "set gateway 198.18.0.1" in out         # wan1 member gateway
+
+
+def test_sdwan_status_disable_flipped_to_enable():
+    text = DSTADDR_CFG + """config system sdwan
+    set status disable
+end
+"""
+    tree = ft.parse_config(text)
+    report = Report()
+    spec = SdwanZoneSpec(name="vwl",
+                         members=[SdwanMember(interface="wan1")])
+    sdwan.apply_sdwan(tree, [spec], report)
+    out = ft.serialize(tree)
+    assert "set status enable" in out
+    assert "set status disable" not in out
+
+
+def test_zone_name_colliding_with_interface_rejected():
+    tree = ft.parse_config(DSTADDR_CFG)
+    with pytest.raises(PlanError, match="namespace"):
+        zones.validate(tree, [ZoneSpec(name="wan1", members=["wan2"])])

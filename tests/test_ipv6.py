@@ -206,3 +206,24 @@ def test_pfsense_v6_e2e(tmp_path):
     v6pol = next(b for b in blocks if "pf-1" in b and "set name" in b)
     assert 'set srcaddr6 "all"' in v6pol
     assert 'set dstaddr6 "V6Servers"' in v6pol
+
+
+def test_mixed_family_policy_emits_complete_pairs():
+    # v4 source + v6 destination: each family leg needs a complete
+    # srcaddr/dstaddr pair or FortiOS rejects the policy on load
+    from fwforge.emit import fortios as emit_fortios
+    from fwforge.model import Address, FirewallConfig, Policy
+    from fwforge.report import Report
+
+    cfg = FirewallConfig(vendor="test")
+    cfg.addresses.append(Address(name="V4SRC", type="host",
+                                 value="10.0.0.1"))
+    cfg.addresses.append(Address(name="V6DST", type="host",
+                                 value="2001:db8::10"))
+    cfg.policies.append(Policy(src_addrs=["V4SRC"], dst_addrs=["V6DST"],
+                               services=["ALL"], action="accept"))
+    out = emit_fortios.emit(cfg, Report())
+    assert 'set srcaddr "V4SRC"' in out
+    assert 'set dstaddr "none"' in out
+    assert 'set srcaddr6 "none"' in out
+    assert 'set dstaddr6 "V6DST"' in out

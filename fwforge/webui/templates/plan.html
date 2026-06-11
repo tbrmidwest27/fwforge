@@ -14,7 +14,8 @@
 
 <ol class="steps" id="stepper"></ol>
 
-<form method="post" action="{{ url_for('convert', jid=jid) }}">
+<form method="post" action="{{ url_for('convert', jid=jid) }}"
+      onkeydown="if (event.key === 'Enter' && event.target.matches('input[type=text]')) event.preventDefault();">
 
 <!-- ================= Step: Source & Target ================= -->
 <section class="wstep" data-title="Source &amp; Target">
@@ -175,8 +176,8 @@
   <div class="searchbar">
     <input type="text" id="polsearch" placeholder="filter rules…"
            style="width:260px" oninput="filterPolicies()">
-    <button type="button" class="ghost small" onclick="setAllPolicies(true)">select all</button>
-    <button type="button" class="ghost small" onclick="setAllPolicies(false)">clear all</button>
+    <button type="button" class="ghost small" onclick="setAllPolicies(true)">select visible</button>
+    <button type="button" class="ghost small" onclick="setAllPolicies(false)">clear visible</button>
     <span class="muted" id="polcount"></span>
   </div>
   <table id="poltable">
@@ -400,6 +401,7 @@ function addZone() {
     ${memberTable("zone", zi)}`;
   document.getElementById("zones").appendChild(d);
   zi++;
+  refreshClaims();  // grey out members other rows already claimed
 }
 function addSdwan() {
   const d = document.createElement("div");
@@ -424,6 +426,7 @@ function addSdwan() {
     ${memberTable("sdwan", si)}`;
   document.getElementById("sdwans").appendChild(d);
   si++;
+  refreshClaims();  // grey out members other rows already claimed
 }
 function cardLabel(card) {
   const inp = card.querySelector(
@@ -449,9 +452,15 @@ function refreshClaims() {
     let n = 0;
     card.querySelectorAll("input[type=checkbox][data-ifc]").forEach(cb => {
       if (cb.dataset.fixed) return;
-      if (cb.checked) n++;
       const cl = claims[cb.dataset.ifc];
       const taken = !!(cl && cl.card !== card);
+      if (taken && cb.checked) {
+        // a disabled-but-checked box would silently drop out of the POST
+        cb.checked = false;
+        cb.closest("tr").querySelectorAll("input.gwin, input.wtin")
+          .forEach(inp => { inp.disabled = true; });
+      }
+      if (cb.checked) n++;
       cb.disabled = taken;
       cb.closest("tr").classList.toggle("dis", taken);
       const dyn = cb.closest("tr").querySelector(".dyn");
@@ -474,7 +483,9 @@ function filterMembers(inp) {
 }
 function setAllMembers(btn, on) {
   btn.closest(".zbuild").querySelectorAll("tr[data-hay]").forEach(tr => {
-    if (tr.style.display === "none") return;
+    // select acts on the filtered (visible) rows; clear means clear ALL —
+    // a hidden-but-checked member would still submit
+    if (on && tr.style.display === "none") return;
     const cb = tr.querySelector("input[type=checkbox]");
     if (!cb.disabled && cb.checked !== on) {
       cb.checked = on;

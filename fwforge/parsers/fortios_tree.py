@@ -131,6 +131,12 @@ def _logical_lines(text: str) -> Iterator[tuple[int, str]]:
     while i < len(lines):
         start = i
         buf = lines[i]
+        if buf.lstrip().startswith("#"):
+            # comments never open quoted values; joining here would swallow
+            # real config lines after a stray quote in an annotation
+            yield start + 1, buf
+            i += 1
+            continue
         while True:
             try:
                 split_line(buf)

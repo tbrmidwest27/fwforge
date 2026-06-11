@@ -27,6 +27,10 @@ import json
 from ..model import FirewallConfig
 
 
+def _is_v6(value: str) -> bool:
+    return ":" in value
+
+
 def _addr_entry(a) -> dict:
     if a.type == "host":
         return {"name": a.name, "type": "ipmask",
@@ -43,6 +47,22 @@ def _addr_entry(a) -> dict:
                 "start-ip": lo, "end-ip": hi,
                 **({"comment": a.comment} if a.comment else {})}
     # fqdn
+    return {"name": a.name, "type": "fqdn", "fqdn": a.value,
+            **({"comment": a.comment} if a.comment else {})}
+
+
+def _addr6_entry(a) -> dict:
+    if a.type == "host":
+        return {"name": a.name, "type": "ipprefix", "ip6": f"{a.value}/128",
+                **({"comment": a.comment} if a.comment else {})}
+    if a.type == "subnet":
+        return {"name": a.name, "type": "ipprefix", "ip6": a.value,
+                **({"comment": a.comment} if a.comment else {})}
+    if a.type == "range":
+        lo, hi = a.value.split("-", 1)
+        return {"name": a.name, "type": "iprange",
+                "start-ip": lo, "end-ip": hi,
+                **({"comment": a.comment} if a.comment else {})}
     return {"name": a.name, "type": "fqdn", "fqdn": a.value,
             **({"comment": a.comment} if a.comment else {})}
 
@@ -85,31 +105,59 @@ def _vip_entry(v, intf_of) -> dict:
     return out
 
 
-def _policy_entry(p, intf_of) -> dict:
+def _policy_family(p, fam: dict[str, int]) -> int:
+    """Same classification as the CLI emitter: 4, 6, or 0 (mixed)."""
+    if p.family in (4, 6):
+        return p.family
+    names = [n for n in (p.src_addrs + p.dst_addrs) if n != "all"]
+    has6 = any(fam.get(n) == 6 for n in names)
+    has4 = any(fam.get(n, 4) == 4 for n in names)
+    if has6 and not has4:
+        return 6
+    if has6 and has4:
+        return 0
+    return 4
+
+
+def _policy_entry(p, intf_of, fam: dict[str, int], nat_on: bool) -> dict:
     out = {
         "name": p.name or "",
         "srcintf": [intf_of(z) for z in (p.src_zones or ["any"])],
         "dstintf": [intf_of(z) for z in (p.dst_zones or ["any"])],
-        "srcaddr": p.src_addrs or ["all"],
-        "dstaddr": p.dst_addrs or ["all"],
         "service": p.services or ["ALL"],
         "action": p.action,
         "schedule": ["always"],
         "logtraffic": "all" if p.log else "disable",
         "status": "disable" if p.disabled else "enable",
-        "nat": "enable" if p.nat else "disable",
+        "nat": "enable" if (p.nat or nat_on) else "disable",
     }
-    if p.src_negate:
-        out["srcaddr-negate"] = "enable"
-    if p.dst_negate:
-        out["dstaddr-negate"] = "enable"
+    pfam = _policy_family(p, fam)
+    src = p.src_addrs or ["all"]
+    dst = p.dst_addrs or ["all"]
+    if pfam in (4, 0):
+        out["srcaddr"] = [a for a in src if fam.get(a, 4) != 6] or ["none"]
+        out["dstaddr"] = [a for a in dst if fam.get(a, 4) != 6] or ["none"]
+        if p.src_negate:
+            out["srcaddr-negate"] = "enable"
+        if p.dst_negate:
+            out["dstaddr-negate"] = "enable"
+    if pfam in (6, 0):
+        v6 = lambda names: [a for a in names
+                            if fam.get(a) == 6 or a == "all"] or ["none"]
+        out["srcaddr6"] = v6(src)
+        out["dstaddr6"] = v6(dst)
+        if p.src_negate:
+            out["srcaddr6-negate"] = "enable"
+        if p.dst_negate:
+            out["dstaddr6-negate"] = "enable"
     if p.comment:
         out["comments"] = p.comment[:1023]
     return out
 
 
 def build_bundle(cfg: FirewallConfig, report, adom: str = "root",
-                 package: str = "fwforge-converted") -> dict:
+                 package: str = "fwforge-converted",
+                 nat_mode: str = "policy") -> dict:
     """Build the JSON-RPC request bundle from a post-transform IR."""
     def intf_of(zone: str) -> str:
         if zone in ("any", "all", ""):
@@ -125,11 +173,32 @@ def build_bundle(cfg: FirewallConfig, report, adom: str = "root",
             requests.append({"method": "add",
                              "params": [{"url": url, "data": data}]})
 
-    add(f"{obj}/firewall/address", [_addr_entry(a) for a in cfg.addresses])
+    # name -> family, mirroring the CLI emitter
+    fam: dict[str, int] = {}
+    for a in cfg.addresses:
+        fam[a.name] = 6 if _is_v6(a.value) else 4
+    for v in cfg.vips:
+        fam[v.name] = 4
+    for g in cfg.addr_groups:
+        for m in g.members:
+            if m in fam:
+                fam[g.name] = fam[m]
+                break
+
+    addr4 = [a for a in cfg.addresses if not _is_v6(a.value)]
+    addr6 = [a for a in cfg.addresses if _is_v6(a.value)]
+    grp4 = [g for g in cfg.addr_groups if fam.get(g.name, 4) != 6]
+    grp6 = [g for g in cfg.addr_groups if fam.get(g.name) == 6]
+    add(f"{obj}/firewall/address", [_addr_entry(a) for a in addr4])
+    add(f"{obj}/firewall/address6", [_addr6_entry(a) for a in addr6])
     add(f"{obj}/firewall/addrgrp",
         [{"name": g.name, "member": g.members,
           **({"comment": g.comment} if g.comment else {})}
-         for g in cfg.addr_groups])
+         for g in grp4])
+    add(f"{obj}/firewall/addrgrp6",
+        [{"name": g.name, "member": g.members,
+          **({"comment": g.comment} if g.comment else {})}
+         for g in grp6])
     add(f"{obj}/firewall/service/custom",
         [_svc_entry(s) for s in cfg.services])
     add(f"{obj}/firewall/service/group",
@@ -138,13 +207,37 @@ def build_bundle(cfg: FirewallConfig, report, adom: str = "root",
          for g in cfg.svc_groups])
     add(f"{obj}/firewall/vip",
         [_vip_entry(v, intf_of) for v in cfg.vips
-         if v.ext_ip and not v.mapped_ip.startswith("<")])
+         if v.ext_ip and not v.ext_ip.startswith("<")
+         and v.mapped_ip and not v.mapped_ip.startswith("<")])
+
+    # same interface-PAT intent as the CLI emitter's 'set nat enable'
+    nat_pairs = set() if nat_mode == "central" else {
+        (n.real_ifc, n.mapped_ifc) for n in cfg.nats
+        if n.kind == "dynamic-interface"}
+
+    def nat_on(p) -> bool:
+        return p.action == "accept" and any(
+            (sz, dz) in nat_pairs or ("*", dz) in nat_pairs
+            for sz in (p.src_zones or [])
+            for dz in (p.dst_zones or []))
 
     requests.append({"method": "add", "params": [{
         "url": f"/pm/pkg/adom/{adom}",
         "data": [{"name": package, "type": "pkg"}]}]})
     add(f"/pm/config/adom/{adom}/pkg/{package}/firewall/policy",
-        [_policy_entry(p, intf_of) for p in cfg.policies])
+        [_policy_entry(p, intf_of, fam, nat_on(p)) for p in cfg.policies])
+
+    if nat_mode == "central":
+        report.add(
+            "warn", "fortimanager",
+            "central NAT mode: the central-snat-map rules are NOT in the "
+            "FortiManager bundle — apply them from the CLI script")
+    if any(p.app_list for p in cfg.policies):
+        report.add(
+            "warn", "fortimanager",
+            "App-ID application-list profiles are NOT in the FortiManager "
+            "bundle — create them from the CLI script's 'config "
+            "application list' and attach to the policies in the package")
 
     n_obj = (len(cfg.addresses) + len(cfg.addr_groups) + len(cfg.services)
              + len(cfg.svc_groups) + len(cfg.vips))

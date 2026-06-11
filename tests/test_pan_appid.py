@@ -48,7 +48,7 @@ def test_map_apps():
     cats, ids, transport, unmapped = pan_appid.map_apps(
         ["web-browsing", "facebook-base", "ssl", "custom-app", "any"])
     assert cats == ["Web.Client", "Social.Media"]
-    assert ids == [23, 25]
+    assert ids == [25, 23]
     assert transport == ["ssl"]
     assert unmapped == ["custom-app"]
 
@@ -66,7 +66,7 @@ def test_applist_built_and_deduped():
     assert app_rule.app_list == "pan-appctrl-1"
     # categories: web-browsing, facebook, youtube -> 3 cats
     al = next(a for a in cfg.app_lists if a.name == "pan-appctrl-1")
-    assert al.categories == [23, 25, 5]  # Web.Client, Social.Media, Video
+    assert al.categories == [25, 23, 5]  # Web.Client, Social.Media, Video
     # the web-only rule maps to a DIFFERENT set -> its own profile
     assert web_rule.app_list == "pan-appctrl-2"
     assert len(cfg.app_lists) == 2
@@ -99,7 +99,7 @@ def test_e2e_emits_application_list(tmp_path):
     conf = (tmp_path / "app.config-all.txt").read_text(encoding="utf-8")
     assert "config application list" in conf
     assert 'edit "pan-appctrl-1"' in conf
-    assert "set category 23 25 5" in conf
+    assert "set category 25 23 5" in conf
     assert "set other-application-action block" in conf
     blocks = conf.split("    edit ")
     apppol = next(b for b in blocks if 'set name "App_Rule"' in b)
@@ -121,5 +121,5 @@ def test_pa_sample_still_maps(tmp_path):
     out = next(p for p in cfg.policies if p.name == "Out Web")
     assert out.app_list == "pan-appctrl-1"
     al = cfg.app_lists[0]
-    assert al.categories == [23]  # web-browsing -> Web.Client; ssl ignored
+    assert al.categories == [25]  # web-browsing -> Web.Client; ssl ignored
     assert "PAN apps: web-browsing, ssl" in out.comment  # comment preserved

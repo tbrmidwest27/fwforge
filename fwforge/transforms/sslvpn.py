@@ -83,6 +83,28 @@ def _address_range(container, name: str) -> tuple[str, str] | None:
     return None
 
 
+def _ensure_addrgrp(container, name: str, members: list[str]) -> None:
+    node = find_config_under(container, "firewall", "addrgrp")
+    if node is None:
+        node = ConfigNode(["firewall", "addrgrp"])
+        # must land AFTER firewall address (it references those objects)
+        idx = None
+        for i, c in enumerate(container.children):
+            if isinstance(c, ConfigNode) \
+                    and c.path == ["firewall", "address"]:
+                idx = i + 1
+                break
+        if idx is None:
+            insert_in_scope(container, node)
+        else:
+            container.children.insert(idx, node)
+    if _find_edit(node, name) is None:
+        edit = EditNode(Token(name, True))
+        edit.children = [
+            SetLine("member", [Token(m, True) for m in members])]
+        node.children.append(edit)
+
+
 def _upsert_ipsec(container, phase: str, name: str,
                   lines: list[SetLine]) -> None:
     node = find_config_under(container, "vpn", "ipsec", phase)
@@ -135,12 +157,12 @@ def _convert_scope(vdom: str, container, report, psk: str,
     seen: set[str] = set()
     groups = [g for g in groups if not (g in seen or seen.add(g))]
 
-    # split-tunnel destination from the (first) tunnel portal
-    split_addr = ""
+    # split-tunnel destinations from the (first) tunnel portal
+    split_addrs: list[str] = []
     for p in tunnel_portals:
         if _one(p, "split-tunneling") == "enable":
-            split_addr = _one(p, "split-tunneling-routing-address")
-            if split_addr:
+            split_addrs = _get(p, "split-tunneling-routing-address")
+            if split_addrs:
                 break
 
     # mode-cfg pool from the tunnel-ip-pools address object
@@ -184,8 +206,19 @@ def _convert_scope(vdom: str, container, report, psk: str,
                    f"[{vdom}] could not resolve the SSL-VPN tunnel IP pool "
                    f"'{pool_name}' to a range — set mode-cfg "
                    "ipv4-start-ip/ipv4-end-ip on the new phase1 manually")
-    if split_addr:
-        p1.append(SetLine("ipv4-split-include", [Token(split_addr, True)]))
+    if len(split_addrs) == 1:
+        p1.append(SetLine("ipv4-split-include",
+                          [Token(split_addrs[0], True)]))
+    elif split_addrs:
+        # ipv4-split-include takes ONE object; wrap the portal's list in
+        # a generated address group so no subnet drops off the tunnel
+        grp = f"{tunnel_name}-split"
+        _ensure_addrgrp(container, grp, split_addrs)
+        p1.append(SetLine("ipv4-split-include", [Token(grp, True)]))
+        report.add("info", "sslvpn",
+                   f"[{vdom}] portal had {len(split_addrs)} split-tunnel "
+                   f"objects ({', '.join(split_addrs)}) — wrapped in "
+                   f"address group '{grp}' for ipv4-split-include")
     else:
         report.add("info", "sslvpn",
                    f"[{vdom}] no split tunnel on the SSL-VPN portal — "
@@ -232,13 +265,13 @@ def _convert_scope(vdom: str, container, report, psk: str,
                    f"[{vdom}] rewired {rewired} policy(ies) from the SSL-VPN "
                    f"interface to '{tunnel_name}' (user groups preserved)")
 
-    # remove the SSL-VPN sections (they don't load on 7.6+/8.0)
+    # remove ALL SSL-VPN sections (settings, portals, bookmarks, realms,
+    # host-check, client) — none of them load on 7.6+/8.0, and leftovers
+    # would dangle references to portals removed here
     removed = []
     keep = []
     for c in container.children:
-        if isinstance(c, ConfigNode) and c.path in (
-                ["vpn", "ssl", "settings"], ["vpn", "ssl", "web", "portal"],
-                ["vpn", "ssl", "web"]):
+        if isinstance(c, ConfigNode) and c.path[:2] == ["vpn", "ssl"]:
             removed.append(" ".join(c.path))
         else:
             keep.append(c)

@@ -104,7 +104,11 @@ def _parse_sdwan_member(entry: str, section: str) -> SdwanMember:
     return member
 
 
-def load_plan(path: str) -> MigrationPlan:
+def load_plan(path: str, translate: bool = True) -> MigrationPlan:
+    """Pass translate=False when more portmap entries will be merged in
+    after loading — members must be translated exactly once, over the
+    final merged map (translating per-merge double-applies chained
+    renames like port1->port2, port2->port3)."""
     cp = configparser.ConfigParser(interpolation=None)
     cp.optionxform = str  # interface names are case-sensitive
     read = cp.read(path, encoding="utf-8-sig")
@@ -188,7 +192,8 @@ def load_plan(path: str) -> MigrationPlan:
                 f"unknown section [{section}] "
                 "(expected portmap / zone <name> / sdwan <name>)")
 
-    plan.translate_members()
+    if translate:
+        plan.translate_members()
     return plan
 
 

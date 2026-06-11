@@ -353,7 +353,9 @@ class PaloParser:
                     if x in vpn.ENC]
             auths = [vpn.HASH[x] for x in _as_list(esp.get("authentication"))
                      if x in vpn.HASH]
-            dh = [x.replace("group", "") for x in _as_list(e.get("dh-group"))]
+            # 'no-pfs' is PAN's explicit PFS-off token, not a DH group
+            dh = [x.replace("group", "")
+                  for x in _as_list(e.get("dh-group")) if x != "no-pfs"]
             ipsec_prof[nm] = {"props": vpn.esp_combos(encs, auths),
                               "pfs": dh[0] if dh else "",
                               "life": self._lifetime(e.get("lifetime"))}
@@ -367,6 +369,7 @@ class PaloParser:
             return
         from ..transforms.routes import RouteTable
         table = RouteTable(self.cfg)
+        used_names: set[str] = set()
 
         for tname, t in tun_entries:
             ref = self.ref(t, f"ipsec tunnel {tname}")
@@ -432,6 +435,19 @@ class PaloParser:
                           "defaulted proposals to aes256-sha256; match the "
                           "peer manually", ref)
             tun_name = f"vpn-{tname}"[:15]
+            if tun_name in used_names:
+                # 15-char truncation collided with an earlier tunnel —
+                # FortiOS would silently merge the two phase1s
+                base = tun_name
+                n = 2
+                while tun_name in used_names:
+                    suffix = f"~{n}"
+                    tun_name = base[:15 - len(suffix)] + suffix
+                    n += 1
+                self.note("warn", "vpn",
+                          f"tunnel {tname}: truncated name collided; "
+                          f"renamed to {tun_name}", ref)
+            used_names.add(tun_name)
             vpn.add_route_based_tunnel(
                 self.cfg, _Reporter(self), table, name=tun_name,
                 interface=local_if or "wan1", remote_gw=peer,
@@ -449,11 +465,31 @@ class PaloParser:
         iface = network.get("interface", {})
         if not isinstance(iface, dict):
             return
-        for family in ("ethernet", "aggregate-ethernet", "vlan", "loopback",
-                       "tunnel"):
+        for family in ("ethernet", "aggregate-ethernet"):
             fam = iface.get(family)
             for name, node in _entries(fam):
                 self._one_interface(name, node)
+        # vlan/loopback/tunnel interfaces live in a <units> container
+        # directly under the family node, and their entries carry <ip>
+        # without a <layer3> wrapper
+        for family in ("vlan", "loopback", "tunnel"):
+            fam = iface.get(family)
+            if not isinstance(fam, dict):
+                continue
+            for uname, unode in _entries(fam.get("units")):
+                sub = Interface(name=uname,
+                                source=self.ref(unode, f"interface {uname}"))
+                if isinstance(unode, dict):
+                    ips = _as_list(unode.get("ip"))
+                    if ips:
+                        sub.ip = ips[0]
+                    tag = unode.get("tag")
+                    if isinstance(tag, str) and tag.isdigit():
+                        sub.vlan_id = int(tag)
+                    ucomment = unode.get("comment")
+                    if isinstance(ucomment, str):
+                        sub.description = ucomment
+                self.cfg.interfaces.append(sub)
 
     def _one_interface(self, name: str, node: dict):
         ref = self.ref(node, f"interface {name}")
@@ -675,8 +711,17 @@ class PaloParser:
                 comment_bits.append(desc)
             app_list = self._app_list_for(apps, name, ref)
             if apps != ["any"]:
-                shown = ", ".join(apps[:6]) + (" …" if len(apps) > 6 else "")
+                shown = ", ".join(apps[:6]) + (" ..." if len(apps) > 6
+                                               else "")
                 comment_bits.append(f"PAN apps: {shown}")
+            sched = r.get("schedule")
+            if isinstance(sched, str) and sched:
+                comment_bits.append(f"PAN schedule: {sched}")
+                self.note(
+                    "warn", "policies",
+                    f"rule '{name}': schedule '{sched}' not converted - "
+                    "policy is emitted always-on; recreate a firewall "
+                    "schedule and set it on the policy", ref)
             if app_default:
                 self.note(
                     "warn", "policies",

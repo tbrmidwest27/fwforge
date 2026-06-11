@@ -85,10 +85,13 @@ def cmd_plan(args) -> int:
 
 
 def _load_migration_plan(args) -> MigrationPlan:
-    plan = load_plan(args.plan) if args.plan else MigrationPlan()
+    # translate members once, over the fully merged map — translating in
+    # load_plan AND after the --map merge double-applies chained renames
+    plan = load_plan(args.plan, translate=False) if args.plan \
+        else MigrationPlan()
     if args.map:
         plan.portmap.update(portmap.load_map(args.map))
-        plan.translate_members()
+    plan.translate_members()
     if getattr(args, "vdom_map", None):
         for pair in args.vdom_map.split(","):
             if "=" in pair:
@@ -118,26 +121,34 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
                                 nat_mode=getattr(args, "nat_mode", "policy"))
     report, cfg = result.report, result.cfg
 
+    # NOTE: outdir/(stem + ext), never base.with_suffix(ext) — with_suffix
+    # truncates dotted stems ('fw.example.com-backup' -> 'fw.example')
     stem = Path(src_path).stem
-    base = outdir / stem
     fmg_path = None
     if getattr(args, "fmg", None):
         adom, _, fmg_pkg = args.fmg.partition("/")
-        bundle = fortimanager.build_bundle(
-            cfg, report, adom=adom.strip() or "root",
-            package=fmg_pkg.strip() or f"{stem}-converted")
-        fmg_path = base.with_suffix(".fmg.json")
-        fmg_path.write_text(fortimanager.render(bundle), encoding="utf-8")
+        try:
+            bundle = fortimanager.build_bundle(
+                cfg, report, adom=adom.strip() or "root",
+                package=fmg_pkg.strip() or f"{stem}-converted",
+                nat_mode=getattr(args, "nat_mode", "policy"))
+            fmg_path = outdir / (stem + ".fmg.json")
+            fmg_path.write_text(fortimanager.render(bundle),
+                                encoding="utf-8")
+        except Exception as e:  # a bundle failure must not sink the run
+            report.add("error", "fortimanager",
+                       f"FortiManager bundle failed ({e}) — CLI script and "
+                       "reports written without it")
     pkg = package.write_split(outdir, stem, result.out_text, report)
-    (base.with_suffix(".report.md")).write_text(
-        report.to_markdown(cfg, text), encoding="utf-8")
-    (base.with_suffix(".report.json")).write_text(
+    report_md = outdir / (stem + ".report.md")
+    report_md.write_text(report.to_markdown(cfg, text), encoding="utf-8")
+    (outdir / (stem + ".report.json")).write_text(
         report.to_json(cfg), encoding="utf-8")
-    (base.with_suffix(".report.html")).write_text(
+    (outdir / (stem + ".report.html")).write_text(
         report.to_html(cfg, text), encoding="utf-8")
+    portmap_path = outdir / (stem + ".portmap")
     if result.sample_portmap:
-        (base.with_suffix(".portmap")).write_text(
-            result.sample_portmap, encoding="utf-8")
+        portmap_path.write_text(result.sample_portmap, encoding="utf-8")
 
     errors, warns = report.count("error"), report.count("warn")
     print(f"wrote {pkg['config_all']} "
@@ -148,10 +159,9 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
           f"services: {len(cfg.services)}  vips: {len(cfg.vips)}")
     print(f"report: {errors} errors, {warns} warnings, "
           f"{len(cfg.unparsed)} unconverted lines "
-          f"-> {base.with_suffix('.report.md')}")
+          f"-> {report_md}")
     if result.unmapped:
-        print(f"ACTION: fill in {base.with_suffix('.portmap')} and re-run "
-              f"with --map")
+        print(f"ACTION: fill in {portmap_path} and re-run with --map")
     return result.exit_code
 
 
@@ -175,13 +185,12 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
     report = result.report
 
     stem = Path(src_path).stem
-    base = outdir / stem
     pkg = package.write_full(outdir, stem, result.out_text, report)
-    (base.with_suffix(".report.md")).write_text(
+    (outdir / (stem + ".report.md")).write_text(
         report.to_markdown(), encoding="utf-8")
-    (base.with_suffix(".report.json")).write_text(
+    (outdir / (stem + ".report.json")).write_text(
         report.to_json(), encoding="utf-8")
-    (base.with_suffix(".report.html")).write_text(
+    (outdir / (stem + ".report.html")).write_text(
         report.to_html(), encoding="utf-8")
     if result.sample_portmap:
         (outdir / (stem + ".portmap")).write_text(
@@ -202,7 +211,7 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
             print(f"{key.replace('_', ' ')}: {report.meta[key]}")
     errors, warns = report.count("error"), report.count("warn")
     print(f"report: {errors} errors, {warns} warnings "
-          f"-> {base.with_suffix('.report.md')}")
+          f"-> {outdir / (stem + '.report.md')}")
     return result.exit_code
 
 

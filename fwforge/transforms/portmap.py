@@ -35,6 +35,7 @@ GLOBAL_INTF_ATTRS = {
     "input-device", "output-device", "associated-interface", "hbdev",
     "monitor", "session-sync-dev", "srcintf-filter", "mirror-intf",
     "split-interface", "aggregate", "fortilink", "source-interface",
+    "intf",  # firewall local-in-policy
 }
 
 # namespaces whose port-like names belong to OTHER devices (FortiSwitch
@@ -49,10 +50,16 @@ _FOREIGN_NAME_PATHS = (("switch-controller",),)
 PATH_SCOPED_ATTRS: dict[tuple, set[str]] = {
     ("system", "virtual-wire-pair"): {"member"},
     ("system", "interface"): {"member"},
+    ("system", "switch-interface"): {"member"},  # software-switch bridges
 }
 
 # config paths whose `edit <name>` entries ARE interface names
-EDIT_RENAME_PATHS = {("system", "interface")}
+EDIT_RENAME_PATHS = {
+    ("system", "interface"),
+    ("system", "dns-server"),               # edit <interface>
+    ("system", "virtual-switch"),           # edit <hard-switch name>
+    ("system", "virtual-switch", "port"),   # nested member ports
+}
 
 
 def load_map(path: str) -> dict[str, str]:
@@ -185,7 +192,8 @@ def leftover_scan(tree: CTree, mapping: dict[str, str], report) -> int:
     source name. These live in attrs we deliberately don't rewrite — some
     are other devices' ports (FortiSwitch: skipped), the rest get an info
     finding so a human decides."""
-    from ..parsers.fortios_tree import iter_set_lines, path_endswith
+    from ..parsers.fortios_tree import (iter_config_nodes, iter_set_lines,
+                                        path_endswith)
 
     renamed = {src for src, dst in mapping.items() if src != dst}
     if not renamed:
@@ -205,6 +213,23 @@ def leftover_scan(tree: CTree, mapping: dict[str, str], report) -> int:
                 f"{' '.join(path)} (set {line.attr}) — likely another "
                 "device's port name (extender/switch); verify",
             )
+    # edit names that still equal a renamed source (outside the explicit
+    # EDIT_RENAME_PATHS) may be interface-keyed tables we don't know about
+    for path, node in iter_config_nodes(tree):
+        if any(path[:len(p)] == p for p in _FOREIGN_NAME_PATHS):
+            continue
+        if any(path_endswith(path, p) for p in EDIT_RENAME_PATHS):
+            continue
+        for edit in node.children:
+            if isinstance(edit, EditNode) and edit.name.value in renamed:
+                flagged += 1
+                report.add(
+                    "info", "portmap",
+                    f"entry '{edit.name.value}' under config "
+                    f"{' '.join(path)} matches a renamed source port but "
+                    "was not renamed — verify whether this table is keyed "
+                    "by interface name",
+                )
     return flagged
 
 

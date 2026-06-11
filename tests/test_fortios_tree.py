@@ -68,3 +68,17 @@ def test_section_inventory():
     assert inv["system interface"] == 3
     assert inv["firewall policy"] == 1
     assert "system ntp" in inv
+
+
+def test_comment_with_stray_quote_does_not_swallow_config():
+    # a quote inside a # comment must not open a multi-line value and
+    # absorb the real config lines after it
+    text = ('# TODO: rename "wan1 after migration\n'
+            "config system global\n"
+            '    set hostname "fgt1"\n'
+            "end\n")
+    tree = ft.parse_config(text)
+    assert ft.find_config(tree, "system", "global") is not None
+    out = ft.serialize(tree)
+    assert 'set hostname "fgt1"' in out
+    assert not tree.warnings  # no stray-end warnings either
