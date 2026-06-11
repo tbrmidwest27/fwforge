@@ -33,7 +33,7 @@ Tracks every FortiConverter capability that is NOT "another source vendor".
 | SSL-VPN → IPsec migration assistant | ✅ done — `--sslvpn-to-ipsec` builds an IKEv2 dial-up scaffold (mode-cfg pool, authusrgrp, split-include), rewires policies |
 | Merge into an existing target config | ❌ **declined by design owner** (2026-06-10): not a wanted feature — fwforge outputs are standalone configs/scripts, not in-place edits of a running box's backup |
 | virtual-router → VRF conversion | ⏳ todo (pairs with Juniper/PAN parsers) |
-| FortiManager (.fmg) output target | ⏳ todo — emit per-ADOM policy package |
+| FortiManager output target | ✅ done — `--fmg ADOM[/PKG]` / GUI option emits a JSON-RPC import bundle (objects + policy package) |
 | Audit / documentation report (polished) | ✅ done — self-contained `report.html`, print-to-PDF friendly, escaped/colored findings |
 | VDOM Mapping page | ✅ done — wizard step + `[vdommap]` plan section + `--vdom-map`; renames config vdom edits, interface `set vdom`, management-vdom, vdom-property |
 | **Modern extras FC lacks** | route-based dstintf inference, version-upgrade
@@ -236,8 +236,23 @@ A maintained open converter has no real competition.
 - [x] **Output-tab file selector**: browse config-all + every per-branch
       script in the results preview.
 
-### next (parity matrix ⏳ items)
-- [ ] FortiManager output target (last remaining matrix row)
+### v0.16 — shipped 2026-06-11
+- [x] **FortiManager output target** (the LAST parity-matrix row):
+      emit/fortimanager.py builds a JSON-RPC import bundle —
+      address/group/service/VIP object creates + policy-package create +
+      policies — for an ADOM. `--fmg ADOM[/PACKAGE]` on the CLI, checkbox
+      + ADOM/package fields in the wizard, download on results. Routes
+      and VPN tunnels (device-level) flagged as staying in the CLI script.
+
+## 🏁 MISSION STATUS (2026-06-11)
+
+**The FortiConverter parity matrix is complete.** Every non-parser
+FortiConverter capability is implemented (or consciously declined by the
+design owner: merge-into-existing). Remaining work is by-design deferred:
+
+- additional vendor parsers (Check Point, Juniper, SonicWall, …)
+- real-hardware validation: restore the converted 601F config on the
+  701G when it arrives (`diag debug config-error-log read`)
 - [ ] **Load the converted config on the actual 701G** when hardware
       arrives: restore, then `diag debug config-error-log read`
 - [ ] (later) more parsers: Check Point, Juniper, SonicWall

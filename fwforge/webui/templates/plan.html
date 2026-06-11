@@ -87,6 +87,16 @@
     {% else %}
     <p class="grid-note">Cross-vendor output is a FortiConverter-style
       script package: <code>config-all.txt</code> plus per-branch files.</p>
+    <div class="builder-row" style="align-items:center">
+      <label>
+        <input type="checkbox" name="fmg_enable" value="1">
+        <strong>FortiManager bundle</strong></label>
+      <label>ADOM <input type="text" name="fmg_adom" value="root" size="8"></label>
+      <label>package <input type="text" name="fmg_pkg" size="16"
+             placeholder="auto"></label>
+    </div>
+    <p class="grid-note">Also writes a JSON-RPC import bundle that creates
+      the converted objects and a policy package in that ADOM.</p>
     {% endif %}
   </div>
 </div>

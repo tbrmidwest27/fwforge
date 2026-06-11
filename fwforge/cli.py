@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, pipeline
-from .emit import package
+from .emit import fortimanager, package
 from .parsers import CROSS_PARSERS, detect_vendor
 from .parsers import fortios_tree
 from .report import Report
@@ -119,6 +119,14 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
 
     stem = Path(src_path).stem
     base = outdir / stem
+    fmg_path = None
+    if getattr(args, "fmg", None):
+        adom, _, fmg_pkg = args.fmg.partition("/")
+        bundle = fortimanager.build_bundle(
+            cfg, report, adom=adom.strip() or "root",
+            package=fmg_pkg.strip() or f"{stem}-converted")
+        fmg_path = base.with_suffix(".fmg.json")
+        fmg_path.write_text(fortimanager.render(bundle), encoding="utf-8")
     pkg = package.write_split(outdir, stem, result.out_text, report)
     (base.with_suffix(".report.md")).write_text(
         report.to_markdown(cfg, text), encoding="utf-8")
@@ -133,6 +141,8 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
     errors, warns = report.count("error"), report.count("warn")
     print(f"wrote {pkg['config_all']} "
           f"(+ {pkg['branch_count']} branch files in {pkg['branch_dir']})")
+    if fmg_path:
+        print(f"wrote {fmg_path} (FortiManager JSON-RPC import bundle)")
     print(f"policies: {len(cfg.policies)}  addresses: {len(cfg.addresses)}  "
           f"services: {len(cfg.services)}  vips: {len(cfg.vips)}")
     print(f"report: {errors} errors, {warns} warnings, "
@@ -309,6 +319,10 @@ def main(argv: list[str] | None = None) -> int:
                         "(default: a CHANGEME placeholder)")
     p.add_argument("--mode", default="auto",
                    choices=["auto", "cross", "migrate"])
+    p.add_argument("--fmg", metavar="ADOM[/PACKAGE]",
+                   help="also write a FortiManager JSON-RPC import bundle "
+                        "(<name>.fmg.json) creating the objects + a policy "
+                        "package in that ADOM (cross-vendor conversions)")
     tune = p.add_argument_group("tuning (cross-vendor conversions)")
     tune.add_argument("--prune", action="store_true",
                       help="drop address/service objects nothing references")

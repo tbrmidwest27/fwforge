@@ -171,6 +171,20 @@ The rule table (`transforms/versiondelta.py`) is curated from Fortinet's
 release-notes "Changes in CLI / default behavior" pages — deliberately
 conservative; extend it as versions land.
 
+### FortiManager output
+
+```
+python -m fwforge convert asa.cfg --map ports.map --fmg root/migrated-asa
+```
+
+Alongside the script package, writes `<name>.fmg.json` — a **FortiManager
+JSON-RPC import bundle**: ready-to-POST requests that create the converted
+address/group/service/VIP objects in the ADOM and build a policy package
+with the converted policies. POST each request (in order) to
+`https://<fmg>/jsonrpc` after login, then install the package to the
+device. Routes and VPN tunnels are device-level and stay in the CLI
+script (flagged in the report). Also a checkbox in the GUI wizard.
+
 ### Tuning (cross-vendor conversions)
 
 FortiConverter ports a config 1:1 and offers a shallow opt-in cleanup;

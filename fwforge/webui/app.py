@@ -18,7 +18,7 @@ from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
 
 from .. import __version__, pipeline
-from ..emit import package
+from ..emit import fortimanager, package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
 from ..transforms import portmap, tree_refs
 from ..transforms import plan as plan_mod
@@ -332,6 +332,16 @@ def create_app() -> Flask:
 
         report = result.report
         stem = Path(meta["name"]).stem or "config"
+        fmg_written = False
+        if result.mode == "cross" and request.form.get("fmg_enable"):
+            bundle = fortimanager.build_bundle(
+                result.cfg, report,
+                adom=request.form.get("fmg_adom", "").strip() or "root",
+                package=request.form.get("fmg_pkg", "").strip()
+                or f"{stem}-converted")
+            (jdir / f"{stem}.fmg.json").write_text(
+                fortimanager.render(bundle), encoding="utf-8")
+            fmg_written = True
         if result.mode == "migrate":
             pkg = package.write_full(jdir, stem, result.out_text, report)
         else:
@@ -364,6 +374,7 @@ def create_app() -> Flask:
             "exit": result.exit_code,
             "stem": stem,
             "split": pkg["split"],
+            "fmg": fmg_written,
             "main_name": pkg["main_name"],
             "branch_count": pkg["branch_count"],
             "counts": {
@@ -428,6 +439,8 @@ def create_app() -> Flask:
             "report.html": ("report.html", "text/html",
                             f"{stem}.report.html"),
             "diff": ("diff.patch", "text/plain", f"{stem}.diff.patch"),
+            "fmg": (f"{stem}.fmg.json", "application/json",
+                    f"{stem}.fmg.json"),
         }
         if which not in files:
             abort(404)

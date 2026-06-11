@@ -178,6 +178,25 @@ def test_output_tab_branch_selector(client):
     assert b"fwforge conversion report" in rep.data
 
 
+def test_fmg_bundle_from_gui(client):
+    jid = _load(client, "asa_sample.cfg")
+    resp = client.post(
+        f"/job/{jid}/convert",
+        data={"fortios": "7.4", "fmg_enable": "1", "fmg_adom": "lab",
+              "fmg_pkg": "",
+              "map_src": ["outside"], "map_dst": ["wan1"]},
+        follow_redirects=True)
+    page = resp.data.decode()
+    assert "FortiManager bundle (.json)" in page
+    dl = client.get(f"/job/{jid}/dl/fmg")
+    assert dl.status_code == 200
+    import json as _json
+    bundle = _json.loads(dl.data)
+    assert bundle["fortimanager"]["adom"] == "lab"
+    assert any("/pm/pkg/adom/lab" in r["params"][0]["url"]
+               for r in bundle["requests"])
+
+
 def test_jobs_persist_across_restart(client, tmp_path, monkeypatch):
     jid = _load(client, "fortios_sample.conf")
     # simulate a fresh server start against the same jobs dir
