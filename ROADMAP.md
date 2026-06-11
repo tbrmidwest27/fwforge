@@ -256,6 +256,18 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.18 — shipped 2026-06-11
+- [x] **PAN-OS + pfSense IPsec conversion** (closing a FC-edge gap):
+      shared parsers/_vpn_common.py builds route-based phase1/phase2 +
+      tunnel routes + bidirectional policies (LAN side route-inferred)
+      from PAN ike-gateway/crypto-profile/tunnel (proxy-ids → selectors,
+      version, PSK w/ encrypted-export detection) and pfSense
+      phase1/phase2 (iketype, encryption items, localid/remoteid
+      selectors, pfsgroup). Cert auth / missing PSK → placeholder +
+      error; phase1-without-phase2 skipped. ASA VPN keeps its own inline
+      path. Three of three cross-vendor parsers now convert site-to-site
+      IPsec.
+
 ## 🏁 MISSION STATUS (2026-06-11)
 
 **The FortiConverter parity matrix is complete.** Every non-parser

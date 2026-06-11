@@ -1,0 +1,60 @@
+<config version="11.0.0">
+  <devices><entry name="localhost.localdomain">
+    <network>
+      <interface><ethernet>
+        <entry name="ethernet1/1"><layer3><ip>
+          <entry name="203.0.113.2/29"/></ip></layer3></entry>
+        <entry name="ethernet1/2"><layer3><ip>
+          <entry name="10.20.0.1/16"/></ip></layer3></entry>
+        <entry name="tunnel.1"><layer3/></entry>
+      </ethernet></interface>
+      <ike>
+        <crypto-profiles>
+          <ike-crypto-profiles><entry name="IKE-P1">
+            <encryption><member>aes-256-cbc</member></encryption>
+            <hash><member>sha256</member></hash>
+            <dh-group><member>group14</member></dh-group>
+            <lifetime><seconds>28800</seconds></lifetime>
+          </entry></ike-crypto-profiles>
+          <ipsec-crypto-profiles><entry name="IPSEC-P2">
+            <esp>
+              <encryption><member>aes-256-cbc</member></encryption>
+              <authentication><member>sha256</member></authentication>
+            </esp>
+            <dh-group><member>group14</member></dh-group>
+            <lifetime><seconds>3600</seconds></lifetime>
+          </entry></ipsec-crypto-profiles>
+        </crypto-profiles>
+        <gateway><entry name="GW-BRANCH">
+          <authentication><pre-shared-key>
+            <key>plainsecret</key></pre-shared-key></authentication>
+          <protocol>
+            <ikev2><ike-crypto-profile>IKE-P1</ike-crypto-profile></ikev2>
+            <version>ikev2</version>
+          </protocol>
+          <local-address><interface>ethernet1/1</interface></local-address>
+          <peer-address><ip>198.51.100.9</ip></peer-address>
+        </entry></gateway>
+      </ike>
+      <tunnel><ipsec><entry name="branch-vpn">
+        <auto-key>
+          <ike-gateway><entry name="GW-BRANCH"/></ike-gateway>
+          <ipsec-crypto-profile>IPSEC-P2</ipsec-crypto-profile>
+        </auto-key>
+        <tunnel-interface>tunnel.1</tunnel-interface>
+        <proxy-id><entry name="pid1">
+          <local>10.20.0.0/16</local>
+          <remote>192.168.50.0/24</remote>
+        </entry></proxy-id>
+      </entry></ipsec></tunnel>
+      <virtual-router><entry name="default"><routing-table><ip>
+        <static-route><entry name="default">
+          <destination>0.0.0.0/0</destination>
+          <interface>ethernet1/1</interface>
+          <nexthop><ip-address>203.0.113.1</ip-address></nexthop>
+        </entry></static-route>
+      </ip></routing-table></entry></virtual-router>
+    </network>
+    <vsys><entry name="vsys1"><zone/></entry></vsys>
+  </entry></devices>
+</config>

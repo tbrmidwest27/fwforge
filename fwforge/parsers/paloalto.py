@@ -36,6 +36,7 @@ from ..model import (
     Vip,
     Zone,
 )
+from . import _vpn_common as vpn
 
 LINE = "__line__"
 
@@ -213,6 +214,16 @@ def _line(node: dict) -> int:
     return node.get(LINE, 0) if isinstance(node, dict) else 0
 
 
+class _Reporter:
+    """Adapter so _vpn_common can append findings via a parser's note()."""
+
+    def __init__(self, parser):
+        self._p = parser
+
+    def add(self, level, area, msg, ref=None):
+        self._p.note(level, area, msg, ref)
+
+
 class PaloParser:
     def __init__(self, text: str, filename: str = ""):
         self.filename = filename
@@ -285,9 +296,150 @@ class PaloParser:
             nat = rulebase.get("nat", {})
             self.parse_nat(nat.get("rules") if isinstance(nat, dict) else None)
         self.parse_routes(device.get("network", {}))
+        self.parse_vpn(device.get("network", {}))
         self.report_unconverted_sections(device, vsys, rulebase)
         self.cfg.meta["findings"] = self._findings
         return self.cfg
+
+    @staticmethod
+    def _lifetime(node) -> int:
+        if not isinstance(node, dict):
+            return 0
+        if node.get("seconds", "").isdigit():
+            return int(node["seconds"])
+        if node.get("hours", "").isdigit():
+            return int(node["hours"]) * 3600
+        if node.get("days", "").isdigit():
+            return int(node["days"]) * 86400
+        return 0
+
+    def _psk(self, key: str, peer: str, ref: SourceRef) -> str:
+        if not key:
+            self.note("error", "vpn",
+                      f"tunnel to {peer}: no pre-shared key (cert auth?) — "
+                      "placeholder emitted, set authentication manually", ref)
+            return "CHANGEME-PSK"
+        # PAN exports PSKs encrypted (base64 with '=' padding, often a
+        # leading '-'); a plaintext secret has neither
+        if "=" in key or key.startswith("-"):
+            self.note("error", "vpn",
+                      f"tunnel to {peer}: PAN exports the pre-shared key "
+                      "encrypted — placeholder emitted, set the real key",
+                      ref)
+            return "CHANGEME-PSK"
+        return key
+
+    def parse_vpn(self, network):
+        if not isinstance(network, dict):
+            return
+        ike = network.get("ike", {})
+        cps = ike.get("crypto-profiles", {}) if isinstance(ike, dict) else {}
+
+        ike_prof: dict[str, dict] = {}
+        for nm, e in _entries(cps.get("ike-crypto-profiles", {})):
+            encs = [vpn.ENC[x] for x in _as_list(e.get("encryption"))
+                    if x in vpn.ENC]
+            hashes = [vpn.HASH[x] for x in _as_list(e.get("hash"))
+                      if x in vpn.HASH]
+            dh = [x.replace("group", "") for x in _as_list(e.get("dh-group"))]
+            ike_prof[nm] = {"props": vpn.esp_combos(encs, hashes),
+                            "dh": dh, "life": self._lifetime(e.get("lifetime"))}
+        ipsec_prof: dict[str, dict] = {}
+        for nm, e in _entries(cps.get("ipsec-crypto-profiles", {})):
+            esp = e.get("esp", {})
+            encs = [vpn.ENC[x] for x in _as_list(esp.get("encryption"))
+                    if x in vpn.ENC]
+            auths = [vpn.HASH[x] for x in _as_list(esp.get("authentication"))
+                     if x in vpn.HASH]
+            dh = [x.replace("group", "") for x in _as_list(e.get("dh-group"))]
+            ipsec_prof[nm] = {"props": vpn.esp_combos(encs, auths),
+                              "pfs": dh[0] if dh else "",
+                              "life": self._lifetime(e.get("lifetime"))}
+        gateways = {nm: e for nm, e in _entries(ike.get("gateway", {}))}
+
+        tunnels = network.get("tunnel", {})
+        ipsec_tuns = tunnels.get("ipsec", {}) if isinstance(tunnels, dict) \
+            else {}
+        tun_entries = _entries(ipsec_tuns)
+        if not tun_entries:
+            return
+        from ..transforms.routes import RouteTable
+        table = RouteTable(self.cfg)
+
+        for tname, t in tun_entries:
+            ref = self.ref(t, f"ipsec tunnel {tname}")
+            auto = t.get("auto-key", {})
+            if not isinstance(auto, dict):
+                self.note("warn", "vpn",
+                          f"tunnel {tname}: not an auto-key IPsec tunnel — "
+                          "convert manually", ref)
+                continue
+            gw_names = [n for n, _ in _entries(auto.get("ike-gateway", {}))]
+            gw = gateways.get(gw_names[0]) if gw_names else None
+            if gw is None:
+                self.note("warn", "vpn",
+                          f"tunnel {tname}: IKE gateway not found — skipped",
+                          ref)
+                continue
+            peer = ""
+            pa = gw.get("peer-address", {})
+            if isinstance(pa, dict):
+                peer = pa.get("ip", "") if isinstance(pa.get("ip"), str) \
+                    else ""
+            la = gw.get("local-address", {})
+            local_if = la.get("interface", "") if isinstance(la, dict) else ""
+            proto = gw.get("protocol", {}) if isinstance(
+                gw.get("protocol"), dict) else {}
+            ver = proto.get("version", "ikev1")
+            ike_version = 2 if "ikev2" in str(ver) else 1
+            ikecp = ""
+            for v in ("ikev2", "ikev1"):
+                sub = proto.get(v, {})
+                if isinstance(sub, dict) and sub.get("ike-crypto-profile"):
+                    ikecp = sub["ike-crypto-profile"]
+                    break
+            p1 = ike_prof.get(ikecp, {"props": [], "dh": [], "life": 0})
+            ipcp = auto.get("ipsec-crypto-profile", "")
+            p2 = ipsec_prof.get(ipcp, {"props": [], "pfs": "", "life": 0})
+
+            auth = gw.get("authentication", {})
+            psk_node = auth.get("pre-shared-key", {}) if isinstance(
+                auth, dict) else {}
+            key = psk_node.get("key", "") if isinstance(psk_node, dict) else ""
+
+            selectors = []
+            for pname, pid in _entries(t.get("proxy-id", {})):
+                local = pid.get("local", "") if isinstance(
+                    pid.get("local"), str) else ""
+                remote = pid.get("remote", "") if isinstance(
+                    pid.get("remote"), str) else ""
+                if local and remote:
+                    selectors.append((local, remote))
+            if not selectors:
+                selectors = [("0.0.0.0/0", "0.0.0.0/0")]
+                self.note("info", "vpn",
+                          f"tunnel {tname}: no proxy-id — using a "
+                          "0.0.0.0/0 <-> 0.0.0.0/0 selector (route-based)",
+                          ref)
+
+            p1_props = p1["props"] or ["aes256-sha256"]
+            p2_props = p2["props"] or ["aes256-sha256"]
+            if not p1["props"] or not p2["props"]:
+                self.note("warn", "vpn",
+                          f"tunnel {tname}: crypto profile incomplete — "
+                          "defaulted proposals to aes256-sha256; match the "
+                          "peer manually", ref)
+            tun_name = f"vpn-{tname}"[:15]
+            vpn.add_route_based_tunnel(
+                self.cfg, _Reporter(self), table, name=tun_name,
+                interface=local_if or "wan1", remote_gw=peer,
+                ike_version=ike_version, p1_proposals=p1_props,
+                p1_dhgrp=p1["dh"] or ["14"],
+                psk=self._psk(key, peer or tname, ref),
+                p1_keylife=p1["life"], selectors=selectors,
+                p2_proposals=p2_props, pfs_group=p2["pfs"],
+                p2_keylife=p2["life"],
+                comment=f"PAN tunnel {tname} (peer {peer})", source=ref)
 
     def parse_interfaces(self, network):
         if not isinstance(network, dict):

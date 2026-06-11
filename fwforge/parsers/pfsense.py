@@ -38,6 +38,17 @@ from ..model import (
     SourceRef,
     Vip,
 )
+from . import _vpn_common as vpn
+
+
+class _Reporter:
+    """Adapter so _vpn_common can append findings via the parser's note()."""
+
+    def __init__(self, parser):
+        self._p = parser
+
+    def add(self, level, area, msg, ref=None):
+        self._p.note(level, area, msg, ref)
 
 LINE = "__line__"
 
@@ -178,6 +189,7 @@ class PfSenseParser:
         self.parse_gateways_and_routes(system)
         self.parse_rules()
         self.parse_nat()
+        self.parse_ipsec()
         self.flag_vpn_and_misc()
         self.report_unconverted()
         self.cfg.meta["findings"] = self._findings
@@ -539,15 +551,144 @@ class PfSenseParser:
                           f"1:1 NAT {i}: subnet-style or unresolved "
                           "mapping — convert to a VIP range manually", ref)
 
-    def flag_vpn_and_misc(self):
-        ipsec = self.tree.get("ipsec", {})
-        p1 = _items(ipsec, "phase1") if isinstance(ipsec, dict) else []
-        if p1:
+    # -- IPsec ----------------------------------------------------------
+
+    def _pf_enc(self, name: str, keylen: str) -> str | None:
+        if not name:
+            return None
+        if name == "aes" and keylen:
+            return vpn.ENC.get(f"aes{keylen}")
+        return vpn.ENC.get(name)
+
+    def _pf_selector(self, node, ref) -> str | None:
+        if not isinstance(node, dict):
+            return None
+        t = _s(node, "type")
+        addr = _s(node, "address")
+        if addr:
+            nm = _s(node, "netmask")
+            return f"{addr}/{nm}" if nm else f"{addr}/32"
+        itf = self.cfg.interface_by_name(t)
+        if itf and itf.ip:
+            return str(ipaddress.IPv4Interface(itf.ip).network)
+        if t in ("lan", "wan") or t.startswith("opt"):
             self.note("warn", "vpn",
-                      f"{len(p1)} IPsec phase1 tunnel(s) present — not "
-                      "auto-converted yet; rebuild as FortiOS "
-                      "phase1-interface (route-based)",
-                      self.ref(ipsec, "ipsec"))
+                      f"phase2 selector '{t}': interface subnet unknown — "
+                      "set the selector manually", ref)
+            return None
+        self.note("warn", "vpn",
+                  f"phase2 selector type '{t}' not convertible", ref)
+        return None
+
+    def parse_ipsec(self):
+        ipsec = self.tree.get("ipsec", {})
+        if not isinstance(ipsec, dict):
+            return
+        phase1s = _items(ipsec, "phase1")
+        if not phase1s:
+            return
+        p2_by_ike: dict[str, list] = {}
+        for p2 in _items(ipsec, "phase2"):
+            p2_by_ike.setdefault(_s(p2, "ikeid"), []).append(p2)
+
+        from ..transforms.routes import RouteTable
+        table = RouteTable(self.cfg)
+
+        for p1 in phase1s:
+            ikeid = _s(p1, "ikeid")
+            ref = self.ref(p1, f"ipsec phase1 ikeid {ikeid}")
+            peer = _s(p1, "remote-gateway")
+            iface = _s(p1, "interface") or "wan"
+            ike_version = 2 if "ikev2" in _s(p1, "iketype") else 1
+
+            # a phase1 with no phase2 carries no interesting traffic — skip
+            # it cleanly before flagging anything about its credentials
+            my_p2 = p2_by_ike.get(ikeid, [])
+            if not my_p2:
+                self.note("warn", "vpn",
+                          f"IPsec phase1 ikeid {ikeid}: no phase2 — skipped",
+                          ref)
+                continue
+
+            authm = _s(p1, "authentication_method", "pre_shared_key")
+            psk = _s(p1, "pre-shared-key")
+            if authm not in ("pre_shared_key", "mutual_psk", ""):
+                self.note("error", "vpn",
+                          f"IPsec phase1 ikeid {ikeid}: auth method "
+                          f"'{authm}' (certificate?) — placeholder PSK "
+                          "emitted, set authentication manually", ref)
+                psk = "CHANGEME-PSK"
+            elif not psk:
+                self.note("error", "vpn",
+                          f"IPsec phase1 ikeid {ikeid}: no pre-shared key — "
+                          "placeholder emitted", ref)
+                psk = "CHANGEME-PSK"
+
+            encs: list[str] = []
+            hashes: list[str] = []
+            dh: list[str] = []
+            items = _items(p1.get("encryption", {}), "item") \
+                if isinstance(p1.get("encryption"), dict) else []
+            if items:
+                for it in items:
+                    ea = it.get("encryption-algorithm", {})
+                    e = self._pf_enc(_s(ea, "name"), _s(ea, "keylen"))
+                    if e:
+                        encs.append(e)
+                    h = vpn.HASH.get(_s(it, "hash-algorithm"))
+                    if h:
+                        hashes.append(h)
+                    if _s(it, "dhgroup"):
+                        dh.append(_s(it, "dhgroup"))
+            else:
+                ea = p1.get("encryption-algorithm", {})
+                e = self._pf_enc(_s(ea, "name"), _s(ea, "keylen"))
+                if e:
+                    encs.append(e)
+                h = vpn.HASH.get(_s(p1, "hash-algorithm"))
+                if h:
+                    hashes.append(h)
+                if _s(p1, "dhgroup"):
+                    dh.append(_s(p1, "dhgroup"))
+
+            selectors = []
+            p2_encs: list[str] = []
+            p2_hashes: list[str] = []
+            pfs = ""
+            for p2 in my_p2:
+                lc = self._pf_selector(p2.get("localid"), ref)
+                rc = self._pf_selector(p2.get("remoteid"), ref)
+                if lc and rc:
+                    selectors.append((lc, rc))
+                for ea in _items(p2, "encryption-algorithm-option"):
+                    e = self._pf_enc(_s(ea, "name"), _s(ea, "keylen"))
+                    if e:
+                        p2_encs.append(e)
+                ha = p2.get("hash-algorithm-option")
+                for h in ([ha] if isinstance(ha, str) else ha or []):
+                    if vpn.HASH.get(h):
+                        p2_hashes.append(vpn.HASH[h])
+                if _s(p2, "pfsgroup") and not pfs:
+                    pfs = _s(p2, "pfsgroup")
+
+            p1_props = vpn.esp_combos(encs, hashes) or ["aes256-sha256"]
+            p2_props = vpn.esp_combos(
+                list(dict.fromkeys(p2_encs)),
+                list(dict.fromkeys(p2_hashes))) or ["aes256-sha256"]
+            if not encs or not p2_encs:
+                self.note("warn", "vpn",
+                          f"IPsec ikeid {ikeid}: proposal incomplete — "
+                          "defaulted to aes256-sha256; match the peer", ref)
+            name = f"vpn-ike{ikeid}"[:15]
+            vpn.add_route_based_tunnel(
+                self.cfg, _Reporter(self), table, name=name,
+                interface=iface, remote_gw=peer, ike_version=ike_version,
+                p1_proposals=p1_props, p1_dhgrp=dh or ["14"], psk=psk,
+                selectors=selectors, p2_proposals=p2_props, pfs_group=pfs,
+                comment=f"pfSense IPsec ikeid {ikeid} (peer {peer})",
+                source=ref)
+
+    def flag_vpn_and_misc(self):
         ovpn = self.tree.get("openvpn", {})
         servers = _items(ovpn, "openvpn-server") if isinstance(ovpn, dict) \
             else []
