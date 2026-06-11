@@ -256,8 +256,7 @@ class AsaParser:
         if tok in ("any", "any4"):
             return "all"
         if tok == "any6":
-            self.note("warn", "policies", "IPv6 'any6' not converted", ref)
-            return None
+            return "all"  # FortiOS 'all' built-in covers IPv6 too
         if tok == "host":
             ip = toks.pop(0)
             ip = self.name_map.get(ip, ip)
@@ -337,6 +336,21 @@ class AsaParser:
                     ref,
                 )
                 self.cfg.unparsed.append(ref)
+            elif head == "ipv6" and len(toks) > 1 and toks[1] == "route":
+                # ipv6 route <if> <dest/prefix> <gw>
+                if len(toks) >= 5:
+                    self.cfg.routes.append(Route(
+                        dest=toks[3], gateway=toks[4], interface=toks[2],
+                        source=ref))
+                else:
+                    self.cfg.unparsed.append(ref)
+            elif head == "ipv6" and len(toks) > 1 \
+                    and toks[1] == "access-list":
+                self.note("warn", "policies",
+                          "dedicated 'ipv6 access-list' is not converted — "
+                          "unified extended ACLs with v6 objects do "
+                          "convert; rebuild this one manually", ref)
+                self._swallow_block(lineno, line)
             elif head == "crypto":
                 self.parse_crypto(toks, lineno, stripped, ref)
             elif head == "tunnel-group":
@@ -417,6 +431,9 @@ class AsaParser:
                 continue
             if t[0] == "host" and len(t) > 1:
                 addr.type, addr.value, created = "host", self.name_map.get(t[1], t[1]), True
+            elif t[0] == "subnet" and len(t) == 2 and "/" in t[1]:
+                # one-token CIDR form (IPv6, or v4 prefix notation)
+                addr.type, addr.value, created = "subnet", t[1], True
             elif t[0] == "subnet" and len(t) > 2:
                 try:
                     prefix = _mask_to_prefix(t[2])

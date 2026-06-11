@@ -62,7 +62,7 @@ def test_routes():
 
 def test_rules():
     cfg = parse()
-    assert len(cfg.policies) == 7  # inet6 rule skipped
+    assert len(cfg.policies) == 8  # incl. the inet6 rule (now converted)
 
     web = _pol(cfg, "pf-1")
     assert web.src_zones == ["wan"]
@@ -94,7 +94,9 @@ def test_rules():
     floating = _pol(cfg, "pf-7")
     assert floating.src_zones == ["wan", "lan"]
     assert any("floating" in m for m in msgs(cfg))
-    assert any("IPv6-only" in m for m in msgs(cfg))
+    # the inet6 rule is now converted as an IPv6 policy
+    v6rule = _pol(cfg, "pf-8")
+    assert v6rule.family == 6
 
 
 def test_nat():

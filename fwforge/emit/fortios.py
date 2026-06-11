@@ -40,6 +40,10 @@ def _q(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _is_v6(value: str) -> bool:
+    return ":" in value
+
+
 def _mask(prefix: int) -> str:
     return str(ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask)
 
@@ -169,59 +173,104 @@ class Emitter:
             "bypasses policies/logging — switch to 'intrazone deny' and add "
             "explicit policies when you want enforcement.")
 
-    def addresses(self):
-        if not self.cfg.addresses:
-            return
-        self.line()
-        self.line("config firewall address")
+    def _family_map(self) -> dict[str, int]:
+        """addr/group name -> 4 or 6."""
+        fam: dict[str, int] = {}
         for a in self.cfg.addresses:
-            self.line(f"    edit {_q(a.name)}")
-            try:
+            fam[a.name] = 6 if _is_v6(a.value) else 4
+        for v in self.cfg.vips:
+            fam[v.name] = 4
+        # groups inherit from their first family-known member
+        for g in self.cfg.addr_groups:
+            for m in g.members:
+                if m in fam:
+                    fam[g.name] = fam[m]
+                    break
+        return fam
+
+    def addresses(self):
+        v4 = [a for a in self.cfg.addresses if not _is_v6(a.value)]
+        v6 = [a for a in self.cfg.addresses if _is_v6(a.value)]
+        if v4:
+            self.line()
+            self.line("config firewall address")
+            for a in v4:
+                self.line(f"    edit {_q(a.name)}")
+                try:
+                    if a.type == "host":
+                        self.line(f"        set subnet {a.value} "
+                                  "255.255.255.255")
+                    elif a.type == "subnet":
+                        net = ipaddress.IPv4Network(a.value, strict=False)
+                        self.line(f"        set subnet {net.network_address} "
+                                  f"{net.netmask}")
+                    elif a.type == "range":
+                        lo, hi = a.value.split("-", 1)
+                        self.line("        set type iprange")
+                        self.line(f"        set start-ip {lo}")
+                        self.line(f"        set end-ip {hi}")
+                    elif a.type == "fqdn":
+                        self.line("        set type fqdn")
+                        self.line(f"        set fqdn {_q(a.value)}")
+                except ValueError:
+                    self.report.add("error", "addresses",
+                                    f"address '{a.name}': invalid value "
+                                    f"'{a.value}' — emitted as 0.0.0.0/32",
+                                    a.source)
+                    self.line("        set subnet 0.0.0.0 255.255.255.255")
+                if a.comment:
+                    self.line(f"        set comment {_q(a.comment[:255])}")
+                self.line("    next")
+            self.line("end")
+        if v6:
+            self.line()
+            self.line("config firewall address6")
+            for a in v6:
+                self.line(f"    edit {_q(a.name)}")
                 if a.type == "host":
-                    self.line(f"        set subnet {a.value} 255.255.255.255")
+                    self.line(f"        set ip6 {a.value}/128")
                 elif a.type == "subnet":
-                    net = ipaddress.IPv4Network(a.value, strict=False)
-                    self.line(f"        set subnet {net.network_address} "
-                              f"{net.netmask}")
+                    self.line(f"        set ip6 {a.value}")
                 elif a.type == "range":
                     lo, hi = a.value.split("-", 1)
                     self.line("        set type iprange")
                     self.line(f"        set start-ip {lo}")
                     self.line(f"        set end-ip {hi}")
-                elif a.type == "fqdn":
-                    self.line("        set type fqdn")
-                    self.line(f"        set fqdn {_q(a.value)}")
-            except ValueError:
-                self.report.add("error", "addresses",
-                                f"address '{a.name}': invalid value "
-                                f"'{a.value}' — emitted as 0.0.0.0/32",
-                                a.source)
-                self.line("        set subnet 0.0.0.0 255.255.255.255")
-            if a.comment:
-                self.line(f"        set comment {_q(a.comment[:255])}")
-            self.line("    next")
-        self.line("end")
+                if a.comment:
+                    self.line(f"        set comment {_q(a.comment[:255])}")
+                self.line("    next")
+            self.line("end")
+            self.report.add("info", "addresses",
+                            f"{len(v6)} IPv6 address object(s) emitted as "
+                            "firewall address6")
 
     def addr_groups(self):
         if not self.cfg.addr_groups:
             return
-        self.line()
-        self.line("config firewall addrgrp")
-        for g in self.cfg.addr_groups:
-            self.line(f"    edit {_q(g.name)}")
-            if g.members:
-                members = " ".join(_q(m) for m in g.members)
-                self.line(f"        set member {members}")
-            else:
-                self.report.add("warn", "addresses",
-                                f"address group '{g.name}' has no members — "
-                                "FortiOS rejects empty groups; emitted with "
-                                "placeholder 'all'", g.source)
-                self.line('        set member "all"')
-            if g.comment:
-                self.line(f"        set comment {_q(g.comment[:255])}")
-            self.line("    next")
-        self.line("end")
+        fam = self._family_map()
+        v4 = [g for g in self.cfg.addr_groups if fam.get(g.name, 4) != 6]
+        v6 = [g for g in self.cfg.addr_groups if fam.get(g.name) == 6]
+        for section, groups in (("addrgrp", v4), ("addrgrp6", v6)):
+            if not groups:
+                continue
+            self.line()
+            self.line(f"config firewall {section}")
+            for g in groups:
+                self.line(f"    edit {_q(g.name)}")
+                if g.members:
+                    self.line("        set member "
+                              + " ".join(_q(m) for m in g.members))
+                else:
+                    self.report.add(
+                        "warn", "addresses",
+                        f"address group '{g.name}' has no members — FortiOS "
+                        "rejects empty groups; emitted with placeholder "
+                        "'all'", g.source)
+                    self.line('        set member "all"')
+                if g.comment:
+                    self.line(f"        set comment {_q(g.comment[:255])}")
+                self.line("    next")
+            self.line("end")
 
     def services(self):
         if not self.cfg.services:
@@ -405,26 +454,49 @@ class Emitter:
     def routes(self):
         if not self.cfg.routes:
             return
-        self.line()
-        self.line("config router static")
-        for i, rt in enumerate(self.cfg.routes, start=1):
-            try:
-                net = ipaddress.IPv4Network(rt.dest, strict=False)
-            except ValueError:
-                self.report.add("error", "routes",
-                                f"route to '{rt.dest}' invalid — skipped",
-                                rt.source)
-                continue
-            self.line(f"    edit {i}")
-            if net.prefixlen or net.network_address != ipaddress.IPv4Address("0.0.0.0"):
-                self.line(f"        set dst {net.network_address} {net.netmask}")
-            if rt.gateway:
-                self.line(f"        set gateway {rt.gateway}")
-            self.line(f"        set device {_q(_intf(self.cfg, rt.interface))}")
-            if rt.distance != 10:
-                self.line(f"        set distance {rt.distance}")
-            self.line("    next")
-        self.line("end")
+        v4 = [r for r in self.cfg.routes if not _is_v6(r.dest)]
+        v6 = [r for r in self.cfg.routes if _is_v6(r.dest)]
+        if v4:
+            self.line()
+            self.line("config router static")
+            for i, rt in enumerate(v4, start=1):
+                try:
+                    net = ipaddress.IPv4Network(rt.dest, strict=False)
+                except ValueError:
+                    self.report.add("error", "routes",
+                                    f"route to '{rt.dest}' invalid — skipped",
+                                    rt.source)
+                    continue
+                self.line(f"    edit {i}")
+                if net.prefixlen or net.network_address != \
+                        ipaddress.IPv4Address("0.0.0.0"):
+                    self.line(f"        set dst {net.network_address} "
+                              f"{net.netmask}")
+                if rt.gateway:
+                    self.line(f"        set gateway {rt.gateway}")
+                self.line("        set device "
+                          + _q(_intf(self.cfg, rt.interface)))
+                if rt.distance != 10:
+                    self.line(f"        set distance {rt.distance}")
+                self.line("    next")
+            self.line("end")
+        if v6:
+            self.line()
+            self.line("config router static6")
+            for i, rt in enumerate(v6, start=1):
+                self.line(f"    edit {i}")
+                self.line(f"        set dst {rt.dest}")
+                if rt.gateway:
+                    self.line(f"        set gateway {rt.gateway}")
+                self.line("        set device "
+                          + _q(_intf(self.cfg, rt.interface)))
+                if rt.distance != 10:
+                    self.line(f"        set distance {rt.distance}")
+                self.line("    next")
+            self.line("end")
+            self.report.add("info", "routes",
+                            f"{len(v6)} IPv6 route(s) emitted as router "
+                            "static6")
 
     def policies(self):
         if not self.cfg.policies:
@@ -435,11 +507,16 @@ class Emitter:
             (n.real_ifc, n.mapped_ifc) for n in self.cfg.nats
             if n.kind == "dynamic-interface"}
         applied_nat = 0
+        fam = self._family_map()
+        v6_policies = 0
         self.line()
         self.line("config firewall policy")
         for i, p in enumerate(self.cfg.policies, start=1):
             src_i = [_intf(self.cfg, z) for z in (p.src_zones or ["any"])]
             dst_i = [_intf(self.cfg, z) for z in (p.dst_zones or ["any"])]
+            pfam = self._policy_family(p, fam)
+            if pfam == 6:
+                v6_policies += 1
             self.line(f"    edit {i}")
             if p.name:
                 self.line(f"        set name {_q(p.name)}")
@@ -447,14 +524,14 @@ class Emitter:
                       + " ".join(_q(z) for z in src_i))
             self.line("        set dstintf "
                       + " ".join(_q(z) for z in dst_i))
-            self.line("        set srcaddr "
-                      + " ".join(_q(a) for a in (p.src_addrs or ["all"])))
+            self._addr_lines("srcaddr", p.src_addrs or ["all"], pfam, fam)
             if p.src_negate:
-                self.line("        set srcaddr-negate enable")
-            self.line("        set dstaddr "
-                      + " ".join(_q(a) for a in (p.dst_addrs or ["all"])))
+                neg = "srcaddr6-negate" if pfam == 6 else "srcaddr-negate"
+                self.line(f"        set {neg} enable")
+            self._addr_lines("dstaddr", p.dst_addrs or ["all"], pfam, fam)
             if p.dst_negate:
-                self.line("        set dstaddr-negate enable")
+                neg = "dstaddr6-negate" if pfam == 6 else "dstaddr-negate"
+                self.line(f"        set {neg} enable")
             if p.action == "accept":
                 self.line("        set action accept")
             self.line('        set schedule "always"')
@@ -490,6 +567,41 @@ class Emitter:
                 f"policies matching source NAT pairs "
                 f"{sorted(nat_pairs)}",
             )
+        if v6_policies:
+            self.report.add(
+                "info", "policies",
+                f"{v6_policies} IPv6 policy(ies) emitted with srcaddr6/"
+                "dstaddr6 (unified policy table; target FortiOS 7.0+)")
+
+    def _policy_family(self, p, fam: dict[str, int]) -> int:
+        if p.family in (4, 6):
+            return p.family
+        names = [n for n in (p.src_addrs + p.dst_addrs) if n != "all"]
+        has6 = any(fam.get(n) == 6 for n in names)
+        has4 = any(fam.get(n, 4) == 4 for n in names)
+        if has6 and not has4:
+            return 6
+        if has6 and has4:
+            return 0  # mixed — emit both families
+        return 4
+
+    def _addr_lines(self, attr: str, names: list[str], pfam: int,
+                    fam: dict[str, int]) -> None:
+        if pfam == 6:
+            self.line(f"        set {attr}6 "
+                      + " ".join(_q(a) for a in names))
+        elif pfam == 4:
+            self.line(f"        set {attr} "
+                      + " ".join(_q(a) for a in names))
+        else:  # mixed: split by each name's family ("all"/unknown -> v4)
+            v4 = [a for a in names if fam.get(a, 4) != 6]
+            v6 = [a for a in names if fam.get(a) == 6]
+            if v4:
+                self.line(f"        set {attr} "
+                          + " ".join(_q(a) for a in v4))
+            if v6:
+                self.line(f"        set {attr}6 "
+                          + " ".join(_q(a) for a in v6))
 
 
 def emit(cfg: FirewallConfig, report, target: str = "7.4",

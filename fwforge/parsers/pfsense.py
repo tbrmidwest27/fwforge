@@ -143,7 +143,31 @@ class PfSenseParser:
     # -- shared synthesis -------------------------------------------------
 
     def addr_for(self, value: str, ref: SourceRef) -> str | None:
-        """Literal IP / CIDR -> shared address object name."""
+        """Literal IP / CIDR -> shared address object name (v4 or v6)."""
+        if ":" in value:
+            try:
+                if "/" in value:
+                    net = ipaddress.IPv6Network(value, strict=False)
+                    if net.prefixlen != 128:
+                        key = f"n6-{net.network_address}_{net.prefixlen}"
+                        if key not in self._addr_cache:
+                            self.cfg.addresses.append(Address(
+                                name=key, type="subnet", value=str(net),
+                                source=ref))
+                            self._addr_cache[key] = key
+                            self._addr_names.add(key)
+                        return key
+                    value = str(net.network_address)
+                ipaddress.IPv6Address(value)
+            except ValueError:
+                return None
+            key = f"h6-{value}"
+            if key not in self._addr_cache:
+                self.cfg.addresses.append(Address(
+                    name=key, type="host", value=value, source=ref))
+                self._addr_cache[key] = key
+                self._addr_names.add(key)
+            return key
         try:
             if "/" in value:
                 net = ipaddress.IPv4Network(value, strict=False)
@@ -256,13 +280,16 @@ class PfSenseParser:
             members: list[str] = []
             literals: list[str] = []
             for entry in entries:
-                if re.match(r"^\d", entry):
+                # an IP/CIDR literal contains '.' or ':'; anything else is a
+                # nested alias reference
+                if "." in entry or ":" in entry:
                     literals.append(entry)
                 else:
-                    members.append(entry)  # nested alias reference
+                    members.append(entry)
             if len(entries) == 1 and literals and not members:
                 value = literals[0]
-                if "/" in value and not value.endswith("/32"):
+                is_host = ("/" not in value or value.endswith(("/32", "/128")))
+                if not is_host:
                     self.cfg.addresses.append(Address(
                         name=name, type="subnet", value=value,
                         comment=descr, source=ref))
@@ -297,44 +324,45 @@ class PfSenseParser:
             name = _s(g, "name")
             gw_ip[name] = _s(g, "gateway")
             gw_if[name] = _s(g, "interface")
-            if _s(g, "ipprotocol") == "inet6":
-                self.note("info", "routes",
-                          f"IPv6 gateway '{name}' skipped", self.ref(g, name))
-        default = _s(system, "defaultgw4")
-        if default and default in gw_ip:
-            self.cfg.routes.append(Route(
-                dest="0.0.0.0/0", gateway=gw_ip[default],
-                interface=gw_if.get(default, ""),
-                comment=f"default via gateway '{default}'",
-                source=self.ref(system, "defaultgw4")))
-        elif gw_ip:
+        for flag, dest in (("defaultgw4", "0.0.0.0/0"),
+                           ("defaultgw6", "::/0")):
+            default = _s(system, flag)
+            if default and default in gw_ip:
+                self.cfg.routes.append(Route(
+                    dest=dest, gateway=gw_ip[default],
+                    interface=gw_if.get(default, ""),
+                    comment=f"default via gateway '{default}'",
+                    source=self.ref(system, flag)))
+        if not _s(system, "defaultgw4") and gw_ip:
             self.note("warn", "routes",
-                      "no defaultgw4 set — default route not emitted; add "
-                      "one on the FortiGate "
-                      f"(gateways found: {', '.join(gw_ip)})")
+                      "no defaultgw4 set — IPv4 default route not emitted; "
+                      f"add one on the FortiGate (gateways: {', '.join(gw_ip)})")
         for r in _items(self.tree.get("staticroutes", {}), "route"):
-            ref = self.ref(r, f"route {_s(r, 'network')}")
+            network = _s(r, "network")
+            ref = self.ref(r, f"route {network}")
             gw = _s(r, "gateway")
             if gw not in gw_ip:
                 self.note("warn", "routes",
-                          f"route {_s(r, 'network')}: gateway '{gw}' not "
-                          "found in gateways — skipped", ref)
+                          f"route {network}: gateway '{gw}' not found in "
+                          "gateways — skipped", ref)
                 continue
             try:
-                net = ipaddress.IPv4Network(_s(r, "network"), strict=False)
+                if ":" in network:
+                    dest = str(ipaddress.IPv6Network(network, strict=False))
+                else:
+                    dest = str(ipaddress.IPv4Network(network, strict=False))
             except ValueError:
                 self.note("warn", "routes",
-                          f"route network '{_s(r, 'network')}' not IPv4 — "
-                          "skipped", ref)
+                          f"route network '{network}' invalid — skipped", ref)
                 continue
             self.cfg.routes.append(Route(
-                dest=str(net), gateway=gw_ip[gw],
-                interface=gw_if.get(gw, ""),
+                dest=dest, gateway=gw_ip[gw], interface=gw_if.get(gw, ""),
                 comment=_s(r, "descr") or None, source=ref))
 
     # -- rules --------------------------------------------------------------
 
-    def _endpoint(self, node, ref, what: str) -> tuple[str | None, bool, str]:
+    def _endpoint(self, node, ref, what: str,
+                  v6: bool = False) -> tuple[str | None, bool, str]:
         """(address-name|'all'|None, negated, port-spec)"""
         if not isinstance(node, dict):
             return "all", False, ""
@@ -344,6 +372,14 @@ class PfSenseParser:
             return "all", negated, port
         net = _s(node, "network")
         if net:
+            if v6:
+                # interface-network macros need the interface's v6 subnet,
+                # which pfSense addressing we don't resolve here
+                self.note("warn", "policies",
+                          f"{what} '{net}' on an IPv6 rule — interface "
+                          "subnet not resolved; using 'all', set manually",
+                          ref)
+                return "all", negated, port
             if net.endswith("ip"):
                 base = net[:-2]
                 itf = self.cfg.interface_by_name(base)
@@ -383,10 +419,12 @@ class PfSenseParser:
         return None, negated, port
 
     def _services(self, proto: str, port: str, icmptype: str,
-                  ref) -> list[str]:
+                  ref, v6: bool = False) -> list[str]:
         if not proto:
             return ["ALL"]
-        if proto == "icmp":
+        if proto in ("icmp", "ipv6-icmp"):
+            if v6 or proto == "ipv6-icmp":
+                return ["ALL_ICMP6"]
             if icmptype and icmptype in ICMP_PF:
                 t = ICMP_PF[icmptype]
                 return [self.svc_for(Service(
@@ -426,10 +464,12 @@ class PfSenseParser:
         for r in _items(self.tree.get("filter", {}), "rule"):
             n += 1
             ref = self.ref(r, f"filter rule {n}")
-            if _s(r, "ipprotocol") == "inet6":
-                self.note("info", "policies",
-                          f"rule {n}: IPv6-only — skipped (IPv6 in v2)", ref)
-                continue
+            ipproto = _s(r, "ipprotocol", "inet")
+            if ipproto == "inet46":
+                self.note("warn", "policies",
+                          f"rule {n}: dual-stack (inet46) — emitted as IPv4; "
+                          "add a matching IPv6 policy manually", ref)
+            v6 = ipproto == "inet6"
             floating = _s(r, "floating") == "yes"
             ifaces = [i for i in _s(r, "interface").split(",") if i]
             src_zones = ifaces or ["any"]
@@ -439,13 +479,15 @@ class PfSenseParser:
                           f"srcintf {','.join(src_zones)}; floating "
                           "match-order semantics differ, review placement",
                           ref)
-            src, sneg, sport = self._endpoint(r.get("source"), ref, "source")
+            src, sneg, sport = self._endpoint(r.get("source"), ref,
+                                              "source", v6)
             dst, dneg, dport = self._endpoint(r.get("destination"), ref,
-                                              "destination")
+                                              "destination", v6)
             if src is None or dst is None:
                 continue
             proto = _s(r, "protocol")
-            services = self._services(proto, dport, _s(r, "icmptype"), ref)
+            services = self._services(proto, dport, _s(r, "icmptype"), ref,
+                                      v6)
             if sport:
                 self.note("info", "policies",
                           f"rule {n}: source-port restriction '{sport}' not "
@@ -473,6 +515,7 @@ class PfSenseParser:
                 action="accept" if action == "pass" else "deny",
                 log="log" in r, disabled="disabled" in r,
                 src_negate=sneg, dst_negate=dneg,
+                family=6 if v6 else 0,
                 comment="; ".join(comment_bits)[:1023] or None,
                 source=ref))
 

@@ -124,6 +124,7 @@ class Policy:
     comment: str | None = None
     dst_inferred: bool = False  # dstintf derived from routing, not the source
     app_list: str = ""  # FortiOS application-list profile name (App-ID)
+    family: int = 0  # 0 = derive from addresses, 4, or 6
     source: SourceRef | None = None
 
 

@@ -531,14 +531,33 @@ class PaloParser:
             comment = desc if isinstance(desc, str) else None
             if "ip-netmask" in node:
                 value = str(node["ip-netmask"])
+                if ":" in value:  # IPv6
+                    try:
+                        net = ipaddress.IPv6Network(
+                            value if "/" in value else value + "/128",
+                            strict=False)
+                    except ValueError:
+                        self.note("warn", "addresses",
+                                  f"address {name}: '{value}' invalid",
+                                  ref)
+                        continue
+                    if net.prefixlen == 128:
+                        self.cfg.addresses.append(Address(
+                            name=name, type="host",
+                            value=str(net.network_address),
+                            comment=comment, source=ref))
+                    else:
+                        self.cfg.addresses.append(Address(
+                            name=name, type="subnet", value=str(net),
+                            comment=comment, source=ref))
+                    continue
                 try:
                     net = ipaddress.IPv4Network(value if "/" in value
                                                 else value + "/32",
                                                 strict=False)
                 except ValueError:
                     self.note("warn", "addresses",
-                              f"address {name}: '{value}' not IPv4 — "
-                              "skipped (IPv6 in v2)", ref)
+                              f"address {name}: '{value}' invalid", ref)
                     continue
                 if net.prefixlen == 32:
                     self.cfg.addresses.append(Address(

@@ -256,6 +256,16 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.20 — shipped 2026-06-11
+- [x] **IPv6 support** (last priority-list gap): emitter family-aware —
+      addresses -> address6, groups -> addrgrp6, routes -> static6,
+      policies -> srcaddr6/dstaddr6 (unified table, mixed-family split).
+      Palo Alto (v6 ip-netmask), pfSense (inet6 rules w/ Policy.family,
+      v6 aliases/addr_for, defaultgw6 + v6 static routes, ALL_ICMP6),
+      Cisco ASA (modern unified: object v6 host/subnet, any6 -> all,
+      ipv6 route; dedicated 'ipv6 access-list' flagged). routes_tf /
+      RouteTable already v6-safe (graceful fallback to 'any').
+
 ### v0.19 — shipped 2026-06-11
 - [x] **Palo Alto App-ID -> application-control mapping** (parsers/
       pan_appid.py): curated PAN-app -> FortiOS category table (clean-room;

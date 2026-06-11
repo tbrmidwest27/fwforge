@@ -262,7 +262,8 @@ wins — reconcile"). The leftover audit still flags what needs a human
 | FortiOS | full-config lossless tree migration with interface mapping, zone/SD-WAN refactors, multi-VDOM |
 | site-to-site IPsec | converted to route-based phase1/phase2-interface for **all three** cross-vendor sources (ASA crypto-maps, PAN ike-gateway/tunnel, pfSense phase1/phase2) — proposals, PFS, PSK (encrypted-export → placeholder), tunnel routes + bidirectional policies with route-inferred LAN side |
 | Palo Alto App-ID | mapped to FortiOS application-control **categories** — rules generate a `config application list` profile wired onto the policy (`set application-list`); transport apps ignored, unmapped flagged. Category-level (coarser than FortiConverter's licensed per-signature ID table, which can't be reused clean-room) |
-| not yet | ASA twice-NAT (flagged), IPv6 rules, Check Point / Juniper parsers |
+| IPv6 | converted across all parsers — addresses → `address6`, groups → `addrgrp6`, routes → `router static6`, policies → `srcaddr6`/`dstaddr6` (unified table). PAN v6 objects, pfSense inet6 rules + v6 routes, ASA unified-ACL v6 + `ipv6 route`. (Dedicated ASA `ipv6 access-list` and v6 IPsec selectors still flagged) |
+| not yet | ASA twice-NAT (flagged), Check Point / Juniper parsers |
 
 Cross-vendor conversions choose their **NAT mode**: `--nat-mode policy`
 (default — per-policy `nat enable` + VIPs) or `--nat-mode central`
