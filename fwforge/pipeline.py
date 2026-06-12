@@ -98,12 +98,35 @@ def run_cross(text: str, vendor: str, src_name: str,
     return result
 
 
+def _vdom_names(vsys_cfgs, report) -> list[tuple[str, FirewallConfig]]:
+    """Clamp scope names to valid FortiOS VDOM names (11 chars,
+    letters/digits/_/-), uniquified."""
+    import re
+    out = []
+    used: set[str] = set()
+    for vname, vcfg in vsys_cfgs:
+        nm = re.sub(r"[^A-Za-z0-9_-]", "-", vname)[:11] or "vd"
+        base, k = nm, 2
+        while nm in used:
+            sfx = str(k)
+            nm = base[:11 - len(sfx)] + sfx
+            k += 1
+        used.add(nm)
+        if nm != vname:
+            report.add("warn", "vsys",
+                       f"scope '{vname}' becomes VDOM '{nm}' (FortiOS "
+                       "VDOM names: 11 chars, letters/digits/_/-)")
+        out.append((nm, vcfg))
+    return out
+
+
 def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
                      target, tuning, nat_mode,
                      report) -> ConversionResult:
     """Multi-vsys source -> one script with a VDOM block per vsys."""
     bodies: list[tuple[str, str]] = []
     all_unmapped: set[str] = set()
+    vsys_cfgs = _vdom_names(vsys_cfgs, report)
     for vname, vcfg in vsys_cfgs:
         if vcfg is not primary:
             report.absorb_parser_findings(vcfg)

@@ -256,6 +256,36 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.28 — shipped 2026-06-12 (SRX finished: routing-instances, policy-VPN, +)
+- [x] **routing-instances -> VDOMs**: `_partition_by_ri` splits the
+      parsed config into per-instance FirewallConfigs (default = 'root')
+      and hands the pipeline `vsys_cfgs` — same VDOM-block machinery the
+      PAN multi-vsys work built. Interfaces/zones/routes partition by
+      instance membership; policies follow their zones (VPN policies
+      follow the tunnel's interface); Junos global policies replicate
+      into every VDOM; per-instance routing-options static routes land
+      in their VDOM; objects replicate per VDOM (FortiOS scopes them).
+      Cross-instance zones/policies flagged + kept in root. Pipeline
+      `_vdom_names` clamps scope names to valid VDOM names (11 chars,
+      charset) with a warning. Schema-certified CLEAN vs live 8.0.
+- [x] **Policy-based VPN -> route-based**: `permit { tunnel { ipsec-vpn
+      X } }` policies are captured; an ipsec vpn with no bind-interface
+      now builds a route-based tunnel using the permit-tunnel policies'
+      addresses as phase2 selectors (resolving address objects/groups ->
+      CIDRs), and the original policies are emitted disabled + annotated.
+      Range/fqdn selector addresses flagged.
+- [x] **Wildcard apply-groups** (`<ge-*>`, `unit <*>`) merge into every
+      existing matching stanza (real Junos wildcard semantics, any key
+      position via fnmatch); per-attribute dst-wins so explicit config
+      overrides inherited group leaves.
+- [x] **host-inbound-traffic -> allowaccess guidance**: zone/interface
+      system-services (ssh/ping/https/...) become a `set allowaccess`
+      hint on the mapped port; ike/dhcp and unmappable services noted.
+- [x] **logical-systems** flagged as a hard error (separate security
+      contexts — convert each separately). Coverage map consumes
+      routing-instances/logical-systems.
+      217 tests (6 new). SRX is now feature-complete for v1.
+
 ### v0.27 — shipped 2026-06-11 (dynamic routing: BGP + OSPF)
 - [x] **BGP/OSPF conversion** for SRX and Palo Alto (per Adam's
       follow-up). IR gained BgpConfig/BgpNeighbor/OspfConfig/OspfArea;

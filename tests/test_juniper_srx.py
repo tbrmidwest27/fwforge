@@ -294,3 +294,336 @@ def test_bgp_ospf_emitted(tmp_path):
     assert "set prefix 10.1.0.0 255.255.255.0" in conf
     assert "set area 0.0.0.0" in conf
     assert 'set passive-interface "vlan30"' in conf  # mapped name
+
+
+def test_wildcard_apply_groups_merge():
+    text = """groups {
+    wan-defaults {
+        interfaces {
+            <ge-0/0/0> {
+                unit <*> {
+                    description "from-group";
+                }
+            }
+        }
+    }
+}
+apply-groups wan-defaults;
+interfaces {
+    ge-0/0/0 {
+        unit 0 {
+            family inet {
+                address 198.18.0.2/29;
+            }
+        }
+    }
+    ge-0/0/1 {
+        unit 0 {
+            description "local wins";
+            family inet {
+                address 10.0.0.1/24;
+            }
+        }
+    }
+}
+security {
+    zones {
+        security-zone z1 {
+            interfaces {
+                ge-0/0/0.0;
+            }
+        }
+    }
+}
+"""
+    cfg = juniper_srx.parse(text, "wc.conf")
+    byname = {i.name: i for i in cfg.interfaces}
+    # wildcard group description lands on the matching interface...
+    assert byname["ge-0/0/0.0"].description == "from-group"
+    # ...but never overrides explicit config, and never creates stanzas
+    assert byname["ge-0/0/1.0"].description == "local wins"
+
+
+def test_host_inbound_traffic_allowaccess():
+    text = """interfaces {
+    ge-0/0/0 {
+        unit 0 {
+            family inet {
+                address 203.0.113.2/29;
+            }
+        }
+    }
+}
+security {
+    zones {
+        security-zone untrust {
+            interfaces {
+                ge-0/0/0.0 {
+                    host-inbound-traffic {
+                        system-services {
+                            ssh;
+                            ping;
+                            ike;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+"""
+    cfg = juniper_srx.parse(text, "hit.conf")
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    # ssh/ping -> allowaccess; ike has no equivalent and is dropped quietly
+    assert any("set allowaccess ping ssh" in m and "ge-0/0/0.0" in m
+               for m in msgs)
+
+
+def test_logical_systems_flagged():
+    text = (FIX / "srx_sample.conf").read_text(encoding="utf-8") + """
+logical-systems {
+    TENANT-A {
+        interfaces {
+            ge-0/0/5 {
+                unit 0;
+            }
+        }
+    }
+}
+"""
+    cfg = juniper_srx.parse(text, "ls.conf")
+    assert any(lvl == "error" and "TENANT-A" in m
+               for lvl, _, m, _ in findings(cfg))
+
+
+PB_VPN = """interfaces {
+    ge-0/0/0 {
+        unit 0 {
+            family inet {
+                address 203.0.113.2/29;
+            }
+        }
+    }
+    ge-0/0/1 {
+        unit 0 {
+            family inet {
+                address 10.1.0.1/24;
+            }
+        }
+    }
+}
+security {
+    zones {
+        security-zone untrust {
+            interfaces {
+                ge-0/0/0.0;
+            }
+        }
+        security-zone trust {
+            interfaces {
+                ge-0/0/1.0;
+            }
+            address-book {
+                address lan 10.1.0.0/24;
+                address remote 10.7.0.0/24;
+            }
+        }
+    }
+    policies {
+        from-zone trust to-zone untrust {
+            policy to-branch {
+                match {
+                    source-address lan;
+                    destination-address remote;
+                    application any;
+                }
+                then {
+                    permit {
+                        tunnel {
+                            ipsec-vpn pb-vpn;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ike {
+        proposal p1 {
+            dh-group group14;
+            authentication-algorithm sha-256;
+            encryption-algorithm aes-256-cbc;
+        }
+        policy ikepol {
+            proposals p1;
+            pre-shared-key ascii-text secret123;
+        }
+        gateway gw1 {
+            ike-policy ikepol;
+            address 198.51.100.77;
+            external-interface ge-0/0/0.0;
+        }
+    }
+    ipsec {
+        proposal p2 {
+            authentication-algorithm hmac-sha-256-128;
+            encryption-algorithm aes-256-cbc;
+        }
+        policy ipsecpol {
+            proposals p2;
+        }
+        vpn pb-vpn {
+            ike {
+                gateway gw1;
+                ipsec-policy ipsecpol;
+            }
+        }
+    }
+}
+"""
+
+
+def test_policy_based_vpn_converted():
+    cfg = juniper_srx.parse(PB_VPN, "pb.conf")
+    p1 = cfg.phase1s[0]
+    assert p1.name == "vpn-pb-vpn"
+    assert p1.remote_gw == "198.51.100.77"
+    # selectors derived from the permit-tunnel policy's addresses
+    p2 = cfg.phase2s[0]
+    assert (p2.src, p2.dst) == ("10.1.0.0/24", "10.7.0.0/24")
+    # the original policy-based rule is kept, disabled, and annotated
+    orig = next(p for p in cfg.policies if p.name == "to-branch")
+    assert orig.disabled is True
+    assert "replaced by route-based tunnel" in orig.comment
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("POLICY-BASED" in m and "pb-vpn" in m for m in msgs)
+
+
+RI_CONF = """interfaces {
+    ge-0/0/0 {
+        unit 0 {
+            family inet {
+                address 203.0.113.2/29;
+            }
+        }
+    }
+    ge-0/0/1 {
+        unit 0 {
+            family inet {
+                address 10.1.0.1/24;
+            }
+        }
+    }
+    ge-0/0/2 {
+        unit 0 {
+            family inet {
+                address 10.50.0.1/24;
+            }
+        }
+    }
+}
+routing-options {
+    static {
+        route 0.0.0.0/0 next-hop 203.0.113.1;
+    }
+}
+routing-instances {
+    CUSTOMER-A-LONGNAME {
+        instance-type virtual-router;
+        interface ge-0/0/2.0;
+        routing-options {
+            static {
+                route 0.0.0.0/0 next-hop 10.50.0.254;
+            }
+        }
+    }
+}
+security {
+    zones {
+        security-zone untrust {
+            interfaces {
+                ge-0/0/0.0;
+            }
+        }
+        security-zone trust {
+            interfaces {
+                ge-0/0/1.0;
+            }
+        }
+        security-zone cust-a {
+            interfaces {
+                ge-0/0/2.0;
+            }
+        }
+    }
+    policies {
+        from-zone trust to-zone untrust {
+            policy out {
+                match {
+                    source-address any;
+                    destination-address any;
+                    application any;
+                }
+                then {
+                    permit;
+                }
+            }
+        }
+        from-zone cust-a to-zone cust-a {
+            policy intra {
+                match {
+                    source-address any;
+                    destination-address any;
+                    application any;
+                }
+                then {
+                    permit;
+                }
+            }
+        }
+        global {
+            policy g-deny {
+                match {
+                    source-address any;
+                    destination-address any;
+                    application any;
+                }
+                then {
+                    deny;
+                }
+            }
+        }
+    }
+}
+"""
+
+
+def test_routing_instances_become_vdoms():
+    cfg = juniper_srx.parse(RI_CONF, "ri.conf")
+    scopes = dict(cfg.meta["vsys_cfgs"])
+    assert set(scopes) == {"root", "CUSTOMER-A-LONGNAME"}
+    root, cust = scopes["root"], scopes["CUSTOMER-A-LONGNAME"]
+    # interfaces and zones split by instance membership
+    assert {i.name for i in root.interfaces} == {"ge-0/0/0.0",
+                                                 "ge-0/0/1.0"}
+    assert {i.name for i in cust.interfaces} == {"ge-0/0/2.0"}
+    assert {z.name for z in root.zones} == {"untrust", "trust"}
+    assert {z.name for z in cust.zones} == {"cust-a"}
+    # policies follow their zones; global policy replicated
+    assert {p.name for p in root.policies} == {"out", "g-deny"}
+    assert {p.name for p in cust.policies} == {"intra", "g-deny"}
+    # routes: default-instance vs instance routing-options
+    assert [r.gateway for r in root.routes] == ["203.0.113.1"]
+    assert [r.gateway for r in cust.routes] == ["10.50.0.254"]
+
+
+def test_ri_vdom_blocks_emitted(tmp_path):
+    from fwforge import pipeline
+    result = pipeline.run_cross(RI_CONF, "juniper-srx", "ri.conf", {})
+    out = result.out_text
+    assert "config vdom" in out
+    assert "edit root" in out
+    # long instance name clamped to a valid VDOM name with a warning
+    assert "edit CUSTOMER-A-" not in out or len(
+        [l for l in out.splitlines() if l.startswith("edit ")][1]) <= 16
+    assert any("VDOM" in f.message and "11 chars" in f.message
+               for f in result.report.findings)

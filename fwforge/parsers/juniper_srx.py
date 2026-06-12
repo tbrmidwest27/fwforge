@@ -24,6 +24,7 @@ chassis-cluster/redundancy and dynamic routing are reported.
 """
 from __future__ import annotations
 
+import fnmatch
 import ipaddress
 import re
 
@@ -183,6 +184,7 @@ _PLAIN = {
     "traceoptions", "screen", "flow", "forwarding-options", "interfaces",
     "vlans", "protocols", "scheduler", "schedulers", "bgp", "ospf",
     "advanced-policy-based-routing", "tcp-options", "permit", "deny",
+    "host-inbound-traffic", "tunnel",
 }
 # keywords that open a sub-container consuming the next token as its name
 _NAMED = {
@@ -203,7 +205,7 @@ _LEAF = {
     "encryption-algorithm", "dh-group", "lifetime-seconds", "version",
     "mode", "local-ip", "remote-ip", "local", "remote", "prefix",
     "routing-instance", "interface", "off", "log", "count",
-    "system-services", "host-inbound-traffic", "no-nat-traversal",
+    "system-services", "no-nat-traversal",
     "establish-tunnels", "df-bit", "vlan-id", "vlan-tagging", "mtu",
     "description", "disable", "inactive", "then", "deactivate",
 }
@@ -343,16 +345,13 @@ def _expand_groups(root: JNode, reporter) -> None:
                      f"apply-groups '{gname}' has no matching group "
                      "definition — skipped")
             continue
-        if any("<" in k0 for k, _ in g.containers for k0 in k):
-            reporter("warn", "groups",
-                     f"group '{gname}' uses wildcard matching (<*>) — "
-                     "not expanded; apply its settings manually")
         _merge_into(root, g)
         merged += 1
     if merged:
         reporter("info", "groups",
                  f"apply-groups expanded {merged} top-level group(s): "
-                 f"{', '.join(applied)}")
+                 f"{', '.join(applied)} (wildcard <*> keys merged into "
+                 "matching existing stanzas, Junos-style)")
 
 
 def _has_nested_apply_groups(node: JNode, depth: int = 0) -> bool:
@@ -362,10 +361,33 @@ def _has_nested_apply_groups(node: JNode, depth: int = 0) -> bool:
                for _k, c in node.containers)
 
 
+def _wild_match(gkey: tuple, dkey: tuple) -> bool:
+    """A group key (possibly containing <pattern> tokens) matches a dst
+    key of the same arity, token by token."""
+    if len(gkey) != len(dkey):
+        return False
+    for g, d in zip(gkey, dkey):
+        if g.startswith("<") and g.endswith(">"):
+            if not fnmatch.fnmatchcase(d, g[1:-1]):
+                return False
+        elif g != d:
+            return False
+    return True
+
+
 def _merge_into(dst: JNode, src: JNode) -> None:
     """Deep-merge src's containers/leaves into dst (dst wins on leaf
-    conflicts — explicit config overrides inherited group config)."""
+    conflicts — explicit config overrides inherited group config).
+    A wildcard key like `<ge-*>` merges into every EXISTING matching
+    sibling (Junos wildcard semantics: it never creates stanzas)."""
     for key, snode in src.containers:
+        if any(t.startswith("<") and t.endswith(">") for t in key):
+            # a wildcard key (`<ge-*>`, `unit <*>`) merges into every
+            # EXISTING sibling of the same shape whose tokens match
+            for dkey, dnode in dst.containers:
+                if _wild_match(key, dkey):
+                    _merge_into(dnode, snode)
+            continue
         existing = None
         for k, node in dst.containers:
             if k == key:
@@ -376,9 +398,15 @@ def _merge_into(dst: JNode, src: JNode) -> None:
         else:
             _merge_into(existing, snode)
     have = {tuple(t) for t in dst.leaves}
+    # dst wins per-attribute: skip a group leaf when dst already sets
+    # the same first token
+    dst_attrs = {t[0] for t in dst.leaves if t}
     for leaf in src.leaves:
-        if tuple(leaf) not in have:
-            dst.leaves.append(leaf)
+        if tuple(leaf) in have:
+            continue
+        if leaf and leaf[0] in dst_attrs:
+            continue
+        dst.leaves.append(leaf)
 
 
 # --- detection --------------------------------------------------------------
@@ -416,6 +444,8 @@ class JunosParser:
         _expand_groups(self.tree, self.note)
         # zone-book address name -> flattened global name
         self._addr_alias: dict[tuple[str, str], str] = {}
+        # ipsec-vpn name -> policies that `permit tunnel` through it
+        self._pb_policies: dict[str, list[Policy]] = {}
 
     def note(self, level: str, area: str, msg: str,
              ref: SourceRef | None = None):
@@ -438,8 +468,10 @@ class JunosParser:
         self.parse_routes()
         self.parse_protocols()
         self.parse_vpn()
-        self.flag_routing_instances()
+        self.parse_routing_instances()
+        self.flag_logical_systems()
         self.report_coverage()
+        self._partition_by_ri()
         self.cfg.meta["findings"] = self._findings
         return self.cfg
 
@@ -631,15 +663,20 @@ class JunosParser:
             if len(key) < 2:
                 continue
             zname = key[1]
+            zone_hit = self._hit_services(zn)
             members = []
             ifn = zn.get("interfaces")
             if ifn is not None:
                 for toks in ifn.leaves:
                     if toks:
                         members.append(toks[0])
-                for ikey, _ in ifn.containers:
+                        self._note_allowaccess(zname, toks[0], zone_hit)
+                for ikey, inode in ifn.containers:
                     if ikey:
                         members.append(ikey[0])
+                        self._note_allowaccess(
+                            zname, ikey[0],
+                            self._hit_services(inode) or zone_hit)
             self.cfg.zones.append(Zone(
                 name=zname, members=members,
                 source=self.ref(zn, f"zone {zname}")))
@@ -647,6 +684,51 @@ class JunosParser:
             if book is not None:
                 self._read_book(book, scope=zname,
                                 ref_label=f"zone {zname} address-book")
+
+    # junos host-inbound system-service -> FortiOS allowaccess token
+    _ALLOWACCESS = {"ssh": "ssh", "ping": "ping", "https": "https",
+                    "http": "http", "snmp": "snmp", "telnet": "telnet"}
+
+    def _hit_services(self, node: JNode | None) -> list[str]:
+        """system-services under host-inbound-traffic, both shapes:
+        curly `system-services { ssh; }` and set leaves
+        `system-services ssh`."""
+        if node is None:
+            return []
+        hit = node.get("host-inbound-traffic")
+        if hit is None:
+            return []
+        out: list[str] = []
+        ss = hit.get("system-services")
+        if ss is not None:
+            out += [t[0] for t in ss.leaves if t]
+        for toks in hit.leaf_all("system-services"):
+            out += toks[:1]
+        return out
+
+    def _note_allowaccess(self, zone: str, ifname: str,
+                          services: list[str]) -> None:
+        if not services:
+            return
+        if "all" in services:
+            mapped = sorted(set(self._ALLOWACCESS.values()))
+            extra: list[str] = []
+        else:
+            mapped = sorted({self._ALLOWACCESS[s] for s in services
+                             if s in self._ALLOWACCESS})
+            extra = sorted({s for s in services
+                            if s not in self._ALLOWACCESS
+                            and s not in ("ike", "dhcp")})
+        if not mapped and not extra:
+            return
+        msg = (f"zone {zone} / {ifname}: host-inbound-traffic allows "
+               f"{', '.join(services)} — set "
+               f"'set allowaccess {' '.join(mapped)}' on the mapped "
+               "FortiGate port")
+        if extra:
+            msg += (f" ({', '.join(extra)} have no allowaccess "
+                    "equivalent; use local-in policies)")
+        self.note("info", "interfaces", msg)
 
     def _book_name(self, scope: str, name: str, ref: SourceRef) -> str:
         """Flatten a (possibly zone-scoped) book entry to a global IR
@@ -808,14 +890,16 @@ class JunosParser:
             comment_bits.append(descr)
         if glob:
             comment_bits.append("Junos global policy")
+        tunnel_vpn = ""
         if then.get("permit") is not None:
             permit = then.get("permit")
-            if permit.get("tunnel") is not None \
-                    or permit.has_leaf("tunnel"):
-                self.note("info", "policies",
-                          f"policy '{name}': permit tunnel (policy-based "
-                          "VPN) — convert to a route-based tunnel; the "
-                          "policy is emitted as a normal accept", ref)
+            tun = permit.get("tunnel")
+            if tun is not None:
+                tunnel_vpn = tun.leaf_str("ipsec-vpn")
+            else:
+                v = permit.leaf("tunnel")
+                if v and v[0] == "ipsec-vpn" and len(v) > 1:
+                    tunnel_vpn = v[1]
             if permit.get("application-services") is not None:
                 self.note("info", "policies",
                           f"policy '{name}': UTM/application-services "
@@ -827,6 +911,8 @@ class JunosParser:
             action=action, log=log, disabled=disabled,
             src_negate=src_neg, dst_negate=dst_neg,
             comment="; ".join(comment_bits)[:1023] or None, source=ref)
+        if tunnel_vpn:
+            self._pb_policies.setdefault(tunnel_vpn, []).append(pol_obj)
         self.cfg.policies.append(pol_obj)
 
     # -- NAT ------------------------------------------------------------
@@ -978,8 +1064,10 @@ class JunosParser:
         if ro is None:
             return
         static = ro.get("static")
-        if static is None:
-            return
+        if static is not None:
+            self._read_static(static, self.cfg.routes)
+
+    def _read_static(self, static: JNode, sink: list) -> None:
         # container form: route X { next-hop Y; discard; }
         for key, rt in static.find("route"):
             if len(key) < 2:
@@ -993,7 +1081,8 @@ class JunosParser:
             blackhole = rt.has_leaf("discard") \
                 or rt.get("discard") is not None \
                 or rt.has_leaf("reject")
-            self._add_route(key[1], gw, blackhole, self.ref(rt, "route"))
+            self._add_route(key[1], gw, blackhole,
+                            self.ref(rt, "route"), sink)
         # one-liner leaf form: route X next-hop Y; (curly show-config)
         for toks in static.leaf_all("route"):
             if not toks:
@@ -1005,10 +1094,11 @@ class JunosParser:
                 if j + 1 < len(toks):
                     gw = toks[j + 1]
             blackhole = "discard" in toks or "reject" in toks
-            self._add_route(dest, gw, blackhole, self.ref(static, "route"))
+            self._add_route(dest, gw, blackhole,
+                            self.ref(static, "route"), sink)
 
     def _add_route(self, dest: str, gw: str, blackhole: bool,
-                   ref) -> None:
+                   ref, sink: list) -> None:
         from ..model import Route
         if blackhole:
             self.note("info", "routes",
@@ -1025,10 +1115,9 @@ class JunosParser:
             self.note("warn", "routes",
                       f"route {dest}: no next-hop resolved — skipped", ref)
             return
-        if any(r.dest == str(net) and r.gateway == gw
-               for r in self.cfg.routes):
+        if any(r.dest == str(net) and r.gateway == gw for r in sink):
             return
-        self.cfg.routes.append(Route(
+        sink.append(Route(
             dest=str(net), gateway=gw, interface="", source=ref))
 
     # -- dynamic routing (BGP / OSPF) ------------------------------------
@@ -1293,10 +1382,11 @@ class JunosParser:
                  table, used) -> None:
         ref = self.ref(vpnnode, f"ipsec vpn {name}")
         bind = vpnnode.leaf_str("bind-interface")
-        if not bind:
-            self.note("info", "vpn",
-                      f"vpn '{name}': no bind-interface (policy-based "
-                      "VPN) — convert to route-based; skipped", ref)
+        pb_pols = [] if bind else self._pb_policies.get(name, [])
+        if not bind and not pb_pols:
+            self.note("warn", "vpn",
+                      f"vpn '{name}': policy-based VPN with no 'permit "
+                      "tunnel' policy referencing it — skipped", ref)
             return
         ikeblk = vpnnode.get("ike") or JNode()
         gwname = ikeblk.leaf_str("gateway")
@@ -1339,7 +1429,12 @@ class JunosParser:
                       f"vpn '{name}': crypto proposal incomplete — "
                       "defaulted to aes256-sha256; match the peer", ref)
 
-        selectors = self._vpn_selectors(vpnnode)
+        if bind:
+            selectors = self._vpn_selectors(vpnnode)
+        else:
+            selectors = self._pb_selectors(pb_pols, name, ref)
+            if not selectors:
+                return
         tname = f"vpn-{name}"[:15]
         if tname in used:
             base, k = tname, 2
@@ -1351,14 +1446,71 @@ class JunosParser:
                       f"vpn '{name}': truncated tunnel name collided — "
                       f"renamed {tname}", ref)
         used.add(tname)
-        vpn.add_route_based_tunnel(
+        emitted = vpn.add_route_based_tunnel(
             self.cfg, _Reporter(self), table, name=tname,
-            interface=gw["ext_if"] or bind, remote_gw=gw["remote"],
+            interface=gw["ext_if"] or bind or "wan", remote_gw=gw["remote"],
             ike_version=2 if gw["ikev2"] else 1,
             p1_proposals=p1_props, p1_dhgrp=dh or ["14"], psk=psk,
             p1_keylife=p1_life, selectors=selectors,
             p2_proposals=p2_props, pfs_group=pfs, p2_keylife=p2_life,
             comment=f"Junos vpn {name} (peer {gw['remote']})", source=ref)
+        if pb_pols and emitted:
+            for p in pb_pols:
+                p.disabled = True
+                p.comment = ((p.comment + " | ") if p.comment else "") \
+                    + f"replaced by route-based tunnel {tname}"
+            self.note(
+                "info", "vpn",
+                f"vpn '{name}' was POLICY-BASED — converted to "
+                f"route-based tunnel '{tname}' with selectors from "
+                f"{len(pb_pols)} 'permit tunnel' policy(ies); the "
+                "originals are emitted disabled for reference", ref)
+
+    def _cidrs_of(self, name: str, seen: set | None = None) -> list[str]:
+        """Address-object name -> CIDR list ('' entries dropped); groups
+        flatten recursively; range/fqdn members are not selector-able."""
+        if name == "all":
+            return ["0.0.0.0/0"]
+        seen = seen or set()
+        if name in seen:
+            return []
+        seen.add(name)
+        a = self.cfg.address_by_name(name)
+        if a is not None:
+            if a.type == "host":
+                return [f"{a.value}/32"]
+            if a.type == "subnet":
+                return [a.value]
+            return []
+        for g in self.cfg.addr_groups:
+            if g.name == name:
+                out: list[str] = []
+                for m in g.members:
+                    out += self._cidrs_of(m, seen)
+                return out
+        return []
+
+    def _pb_selectors(self, pols: list[Policy], name: str,
+                      ref: SourceRef) -> list[tuple[str, str]]:
+        sels: list[tuple[str, str]] = []
+        skipped: list[str] = []
+        for p in pols:
+            srcs = [c for a in p.src_addrs for c in self._cidrs_of(a)]
+            dsts = [c for a in p.dst_addrs for c in self._cidrs_of(a)]
+            if not srcs or not dsts:
+                skipped.append(p.name)
+                continue
+            for s in srcs:
+                for d in dsts:
+                    if (s, d) not in sels:
+                        sels.append((s, d))
+        if skipped:
+            self.note("warn", "vpn",
+                      f"vpn '{name}': policy(ies) {', '.join(skipped)} "
+                      "use addresses that cannot become selectors "
+                      "(range/fqdn/unknown) — add those phase2 "
+                      "selectors manually", ref)
+        return sels
 
     def _vpn_selectors(self, vpnnode: JNode) -> list[tuple[str, str]]:
         sels = []
@@ -1396,26 +1548,160 @@ class JunosParser:
             return "CHANGEME-PSK"
         return raw
 
-    # -- routing-instances (VDOM candidates) ----------------------------
+    # -- routing-instances -> VDOMs --------------------------------------
 
-    def flag_routing_instances(self) -> None:
+    def parse_routing_instances(self) -> None:
+        self._ri: dict[str, dict] = {}
         ri = self.tree.get("routing-instances")
         if ri is None:
             return
-        names = [k[0] for k, _ in ri.containers if k]
-        if names:
-            self.note("warn", "routing-instances",
-                      f"{len(names)} routing-instance(s) "
-                      f"({', '.join(names)}) not converted — each maps to "
-                      "a FortiOS VDOM; convert the main instance now and "
-                      "re-run per instance (VDOM mapping queued)")
+        for key, node in ri.containers:
+            if not key:
+                continue
+            name = key[0]
+            ifaces = {t[0] for t in node.leaf_all("interface") if t}
+            ifaces |= {k[1] for k, _n in node.find("interface")
+                       if len(k) > 1}
+            routes: list = []
+            ro = node.get("routing-options")
+            if ro is not None:
+                static = ro.get("static")
+                if static is not None:
+                    self._read_static(static, routes)
+            if node.get("protocols") is not None:
+                self.note("warn", "routing",
+                          f"routing-instance '{name}': dynamic routing "
+                          "inside the instance not converted — configure "
+                          "it in that VDOM manually",
+                          self.ref(node, f"routing-instance {name}"))
+            self._ri[name] = {"ifaces": ifaces, "routes": routes}
+        if self._ri:
+            self.note("info", "routing-instances",
+                      f"{len(self._ri)} routing-instance(s) "
+                      f"({', '.join(self._ri)}) — each becomes its own "
+                      "VDOM, plus 'root' for the default instance")
+
+    def flag_logical_systems(self) -> None:
+        ls = self.tree.get("logical-systems")
+        if ls is None:
+            return
+        names = [k[0] for k, _ in ls.containers if k]
+        self.note("error", "logical-systems",
+                  f"logical-systems present ({', '.join(names)}) — NOT "
+                  "converted; each logical system is a separate security "
+                  "context (extract and convert it separately)")
+
+    def _partition_by_ri(self) -> None:
+        """Split the parsed config into per-routing-instance scopes; the
+        pipeline turns them into VDOM blocks (same machinery as PAN
+        multi-vsys)."""
+        if not self._ri:
+            return
+        import copy
+        primary = self.cfg
+        owner: dict[str, str] = {}
+        for ri, info in self._ri.items():
+            for ifc in info["ifaces"]:
+                owner[ifc] = ri
+
+        def iface_scope(n: str) -> str:
+            return owner.get(n, owner.get(n.split(".")[0], "root"))
+
+        scopes = ["root"] + list(self._ri)
+        cfgs: dict[str, FirewallConfig] = {"root": primary}
+        for s in scopes[1:]:
+            c = FirewallConfig(vendor=primary.vendor,
+                               hostname=primary.hostname)
+            c.meta["findings"] = []
+            cfgs[s] = c
+
+        zone_scope: dict[str, str] = {}
+        for z in primary.zones:
+            owners = {iface_scope(m) for m in z.members} or {"root"}
+            if len(owners) > 1:
+                self.note("warn", "routing-instances",
+                          f"zone '{z.name}' has interfaces in several "
+                          f"instances ({', '.join(sorted(owners))}) — "
+                          "kept in root; split it per instance manually")
+                zone_scope[z.name] = "root"
+            else:
+                zone_scope[z.name] = owners.pop()
+        p1_scope = {p.name: iface_scope(p.interface)
+                    for p in primary.phase1s}
+
+        def pol_scope(p: Policy) -> str:
+            for zlist in (p.src_zones, p.dst_zones):
+                for z in zlist:
+                    if z in p1_scope:
+                        return p1_scope[z]  # VPN policies follow tunnel
+            s_ = p.src_zones[0] if p.src_zones else "any"
+            d_ = p.dst_zones[0] if p.dst_zones else "any"
+            if s_ == "any" and d_ == "any":
+                return "*"  # Junos global policy -> every VDOM
+            ss, ds = zone_scope.get(s_), zone_scope.get(d_)
+            if ss and ds and ss != ds:
+                self.note("warn", "routing-instances",
+                          f"policy '{p.name}': zones '{s_}' and '{d_}' "
+                          "live in different instances — kept in root; "
+                          "traffic between VDOMs needs inter-VDOM links")
+                return "root"
+            return ss or ds or "root"
+
+        buckets = {s: {"zones": [], "policies": [], "routes": [],
+                       "nats": [], "vips": [], "phase1s": [],
+                       "phase2s": [], "interfaces": []} for s in scopes}
+        for z in primary.zones:
+            buckets[zone_scope[z.name]]["zones"].append(z)
+        replicated_global = False
+        for p in primary.policies:
+            sc = pol_scope(p)
+            if sc == "*":
+                replicated_global = True
+                buckets["root"]["policies"].append(p)
+                for s in scopes[1:]:
+                    buckets[s]["policies"].append(copy.deepcopy(p))
+            else:
+                buckets[sc]["policies"].append(p)
+        if replicated_global:
+            self.note("info", "routing-instances",
+                      "Junos global policies replicated into every VDOM")
+        for r in primary.routes:
+            buckets[p1_scope.get(r.interface, "root")]["routes"].append(r)
+        for ri, info in self._ri.items():
+            buckets[ri]["routes"].extend(info["routes"])
+        for n in primary.nats:
+            sc = zone_scope.get(n.real_ifc) or zone_scope.get(
+                n.mapped_ifc) or "root"
+            buckets[sc]["nats"].append(n)
+        for v in primary.vips:
+            buckets[zone_scope.get(v.ext_intf, "root")]["vips"].append(v)
+        for p1 in primary.phase1s:
+            buckets[p1_scope[p1.name]]["phase1s"].append(p1)
+        for p2 in primary.phase2s:
+            buckets[p1_scope.get(p2.phase1, "root")]["phase2s"].append(p2)
+        for itf in primary.interfaces:
+            buckets[iface_scope(itf.name)]["interfaces"].append(itf)
+
+        for s in scopes:
+            c = cfgs[s]
+            if s != "root":
+                # objects are per-VDOM on FortiOS: replicate (deep copies
+                # — name sanitization later mutates them per scope)
+                c.addresses = copy.deepcopy(primary.addresses)
+                c.addr_groups = copy.deepcopy(primary.addr_groups)
+                c.services = copy.deepcopy(primary.services)
+                c.svc_groups = copy.deepcopy(primary.svc_groups)
+            for attr, vals in buckets[s].items():
+                setattr(c, attr, vals)
+        primary.meta["vsys_cfgs"] = [(s, cfgs[s]) for s in scopes]
 
     # -- coverage map ---------------------------------------------------
 
     def report_coverage(self) -> None:
         consumed_top = {"security", "interfaces", "applications",
                         "routing-options", "system", "groups",
-                        "apply-groups", "version", "protocols"}
+                        "apply-groups", "version", "protocols",
+                        "routing-instances", "logical-systems"}
         consumed_sec = {"zones", "policies", "nat", "address-book",
                         "ike", "ipsec"}
         consumed_prot = {"bgp", "ospf"}
