@@ -256,6 +256,16 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.35 — shipped 2026-06-12 (live faceplates on the mapping step)
+Adam's design: schematic front panels for source + destination above
+the mapping grid, ports lighting as you wire them. FACEPLATES specs
+(600F/601F, 700G/701G per verified QSG layout, 60F/61F; generic strip
+fallback from the port list), header_platform() picks the source model
+off the config header. Blue glow = focused pair, green = wired,
+red = collision (two sources -> one port), amber = no home on the
+destination. Click a source port to jump to its row; click a
+destination port to wire it. Invariant: faceplate == PORT_INVENTORY.
+
 ### v0.34.1 — shipped 2026-06-12 (lineup ceiling: 4801F)
 Adam's call: no 6000/7000-series; 4801F tops the list. Added the seven
 x01 bundle siblings (1801F…4801F) via the 4-char K-rule extension

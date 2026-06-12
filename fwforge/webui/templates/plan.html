@@ -219,6 +219,69 @@
   <p class="grid-note">Source name &rarr; target port. Pre-filled with the
     same name; change what differs on the target model. Empty target =
     leave the name as-is.</p>
+  <style>
+    .fpwrap { margin:.4rem 0 .9rem; display:flex; flex-direction:column;
+              gap:.55rem; }
+    .fprow { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
+    .fptag { font-size:.68rem; text-transform:uppercase;
+             letter-spacing:.08em; color:var(--mut); width:5.4rem;
+             text-align:right; flex:0 0 auto; }
+    .fpname { font-weight:700; font-size:.78rem; color:#266798;
+              min-width:4.2rem; flex:0 0 auto; }
+    .fplate { background:linear-gradient(#2d333c,#232830);
+              border:1px solid #1a1e24; border-radius:8px;
+              padding:.5rem .65rem .4rem; display:flex; gap:.9rem;
+              align-items:flex-end; overflow-x:auto;
+              box-shadow:inset 0 1px 0 rgba(255,255,255,.06); }
+    .fpgroup { display:flex; flex-direction:column; gap:.22rem; }
+    .fpglabel { color:#8b97a8; font-size:.56rem; text-transform:uppercase;
+                letter-spacing:.06em; white-space:nowrap; }
+    .fpports { display:grid; grid-auto-flow:column; gap:3px; }
+    .fport { position:relative; background:#3a414c;
+             border:1px solid #515b69; border-radius:3px; width:46px;
+             height:26px; cursor:pointer; display:flex;
+             align-items:flex-end; justify-content:center;
+             transition:box-shadow .15s, background .15s; }
+    .fport.sfp { height:20px; width:54px; border-radius:2px;
+                 background:#333942; }
+    .fport .fpn { font-size:.54rem; color:#aeb9c8; line-height:1;
+                  padding-bottom:3px; pointer-events:none; }
+    .fport .fpled { position:absolute; top:2px; right:3px; width:5px;
+                    height:5px; border-radius:50%; background:#20262e;
+                    pointer-events:none; }
+    .fport.assigned { border-color:#2e7d32; }
+    .fport.assigned .fpled { background:#43d36b;
+                             box-shadow:0 0 4px #43d36b; }
+    .fport.lit { background:#266798; border-color:#9fd1ff;
+                 box-shadow:0 0 10px rgba(63,169,255,.85); }
+    .fport.lit .fpn { color:#fff; }
+    .fport.lit .fpled { background:#bfe6ff; box-shadow:0 0 6px #bfe6ff; }
+    .fport.collide { border-color:#c0392b; }
+    .fport.collide .fpled { background:#ff5544;
+                            box-shadow:0 0 5px #ff5544; }
+    .fport.miss { border-color:#e0a300; }
+    .fport.miss .fpled { background:#ffc400; box-shadow:0 0 5px #ffc400; }
+    .fport:hover { box-shadow:0 0 8px rgba(63,169,255,.6); }
+  </style>
+  <div class="fpwrap" id="fp-wrap">
+    <div class="fprow">
+      <span class="fptag">source</span>
+      <span class="fpname" id="fp-src-name"></span>
+      <div class="fplate" id="fp-src"></div>
+    </div>
+    <div class="fprow">
+      <span class="fptag">destination</span>
+      <span class="fpname" id="fp-dst-name"></span>
+      <div class="fplate" id="fp-dst"></div>
+      <span class="muted" id="fp-dst-hint" style="font-size:.75rem"></span>
+    </div>
+    <p class="grid-note" style="margin:0">Click a source port to jump to
+      its row, then click a destination port to wire it. LEDs:
+      <b style="color:#3fa9ff">blue</b> = selected pair,
+      <b style="color:#2e7d32">green</b> = wired,
+      <b style="color:#c0392b">red</b> = two sources on one port,
+      <b style="color:#e0a300">amber</b> = no home on the destination.</p>
+  </div>
   <p class="grid-note" id="tp-port-hint"></p>
   <datalist id="tp-ports"></datalist>
   <table style="max-width:{% if det %}860px{% else %}580px{% endif %}">
@@ -636,12 +699,130 @@ function tpPortsChanged() {
                  "(outlined red)" : "");
   }
 }
-const tpSel = document.getElementById("tp-select");
-if (tpSel) tpSel.addEventListener("change", tpPortsChanged);
-document.addEventListener("input", e => {
-  if (e.target && e.target.name === "map_dst") tpPortsChanged();
+// ---- faceplates: schematic front panels with live port lighting ----
+const FACEPLATES = {{ faceplates|tojson }};
+const SOURCE_PLATFORM = {{ meta.get("source_platform", "")|tojson }};
+const TARGET_CODE = {{ meta.get("target_code", "")|tojson }};
+let fpActive = null;   // the map_dst input currently being wired
+
+function fpGeneric(ports) {
+  return ports.length
+    ? [{label: "ports", kind: "rj45", rows: 2, ports: ports}] : [];
+}
+function fpSpec(code, ports) {
+  return (code && FACEPLATES[code]) || fpGeneric(ports || []);
+}
+function fpRender(el, spec, side) {
+  el.innerHTML = spec.map(g => `
+    <div class="fpgroup"><div class="fpglabel">${esc(g.label)}</div>
+      <div class="fpports"
+           style="grid-template-rows:repeat(${g.rows},auto)">
+        ${g.ports.map(p => `<div class="fport ${g.kind}"
+            data-side="${side}" data-port="${esc(p)}" title="${esc(p)}">
+            <span class="fpled"></span><span class="fpn">${esc(p)}</span>
+          </div>`).join("")}
+      </div></div>`).join("");
+}
+function destPortList() {
+  const sel = document.getElementById("tp-select");
+  return TARGET_PORTS.length ? TARGET_PORTS
+    : ((sel && PORT_INV[sel.value]) || []);
+}
+function destCodeNow() {
+  if (TARGET_CODE) return TARGET_CODE;
+  const sel = document.getElementById("tp-select");
+  return (sel && sel.value && sel.value !== "__custom__") ? sel.value : "";
+}
+function fpMapping() {
+  const m = {};
+  document.querySelectorAll('input[name="map_dst"]').forEach(inp => {
+    const src = inp.closest("tr").querySelector('input[name="map_src"]');
+    if (src) m[src.value] = (inp.value || src.value).trim();
+  });
+  return m;
+}
+function refreshFaceplates() {
+  const srcEl = document.getElementById("fp-src");
+  const dstEl = document.getElementById("fp-dst");
+  if (!srcEl || !dstEl) return;
+  const mapping = fpMapping();
+  const dports = destPortList();
+  const counts = {};
+  Object.entries(mapping).forEach(([s, d]) => {
+    if (PHYS.has(s)) counts[d] = (counts[d] || 0) + 1;
+  });
+  const activeSrc = fpActive
+    ? fpActive.closest("tr")
+        .querySelector('input[name="map_src"]').value : "";
+  const activeDst = activeSrc ? mapping[activeSrc] : "";
+  srcEl.querySelectorAll(".fport").forEach(p => {
+    const n = p.dataset.port;
+    p.classList.toggle("lit", n === activeSrc);
+    p.classList.toggle("miss", PHYS.has(n) && dports.length
+      && !dports.includes(mapping[n] || n));
+  });
+  dstEl.querySelectorAll(".fport").forEach(p => {
+    const n = p.dataset.port;
+    p.classList.toggle("assigned", (counts[n] || 0) === 1);
+    p.classList.toggle("collide", (counts[n] || 0) > 1);
+    p.classList.toggle("lit", n === activeDst);
+  });
+}
+function buildFaceplates() {
+  const srcEl = document.getElementById("fp-src");
+  const dstEl = document.getElementById("fp-dst");
+  if (!srcEl || !dstEl) return;
+  const srcPorts = DET.filter(d => d.type === "physical"
+      && !d.name.includes(".") && d.name !== "modem").map(d => d.name);
+  fpRender(srcEl, fpSpec(SOURCE_PLATFORM, srcPorts), "src");
+  document.getElementById("fp-src-name").textContent =
+    SOURCE_PLATFORM || "source";
+  const dp = destPortList();
+  const dc = destCodeNow();
+  document.getElementById("fp-dst-name").textContent = dc;
+  document.getElementById("fp-dst-hint").textContent = dp.length ? "" :
+    "pick a target model (or load a destination backup) to light this up";
+  fpRender(dstEl, fpSpec(dc, dp), "dst");
+  refreshFaceplates();
+}
+document.addEventListener("focusin", e => {
+  if (e.target && e.target.name === "map_dst") {
+    fpActive = e.target;
+    refreshFaceplates();
+  }
 });
-tpPortsChanged();  // destination-backup ports apply from page load
+document.addEventListener("click", e => {
+  const p = e.target.closest(".fport");
+  if (!p) return;
+  if (p.dataset.side === "src") {
+    document.querySelectorAll('input[name="map_src"]').forEach(h => {
+      if (h.value === p.dataset.port) {
+        const inp = h.closest("tr")
+          .querySelector('input[name="map_dst"]');
+        inp.focus();
+        inp.scrollIntoView({block: "center", behavior: "smooth"});
+      }
+    });
+  } else if (fpActive) {
+    fpActive.value = p.dataset.port;
+    fpActive.dispatchEvent(new Event("input", {bubbles: true}));
+    fpActive.focus();
+  }
+});
+
+const tpSel = document.getElementById("tp-select");
+if (tpSel) tpSel.addEventListener("change", () => {
+  tpPortsChanged();
+  buildFaceplates();
+});
+document.addEventListener("input", e => {
+  if (e.target && e.target.name === "map_dst") {
+    tpPortsChanged();
+    refreshFaceplates();
+  }
+});
+tpPortsChanged();    // destination-backup ports apply from page load
+buildFaceplates();   // draw both panels immediately
 {% endif %}
 function filterPolicies() {
   const q = document.getElementById("polsearch").value.toLowerCase();

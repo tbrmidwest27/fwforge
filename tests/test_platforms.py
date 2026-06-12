@@ -139,3 +139,17 @@ def test_lineup_ceiling_is_4801f():
     # nothing above the 4801F ceiling, no chassis series
     assert not any("6000" in p.model or "7000" in p.model
                    or "7081" in p.model for p in platforms.PLATFORMS)
+
+
+def test_faceplates_match_port_inventory():
+    # every faceplate must cover exactly its model's port inventory —
+    # the GUI lights ports by name, so drift = dark/phantom ports
+    for code, spec in platforms.FACEPLATES.items():
+        fp_ports = {p for g in spec for p in g["ports"]}
+        assert fp_ports == set(platforms.PORT_INVENTORY[code]), code
+
+
+def test_header_platform():
+    assert platforms.header_platform(
+        "#config-version=FG7H1G-7.4.11-FW-build2878-1:x\n") == "FG7H1G"
+    assert platforms.header_platform("config system global\nend\n") == ""

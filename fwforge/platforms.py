@@ -190,6 +190,67 @@ _HEADER_RE = re.compile(
     r"#config-version=([^-\s]+)-(\d+\.\d+\.\d+)-FW")
 
 
+def header_platform(text: str) -> str:
+    """Platform token from a config's #config-version header ('' when
+    absent) — identifies the source device, e.g. for faceplate
+    rendering."""
+    m = _HEADER_RE.match(text.lstrip())
+    return m.group(1) if m else ""
+
+
+# -- faceplate layouts --------------------------------------------------------
+# Schematic front-panel specs for the GUI's port-lighting view. These
+# are our own schematic drawings (groups of port rectangles) — no
+# vendor artwork. Group fields: label, kind (rj45|sfp), rows (FortiGate
+# panels stack odd-over-even in column pairs), ports (FortiOS names).
+# Models without a spec render a generic strip from their port list.
+
+_FP_600F = (
+    {"label": "MGMT / HA", "kind": "rj45", "rows": 2,
+     "ports": ("mgmt", "ha")},
+    {"label": "GE RJ45", "kind": "rj45", "rows": 2,
+     "ports": tuple(f"port{i}" for i in range(1, 17))},
+    {"label": "GE SFP", "kind": "sfp", "rows": 2,
+     "ports": tuple(f"port{i}" for i in range(17, 25))},
+    {"label": "10G SFP+", "kind": "sfp", "rows": 2,
+     "ports": tuple(f"x{i}" for i in range(1, 9))},
+)
+
+# per the FG-700G-Series QSG front panel (verified vs native backup)
+_FP_700G = (
+    {"label": "MGMT / HA", "kind": "rj45", "rows": 2,
+     "ports": ("mgmt", "ha")},
+    {"label": "5G RJ45", "kind": "rj45", "rows": 2,
+     "ports": ("wan1", "wan2", "lan1", "lan2", "lan3", "lan4",
+               "lan5", "lan6")},
+    {"label": "1G SFP", "kind": "sfp", "rows": 2,
+     "ports": tuple(f"lan{i}" for i in range(7, 23))},
+    {"label": "10G SFP+ FortiLink", "kind": "sfp", "rows": 2,
+     "ports": ("x1", "x2", "x3", "x4")},
+    {"label": "25G SFP28", "kind": "sfp", "rows": 2,
+     "ports": ("x5", "x6", "x7", "x8")},
+)
+
+_FP_60F = (
+    {"label": "WAN", "kind": "rj45", "rows": 1,
+     "ports": ("wan1", "wan2")},
+    {"label": "DMZ", "kind": "rj45", "rows": 1, "ports": ("dmz",)},
+    {"label": "INTERNAL", "kind": "rj45", "rows": 1,
+     "ports": tuple(f"internal{i}" for i in range(1, 6))},
+    {"label": "A / B", "kind": "rj45", "rows": 1,
+     "ports": ("a", "b")},
+)
+
+FACEPLATES: dict[str, tuple] = {
+    "FG6H0F": _FP_600F,
+    "FG6H1F": _FP_600F,
+    "FG7H0G": _FP_700G,
+    "FG7H1G": _FP_700G,
+    "FGT60F": _FP_60F,
+    "FGT61F": _FP_60F,
+}
+
+
 def inventory_from_config(text: str) -> tuple[str, str, tuple[str, ...]]:
     """(platform_code, version, physical_ports) read from a config
     backup taken on the DESTINATION device — a factory-fresh backup is

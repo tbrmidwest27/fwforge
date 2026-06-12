@@ -93,6 +93,7 @@ def _analyze(text: str, name: str) -> dict:
         src = versiondelta.source_version_from_header(tree)
         if src:
             meta["source_os"] = versiondelta.vlabel(src)  # full x.y.z
+        meta["source_platform"] = platforms.header_platform(text)
         meta["inventory"] = fortios_tree.section_inventory(tree)
         # per-interface facts for the zone / SD-WAN member pickers
         zoned = zones.existing_zone_members(tree)
@@ -397,6 +398,7 @@ def create_app() -> Flask:
             default_target=default_target, det=det,
             platform_groups=platforms.GROUPS,
             port_inventory=platforms.PORT_INVENTORY,
+            faceplates=platforms.FACEPLATES,
             schemas=schema_mod.list_cached(),
             error=request.args.get("error", ""))
 

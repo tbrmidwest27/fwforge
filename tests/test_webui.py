@@ -441,3 +441,12 @@ end
     conf = client.get(f"/job/{jid}/dl/conf").data.decode()
     assert conf.startswith("#config-version=FG7H1G-")
     assert 'edit "wan1"' in conf  # portmap applied
+
+
+def test_faceplates_shipped_to_wizard(client):
+    jid = _load(client, "fortios_refactor.conf")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert 'id="fp-src"' in page and 'id="fp-dst"' in page
+    assert "FACEPLATES" in page and "5G RJ45" in page  # 700G spec inline
+    # the fixture header platform is captured for the source panel
+    assert webui_app.JOBS[jid]["source_platform"] == "FGT601F"
