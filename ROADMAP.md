@@ -256,6 +256,26 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.30 — shipped 2026-06-12 (zone ramifications round 2 + schema-check honesty)
+All four driven by the live 601F→701G "core" zone migration:
+- **associated-interface rebind**: apply_zones rewrites member-bound
+  `set associated-interface` to the new zone (address/addrgrp, v4+v6) —
+  FortiOS rejects member-bound addresses in policies that now reference
+  the zone; previously the 2 affected policies would have been dropped
+  on restore while 19 identical-looking warnings pointed everywhere else.
+- **leftover triage**: ZONE_EXTRA_ALLOWED covers provably-legitimate
+  stays (interface-subnet addresses, ntp listen, radius source-intf,
+  on-demand-sniffer, multicast-policy) — the 601F report went from 27
+  warnings to 1 (the platform-verify reminder).
+- **--fortios defaults to the source version** for FGT→FGT (no silent
+  8.0→7.4 downgrade pass); cross-vendor keeps 7.4.
+- **schema-check exemptions** for what a same-build backup proves
+  loadable: `config rule *` FortiGuard dumps (5,828 blocks!), replacemsg
+  / gui-dashboard-collection, internal attrs (dirty, tag-uuid, vap1-8…).
+  Same-build certification of the 601F backup is now CLEAN (was 8
+  errors / 6,020 findings). Regression invariant: a device's own backup
+  vs its own build must produce zero findings.
+
 ### v0.29 — shipped 2026-06-12 (target-model dropdown + platform-code resolver)
 Born from a real migration miss: `701g` typed into the free-text platform
 field produced `#config-version=701g-...`, which the target FortiGate

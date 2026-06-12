@@ -178,7 +178,7 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
     try:
         result = pipeline.run_cross(
             text, vendor, src_path, mapping,
-            target=args.fortios,
+            target=args.fortios or "7.4",
             tuning=_tuning_from_args(args),
             nat_mode=getattr(args, "nat_mode", "policy"),
             parser_opts=parser_opts or None)
@@ -381,8 +381,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--vendor", default="auto",
                    choices=["auto", "cisco-asa", "paloalto", "pfsense",
                             "juniper-srx", "fortios"])
-    p.add_argument("--fortios", default="7.4",
-                   help="target FortiOS version (default 7.4)")
+    p.add_argument("--fortios", default=None,
+                   help="target FortiOS version (default: the source's "
+                        "own version for FortiOS->FortiOS migrations — "
+                        "no version delta; 7.4 for cross-vendor)")
     p.add_argument("--source-os",
                    help="source FortiOS version override (normally read "
                         "from the #config-version header)")

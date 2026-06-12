@@ -58,6 +58,18 @@ ZONE_EXTRA_ALLOWED: frozenset = frozenset({
     # and a VIP's extintf may legally remain a zoned interface
     (("router", "static"), "device"),
     (("firewall", "vip"), "extintf"),
+    # interface-subnet addresses derive their subnet from the member and
+    # stay valid when it joins a zone (a zone has no subnet to point at;
+    # verified against a running 8.0 config with zoned members)
+    (("firewall", "address"), "interface"),
+    (("firewall", "address6"), "interface"),
+    # zones are not valid values in these sections, so the member
+    # reference is the only correct one — nothing to review
+    (("system", "ntp"), "interface"),
+    (("user", "radius"), "interface"),
+    (("firewall", "on-demand-sniffer"), "interface"),
+    (("firewall", "multicast-policy"), "srcintf"),
+    (("firewall", "multicast-policy"), "dstintf"),
 })
 
 SDWAN_EXTRA_ALLOWED: frozenset = frozenset({

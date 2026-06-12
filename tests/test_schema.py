@@ -77,7 +77,10 @@ def test_clean_config_passes():
 
 
 def test_unknown_attr_and_section_flagged():
-    bad = GOOD + """config system gui-dashboard-collection
+    # NB: the unknown section must be genuinely fictional — sections a
+    # real backup carries that the REST schema hides (replacemsg,
+    # gui-dashboard-collection, rule *) are exempted, not flagged
+    bad = GOOD + """config firewall super-shield
     edit "d"
         set layout 2
     next
@@ -100,12 +103,11 @@ end
     msgs = [f.message for f in report.findings]
     assert stats["unknown_tables"] == 1
     assert stats["unknown_attrs"] == 1
-    assert any("gui-dashboard-collection" in m and "dropped" in m
-               for m in msgs)
+    assert any("super-shield" in m and "dropped" in m for m in msgs)
     assert any("fancy-new-knob" in m for m in msgs)
     # severity split: whole sections = error, single attrs = warn
     assert any(f.level == "error" for f in report.findings
-               if "gui-dashboard-collection" in f.message)
+               if "super-shield" in f.message)
     assert any(f.level == "warn" for f in report.findings
                if "fancy-new-knob" in f.message)
 
@@ -223,3 +225,47 @@ def test_check_without_tables_raises():
     with pytest.raises(ValueError, match="tables"):
         sc.check("config system global\nend\n", {"version": "8.0"},
                  Report())
+
+
+def test_schema_check_skips_fortiguard_and_internal_attrs():
+    out = """config rule iotd "Vendor.Device"
+    set behavior x
+end
+config rule otdt "Other.Sig"
+    set category y
+end
+config firewall address
+    edit "a"
+        set subnet 10.0.0.1 255.255.255.255
+        set dirty clean
+        set definitely-not-real 1
+    next
+end
+"""
+    report = Report()
+    stats = sc.check(out, MINI, report)
+    # the two FortiGuard signature blocks are not unknown-section errors
+    assert stats["unknown_tables"] == 0
+    assert report.count("error") == 0
+    # 'set dirty' (internal) is skipped; the truly unknown attr remains
+    assert stats["unknown_attrs"] == 1
+    msgs = " | ".join(f.message for f in report.findings)
+    assert "definitely-not-real" in msgs
+    assert "dirty" not in msgs.replace("FortiGuard", "")
+    assert "skipped" in msgs and "FortiGuard" in msgs
+
+
+def test_schema_check_skips_replacemsg_and_dashboards():
+    out = """config system replacemsg admin "post_admin-disclaimer-text"
+    set buffer "x"
+end
+config system gui-dashboard-collection
+    edit 1
+        set name "d"
+    next
+end
+"""
+    report = Report()
+    stats = sc.check(out, MINI, report)
+    assert stats["unknown_tables"] == 0
+    assert report.count("error") == 0

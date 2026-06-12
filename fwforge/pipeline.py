@@ -178,7 +178,7 @@ def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
 
 
 def run_migrate(text: str, src_name: str, plan: MigrationPlan,
-                target: str = "7.4", source_os: str | None = None,
+                target: str | None = None, source_os: str | None = None,
                 target_platform: str | None = None,
                 want_normalized: bool = False, vdom_mode: str = "keep",
                 vdom_name: str = "root", vdom_scope_only: bool = False,
@@ -254,7 +254,13 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
     if (src_ver is not None and len(src_ver) < 3 and hdr_ver
             and hdr_ver[:2] == src_ver):
         src_ver = hdr_ver
-    tgt_ver = versiondelta.parse_version(target)
+    if target is None:
+        # FGT->FGT default: target the source's own version — plain
+        # re-platforming must not run a version delta unless asked
+        tgt_ver = src_ver
+        target = versiondelta.vlabel(src_ver) if src_ver else ""
+    else:
+        tgt_ver = versiondelta.parse_version(target)
     if src_ver is None:
         report.add("info", "upgrade",
                    "source FortiOS version not detected in the config "
@@ -308,6 +314,9 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
         if plan.zones:
             zstats = zones.apply_zones(tree, plan.zones, report)
             report.meta["zones_created"] = zstats["zones"]
+            if zstats.get("addresses_rebound"):
+                report.meta["addresses_rebound"] = \
+                    zstats["addresses_rebound"]
             moved |= set(zstats["mapping"])
         if plan.sdwan:
             sstats = sdwan.apply_sdwan(tree, plan.sdwan, report)

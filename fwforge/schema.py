@@ -154,7 +154,63 @@ def _table_key(path_tokens: list[str]) -> str:
     return ".".join(path_tokens[:-1]) + "/" + path_tokens[-1]
 
 
-def _walk(children: dict, node, problems: dict, where: str) -> int:
+# (section path as reported, attr) pairs that real backups contain but
+# the REST cmdb schema does not expose — internal bookkeeping the CLI
+# accepts on load. Established by checking a device's own backup against
+# a schema fetched from the same build (which must load by construction);
+# observed on 8.0 build0167.
+_INTERNAL_ATTRS: frozenset = frozenset({
+    ("dlp data-type", "fgd-id"),
+    ("dlp dictionary", "fgd-id"),
+    ("dlp sensor", "fgd-id"),
+    ("endpoint-control fctems", "verified-cn"),
+    ("firewall address", "dirty"),
+    ("firewall address", "tag-uuid"),
+    ("firewall vip", "vip-id"),
+    ("switch-controller managed-switch > ports", "speed-mask"),
+    ("switch-controller managed-switch > ports", "trunk-member"),
+    ("switch-controller traffic-policy", "id"),
+    ("system acme", "store-passphrase"),
+    ("system admin", "gui-dashboard-id"),
+    ("system admin", "gui-ignore-release-overview-version"),
+    ("system admin", "gui-vdom-menu-favorites"),
+    ("system admin", "old-password"),
+    ("system csf", "fixed-key"),
+    ("system csf > trusted-list", "last-use-time"),
+    ("system fortiguard", "service-account-id"),
+    ("vpn certificate local", "keyid"),
+    ("vpn certificate local", "last-updated"),
+    ("wanopt content-delivery-network-rule", "text-response-vcache"),
+    ("wireless-controller vap", "alias"),
+})
+
+# top-level sections real backups contain that the REST schema does not
+# expose: per-category named replacement-message bundles and GUI-internal
+# dashboard state. Loadable by construction (same-build backups carry
+# them); never report as dropped.
+_INTERNAL_TABLE_PREFIXES: tuple[tuple, ...] = (
+    ("system", "replacemsg"),
+    ("system", "gui-dashboard-collection"),
+)
+
+
+def _is_internal_table(path: list[str]) -> bool:
+    return any(tuple(path[:len(p)]) == p for p in _INTERNAL_TABLE_PREFIXES)
+
+
+_VAP_SLOT_RE = re.compile(r"^vap[1-8]$")
+
+
+def _is_internal(where: str, attr: str) -> bool:
+    if (where, attr) in _INTERNAL_ATTRS:
+        return True
+    # radio VAP slot assignments are backup-only bookkeeping too
+    return bool(_VAP_SLOT_RE.match(attr)) and where.startswith(
+        "wireless-controller wtp-profile > radio-")
+
+
+def _walk(children: dict, node, problems: dict, where: str,
+          internal: dict | None = None) -> int:
     """Check one table body against its schema children. Returns the
     number of lines checked."""
     lines = 0
@@ -162,10 +218,14 @@ def _walk(children: dict, node, problems: dict, where: str) -> int:
         if isinstance(child, SetLine):
             lines += 1
             if child.attr not in children:
+                if _is_internal(where, child.attr):
+                    if internal is not None:
+                        internal["n"] = internal.get("n", 0) + 1
+                    continue
                 problems.setdefault(("attr", where, child.attr), 0)
                 problems[("attr", where, child.attr)] += 1
         elif isinstance(child, EditNode):
-            lines += _walk(children, child, problems, where)
+            lines += _walk(children, child, problems, where, internal)
         elif isinstance(child, ConfigNode):
             sub = ".".join(child.path)
             # `config redistribute "connected"` = a NAMED nested table:
@@ -182,7 +242,7 @@ def _walk(children: dict, node, problems: dict, where: str) -> int:
                 problems[("table", f"{where} > {sub}", "")] += 1
             else:
                 lines += _walk(nested, child, problems,
-                               f"{where} > {sub}")
+                               f"{where} > {sub}", internal)
     return lines
 
 
@@ -207,6 +267,9 @@ def check(out_text: str, schema: dict, report,
 
     tree = fortios_tree.parse_config(out_text)
     problems: dict[tuple, int] = {}
+    internal = {"n": 0}
+    fortiguard = 0
+    hidden_tables = 0
     sections = 0
     lines = 0
     # vdom_scopes unwraps config global / config vdom; each scope's
@@ -217,16 +280,27 @@ def check(out_text: str, schema: dict, report,
                 continue
             if child.path in (["global"], ["vdom"]):
                 continue  # wrapper handled by vdom_scopes
-            sections += 1
             key = _table_key(child.path)
             children = tables.get(key)
+            if children is None and child.path \
+                    and child.path[0] == "rule":
+                # `config rule iotd/otdt/... "<name>"` blocks are
+                # FortiGuard-distributed object databases dumped into
+                # backups; the REST schema never lists them and the
+                # device loads its own copies regardless
+                fortiguard += 1
+                continue
+            if children is None and _is_internal_table(child.path):
+                hidden_tables += 1
+                continue
+            sections += 1
             if children is None:
                 problems.setdefault(
                     ("table", " ".join(child.path), ""), 0)
                 problems[("table", " ".join(child.path), "")] += 1
                 continue
             lines += _walk(children, child, problems,
-                           " ".join(child.path))
+                           " ".join(child.path), internal)
 
     unknown_tables = sum(1 for k in problems if k[0] == "table")
     unknown_attrs = sum(1 for k in problems if k[0] == "attr")
@@ -249,6 +323,22 @@ def check(out_text: str, schema: dict, report,
                 f"'set {attr}' under config {where} does not exist on "
                 f"FortiOS {label} — the line is dropped on load{n}")
         emitted += 1
+
+    if fortiguard or internal["n"] or hidden_tables:
+        skipped = []
+        if fortiguard:
+            skipped.append(f"{fortiguard} FortiGuard signature-DB "
+                           "block(s) ('config rule ...')")
+        if hidden_tables:
+            skipped.append(f"{hidden_tables} device-default section(s) "
+                           "(replacemsg / GUI dashboards)")
+        if internal["n"]:
+            skipped.append(f"{internal['n']} internal attribute(s) the "
+                           "REST schema does not expose")
+        report.add("info", "schema",
+                   f"skipped {', '.join(skipped)} — these load on "
+                   "the device despite being absent from the fetched "
+                   "schema")
 
     if problems:
         summary = (f"schema check vs {label}: {unknown_tables} unknown "

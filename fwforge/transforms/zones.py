@@ -135,6 +135,49 @@ def _upsert_zone(section: ConfigNode, spec: ZoneSpec, report) -> None:
                f"{where} with members: {', '.join(spec.members)}")
 
 
+# sections whose entries can carry `set associated-interface`
+_ADDR_PATHS: tuple[tuple, ...] = (
+    ("firewall", "address"),
+    ("firewall", "addrgrp"),
+    ("firewall", "address6"),
+    ("firewall", "addrgrp6"),
+)
+
+
+def _rebind_associated_addresses(tree: CTree, mapping: dict[str, str],
+                                 report) -> int:
+    """FortiOS restricts an associated-interface-bound address to
+    policies on that exact interface — a zone containing the member does
+    not satisfy the check, so a policy rewritten to the zone would
+    reject the address at load. The attribute accepts zone names, so
+    rebind member -> zone along with the policies."""
+    rebound = 0
+    for path, node in iter_config_nodes(tree):
+        if not any(path_endswith(path, p) for p in _ADDR_PATHS):
+            continue
+        for edit in node.children:
+            if not isinstance(edit, EditNode):
+                continue
+            for line in edit.children:
+                if not isinstance(line, SetLine) or not line.values:
+                    continue
+                if line.attr != "associated-interface":
+                    continue
+                target = mapping.get(line.values[0].value)
+                if target is None:
+                    continue
+                old = line.values[0].value
+                line.values = [Token(target, True)]
+                rebound += 1
+                report.add(
+                    "info", "zones",
+                    f"address '{edit.name.value}': associated-interface "
+                    f"rebound '{old}' -> zone '{target}' (member-bound "
+                    "addresses cannot be used by policies that now "
+                    "reference the zone)")
+    return rebound
+
+
 def _flag_same_zone_policies(tree: CTree, zone_names: set[str],
                              report) -> None:
     for path, node in iter_config_nodes(tree):
@@ -180,6 +223,7 @@ def apply_zones(tree: CTree, specs: list[ZoneSpec], report) -> dict:
                 "logging, or inspection — confirm this is intended",
             )
     touched = rewrite_policy_refs(tree, mapping, report, "zones")
+    rebound = _rebind_associated_addresses(tree, mapping, report)
     _flag_same_zone_policies(tree, {s.name for s in specs}, report)
     return {"zones": len(specs), "policies_rewritten": touched,
-            "mapping": mapping}
+            "addresses_rebound": rebound, "mapping": mapping}

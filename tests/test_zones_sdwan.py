@@ -358,3 +358,80 @@ def test_zone_name_colliding_with_interface_rejected():
     tree = ft.parse_config(DSTADDR_CFG)
     with pytest.raises(PlanError, match="namespace"):
         zones.validate(tree, [ZoneSpec(name="wan1", members=["wan2"])])
+
+
+# -- associated-interface rebind + leftover-noise triage ---------------------
+
+ASSOC_SRC = """\
+config system interface
+    edit "port2"
+        set vdom "root"
+    next
+    edit "port9"
+        set vdom "root"
+    next
+end
+config firewall address
+    edit "lan-host"
+        set subnet 10.0.0.5 255.255.255.255
+        set associated-interface "port2"
+    next
+    edit "lan-net"
+        set type interface-subnet
+        set subnet 10.0.0.0 255.255.255.0
+        set interface "port2"
+    next
+    edit "other"
+        set subnet 10.9.9.9 255.255.255.255
+        set associated-interface "port9"
+    next
+end
+config system ntp
+    set server-mode enable
+    set interface "port2" "port9"
+end
+config firewall policy
+    edit 1
+        set srcintf "port2"
+        set dstintf "port9"
+        set srcaddr "lan-host"
+        set dstaddr "other"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+    next
+end
+"""
+
+
+def test_zone_rebinds_associated_interface():
+    from fwforge.transforms.plan import ZoneSpec
+    tree = ft.parse_config(ASSOC_SRC)
+    report = Report()
+    stats = zones.apply_zones(
+        tree, [ZoneSpec(name="lan", members=["port2"])], report)
+    out = ft.serialize(tree)
+
+    # the bound address followed its member into the zone...
+    assert stats["addresses_rebound"] == 1
+    assert 'set associated-interface "lan"' in out
+    # ...an address bound to an unmoved interface is untouched...
+    assert 'set associated-interface "port9"' in out
+    # ...and the interface-subnet address keeps its real interface
+    assert 'set interface "port2"' in out
+    assert 'set srcintf "lan"' in out
+
+
+def test_zone_leftover_audit_silences_legitimate_refs():
+    from fwforge.transforms.plan import ZoneSpec
+    tree = ft.parse_config(ASSOC_SRC)
+    report = Report()
+    stats = zones.apply_zones(
+        tree, [ZoneSpec(name="lan", members=["port2"])], report)
+    warned = tree_refs.audit_leftovers(
+        tree, set(stats["mapping"]),
+        tree_refs.BASE_ALLOWED | tree_refs.ZONE_EXTRA_ALLOWED,
+        report, "zones")
+    # interface-subnet address + ntp listen list are legitimate stays,
+    # the associated-interface ref was rewritten: zero noise left
+    assert warned == 0
