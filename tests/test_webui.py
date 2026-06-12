@@ -76,6 +76,39 @@ def test_migrate_convert_with_zone(client):
     assert 'set srcintf "lan"' in conf
 
 
+def test_target_platform_resolved_from_model_number(client):
+    # the real-world case: '701g' typed/posted instead of FG7H1G
+    jid = _load(client, "fortios_refactor.conf")
+    form = {
+        "fortios": "7.6",
+        "source_os": "7.6",
+        "target_platform": "701g",
+        "map_src": ["port1", "port2", "port3", "port4", "vlan30"],
+        "map_dst": ["port1", "port2", "port3", "port4", "vlan30"],
+    }
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert conf.startswith("#config-version=FG7H1G-")
+
+    # custom-code path: the dropdown posts __custom__ + the text field
+    form["target_platform"] = "__custom__"
+    form["target_platform_custom"] = "fg1k8f"
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert conf.startswith("#config-version=FG1K8F-")
+
+    # garbage is rejected back to the wizard with the hint, not converted
+    form["target_platform"] = "purple"
+    page = client.post(f"/job/{jid}/convert", data=form,
+                       follow_redirects=True).data.decode()
+    assert "not a FortiGate platform code" in page
+
+    # the wizard page itself ships the dropdown
+    page = client.get(f"/job/{jid}").data.decode()
+    assert 'name="target_platform"' in page
+    assert "FG7H1G" in page and "FortiGate 701G" in page
+
+
 def test_iface_details_in_analysis(client):
     jid = _load(client, "fortios_refactor.conf")
     det = {d["name"]: d for d in webui_app.JOBS[jid]["iface_details"]}

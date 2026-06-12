@@ -18,7 +18,7 @@ from pathlib import Path
 from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
 
-from .. import __version__, pipeline
+from .. import __version__, pipeline, platforms
 from .. import schema as schema_mod
 from ..emit import fortimanager, package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
@@ -362,6 +362,7 @@ def create_app() -> Flask:
         return render_template(
             "plan.html", jid=jid, meta=meta, targets=FORTIOS_TARGETS,
             default_target=default_target, det=det,
+            platform_groups=platforms.GROUPS,
             schemas=schema_mod.list_cached(),
             error=request.args.get("error", ""))
 
@@ -388,12 +389,17 @@ def create_app() -> Flask:
         try:
             if meta["vendor"] == "fortios":
                 plan = _plan_from_form(request.form)
+                tplat = request.form.get("target_platform", "").strip()
+                if tplat == "__custom__":
+                    tplat = request.form.get("target_platform_custom",
+                                             "").strip()
+                if tplat:
+                    tplat, _ = platforms.resolve(tplat)
                 result = pipeline.run_migrate(
                     text, meta["name"], plan, target=target,
                     source_os=request.form.get("source_os", "").strip()
                     or None,
-                    target_platform=request.form.get(
-                        "target_platform", "").strip() or None,
+                    target_platform=tplat or None,
                     vdom_mode=request.form.get("vdom_mode", "keep"),
                     vdom_name=request.form.get("vdom_name", "root").strip()
                     or "root",

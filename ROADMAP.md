@@ -256,6 +256,26 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.29 — shipped 2026-06-12 (target-model dropdown + platform-code resolver)
+Born from a real migration miss: `701g` typed into the free-text platform
+field produced `#config-version=701g-...`, which the target FortiGate
+would reject on restore (platform token must match the device exactly).
+- New `fwforge/platforms.py`: curated model→code table (codes marked
+  verified were read from real headers: FG6H1F from the 601F backup,
+  FGT60F from a lab FGSP member; the rest derived from the naming scheme
+  — FGT prefix desktop, middle-zero→H like 601F→FG6H1F, thousands→K) +
+  `resolve()` accepting code / bare model number / SKU / product name in
+  any case ("701g" → FG7H1G). Garbage → PlanError with closest-model
+  hints; plausible unknown codes pass with a verify note.
+- GUI Target card: platform free-text replaced by a grouped **target
+  model dropdown** (Desktop/Mid-range/High-end/Virtual, codes shown,
+  `*` = derived + footnote) with a custom-code escape hatch; the posted
+  value runs through `resolve()` server-side either way.
+- CLI `--target-platform` now resolves through the same table and echoes
+  the resolution (`target platform: FG7H1G (FortiGate 701G: code
+  derived...)`).
+- 10 new tests (resolver matrix + webui dropdown/custom/garbage paths).
+
 ### v0.28.1 — shipped 2026-06-12 (bug scrub of v0.22-v0.28)
 Five parallel review agents over all code added since the last scrub
 (schema engine, version-delta, PAN Panorama/vsys, Juniper SRX, BGP/OSPF,

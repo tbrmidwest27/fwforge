@@ -24,7 +24,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__, pipeline
+from . import __version__, pipeline, platforms
 from . import schema as schema_mod
 from .emit import fortimanager, package
 from .parsers import CROSS_PARSERS, detect_vendor
@@ -245,10 +245,15 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
 def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
     try:
         plan = _load_migration_plan(args)
+        tplat = getattr(args, "target_platform", None)
+        if tplat:
+            tplat, tplat_note = platforms.resolve(tplat)
+            print(f"target platform: {tplat}"
+                  + (f" ({tplat_note})" if tplat_note else ""))
         result = pipeline.run_migrate(
             text, src_path, plan, target=args.fortios,
             source_os=getattr(args, "source_os", None),
-            target_platform=getattr(args, "target_platform", None),
+            target_platform=tplat,
             vdom_mode=getattr(args, "vdom_mode", "keep"),
             vdom_name=getattr(args, "vdom_name", "root"),
             vdom_scope_only=getattr(args, "vdom_scope_only", False),

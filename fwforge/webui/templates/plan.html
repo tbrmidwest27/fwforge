@@ -96,14 +96,33 @@
         </datalist>
       </label>
       {% if meta.vendor == "fortios" %}
-      <label>platform code<br>
-        <input type="text" name="target_platform" size="10"
-               placeholder="e.g. FG7H1G"></label>
+      <label>target model<br>
+        <select name="target_platform" id="tp-select"
+                onchange="document.getElementById('tp-custom').style.display
+                          = this.value === '__custom__' ? '' : 'none'">
+          <option value="">keep source platform</option>
+          {% for family, entries in platform_groups %}
+          <optgroup label="{{ family }}">
+            {% for p in entries %}
+            <option value="{{ p.code }}">{{ p.model }} &mdash;
+              {{ p.code }}{% if not p.verified %} *{% endif %}</option>
+            {% endfor %}
+          </optgroup>
+          {% endfor %}
+          <option value="__custom__">custom code&hellip;</option>
+        </select>
+        <input type="text" name="target_platform_custom" id="tp-custom"
+               size="10" placeholder="e.g. FG7H1G" style="display:none">
+      </label>
       <label>source FortiOS<br>
         <input type="text" name="source_os" value="{{ meta.source_os }}" size="6"></label>
       {% endif %}
     </div>
     {% if meta.vendor == "fortios" %}
+    <p class="grid-note">* derived from the FortiOS naming scheme &mdash;
+      confirm against a backup taken from the actual target model before
+      restoring. The platform token must match the device or it rejects
+      the file.</p>
     <div class="builder-row">
       <label>VDOM mode<br>
         <select name="vdom_mode">
