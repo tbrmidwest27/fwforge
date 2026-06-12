@@ -371,11 +371,12 @@ def create_app() -> Flask:
     @app.get("/job/<jid>")
     def job(jid):
         meta = _job(jid)
-        # jobs analyzed before the informed pickers existed have no
-        # iface_details in job.json — re-analyze them from the stored
-        # source once, keeping their identity and any conversion result
+        # jobs analyzed before the informed pickers / faceplates existed
+        # lack iface_details or source_platform — re-analyze them from
+        # the stored source once, keeping identity and any result
         if meta.get("vendor") == "fortios" \
-                and not meta.get("iface_details"):
+                and (not meta.get("iface_details")
+                     or "source_platform" not in meta):
             src = _source_path(JOBS_DIR / jid)
             if src.is_file():
                 fresh = _analyze(

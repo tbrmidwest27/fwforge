@@ -220,6 +220,7 @@
     same name; change what differs on the target model. Empty target =
     leave the name as-is.</p>
   <style>
+    /* FortiOS-style faceplate widget — our own CSS rendering */
     .fpwrap { margin:.4rem 0 .9rem; display:flex; flex-direction:column;
               gap:.55rem; }
     .fprow { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
@@ -228,40 +229,60 @@
              text-align:right; flex:0 0 auto; }
     .fpname { font-weight:700; font-size:.78rem; color:#266798;
               min-width:4.2rem; flex:0 0 auto; }
-    .fplate { background:linear-gradient(#2d333c,#232830);
-              border:1px solid #1a1e24; border-radius:8px;
-              padding:.5rem .65rem .4rem; display:flex; gap:.9rem;
-              align-items:flex-end; overflow-x:auto;
-              box-shadow:inset 0 1px 0 rgba(255,255,255,.06); }
-    .fpgroup { display:flex; flex-direction:column; gap:.22rem; }
-    .fpglabel { color:#8b97a8; font-size:.56rem; text-transform:uppercase;
-                letter-spacing:.06em; white-space:nowrap; }
-    .fpports { display:grid; grid-auto-flow:column; gap:3px; }
-    .fport { position:relative; background:#3a414c;
-             border:1px solid #515b69; border-radius:3px; width:46px;
-             height:26px; cursor:pointer; display:flex;
-             align-items:flex-end; justify-content:center;
-             transition:box-shadow .15s, background .15s; }
-    .fport.sfp { height:20px; width:54px; border-radius:2px;
-                 background:#333942; }
-    .fport .fpn { font-size:.54rem; color:#aeb9c8; line-height:1;
-                  padding-bottom:3px; pointer-events:none; }
-    .fport .fpled { position:absolute; top:2px; right:3px; width:5px;
-                    height:5px; border-radius:50%; background:#20262e;
-                    pointer-events:none; }
-    .fport.assigned { border-color:#2e7d32; }
-    .fport.assigned .fpled { background:#43d36b;
-                             box-shadow:0 0 4px #43d36b; }
-    .fport.lit { background:#266798; border-color:#9fd1ff;
-                 box-shadow:0 0 10px rgba(63,169,255,.85); }
-    .fport.lit .fpn { color:#fff; }
-    .fport.lit .fpled { background:#bfe6ff; box-shadow:0 0 6px #bfe6ff; }
-    .fport.collide { border-color:#c0392b; }
-    .fport.collide .fpled { background:#ff5544;
-                            box-shadow:0 0 5px #ff5544; }
-    .fport.miss { border-color:#e0a300; }
-    .fport.miss .fpled { background:#ffc400; box-shadow:0 0 5px #ffc400; }
-    .fport:hover { box-shadow:0 0 8px rgba(63,169,255,.6); }
+    .fplate { background:linear-gradient(#23272e,#171a1f);
+              border:1px solid #0e1014; border-radius:10px;
+              padding:.45rem .8rem; display:flex; gap:0;
+              align-items:center; overflow-x:auto;
+              box-shadow:inset 0 1px 0 rgba(255,255,255,.05),
+                         0 2px 5px rgba(0,0,0,.25); min-height:64px; }
+    .fpgroup { display:flex; flex-direction:column; gap:2px;
+               padding:0 .65rem; }
+    .fpgroup + .fpgroup { border-left:1px solid #2c323b; }
+    .fpglabel { color:#7d8896; font-size:.55rem; text-transform:uppercase;
+                letter-spacing:.07em; white-space:nowrap;
+                text-align:center; }
+    .fpports { display:grid; grid-auto-flow:column; gap:4px 5px; }
+    .fpcell { display:flex; flex-direction:column; align-items:center;
+              gap:1px; }
+    .fpl { font-size:.52rem; color:#8d99a8; line-height:1;
+           pointer-events:none; min-height:7px; }
+    .fport { position:relative; background:#0c0e11;
+             border:1px solid #3c434e; border-radius:2px; width:26px;
+             height:21px; cursor:pointer;
+             box-shadow:inset 0 0 4px rgba(0,0,0,.9);
+             transition:background .12s, box-shadow .12s,
+                        border-color .12s; }
+    /* RJ45 clip notch */
+    .fport.rj45::after { content:""; position:absolute; left:50%;
+             transform:translateX(-50%); bottom:-1px; width:10px;
+             height:5px; background:inherit;
+             border:1px solid #3c434e; border-top:none;
+             border-radius:0 0 2px 2px; }
+    .fport.sfp { width:38px; height:13px; border-radius:1px; }
+    /* SFP latch hint */
+    .fport.sfp::after { content:""; position:absolute; right:2px;
+             top:50%; transform:translateY(-50%); width:4px; height:5px;
+             background:#2a3039; border-radius:1px; }
+    .fport.assigned, .fport.assigned::after {
+             background:linear-gradient(#39d353,#1f9d3e);
+             border-color:#2ecc40; }
+    .fport.assigned { box-shadow:0 0 6px rgba(57,211,83,.55),
+             inset 0 0 2px rgba(255,255,255,.35); }
+    .fport.lit, .fport.lit::after {
+             background:linear-gradient(#54b9ff,#1d7fd6);
+             border-color:#9fd1ff; }
+    .fport.lit { box-shadow:0 0 11px rgba(63,169,255,.95),
+             inset 0 0 2px rgba(255,255,255,.45); }
+    .fport.collide, .fport.collide::after {
+             background:linear-gradient(#ff6655,#c0392b);
+             border-color:#ff8877; }
+    .fport.collide { box-shadow:0 0 8px rgba(255,85,68,.7); }
+    .fport.miss, .fport.miss::after {
+             background:linear-gradient(#ffd24d,#d99e00);
+             border-color:#ffc400; }
+    .fport.miss { box-shadow:0 0 7px rgba(255,196,0,.6); }
+    .fport:hover { border-color:#9fd1ff;
+             box-shadow:0 0 8px rgba(63,169,255,.7); }
   </style>
   <div class="fpwrap" id="fp-wrap">
     <div class="fprow">
@@ -276,9 +297,9 @@
       <span class="muted" id="fp-dst-hint" style="font-size:.75rem"></span>
     </div>
     <p class="grid-note" style="margin:0">Click a source port to jump to
-      its row, then click a destination port to wire it. LEDs:
+      its row, then click a destination port to wire it.
       <b style="color:#3fa9ff">blue</b> = selected pair,
-      <b style="color:#2e7d32">green</b> = wired,
+      <b style="color:#2ecc40">green</b> = wired,
       <b style="color:#c0392b">red</b> = two sources on one port,
       <b style="color:#e0a300">amber</b> = no home on the destination.</p>
   </div>
@@ -712,15 +733,26 @@ function fpGeneric(ports) {
 function fpSpec(code, ports) {
   return (code && FACEPLATES[code]) || fpGeneric(ports || []);
 }
+function fpShortLabel(name) {
+  // bank labels carry the prefix; ports show FortiOS-style short tags
+  const m = name.match(/^(?:port|lan|internal)(\d+)$/);
+  if (m) return m[1];
+  return name.toUpperCase();
+}
 function fpRender(el, spec, side) {
+  // FortiOS-style: labels above the top row, below the bottom row
   el.innerHTML = spec.map(g => `
     <div class="fpgroup"><div class="fpglabel">${esc(g.label)}</div>
       <div class="fpports"
            style="grid-template-rows:repeat(${g.rows},auto)">
-        ${g.ports.map(p => `<div class="fport ${g.kind}"
-            data-side="${side}" data-port="${esc(p)}" title="${esc(p)}">
-            <span class="fpled"></span><span class="fpn">${esc(p)}</span>
-          </div>`).join("")}
+        ${g.ports.map((p, i) => {
+          const top = g.rows === 2 && i % 2 === 0;
+          const lab = `<span class="fpl">${esc(fpShortLabel(p))}</span>`;
+          const port = `<div class="fport ${g.kind}" data-side="${side}"
+              data-port="${esc(p)}" title="${esc(p)}"></div>`;
+          return `<div class="fpcell">${top ? lab + port
+                                            : port + lab}</div>`;
+        }).join("")}
       </div></div>`).join("");
 }
 function destPortList() {
