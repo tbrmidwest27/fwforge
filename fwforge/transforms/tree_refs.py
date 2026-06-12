@@ -38,6 +38,7 @@ ZONE_CAPABLE_PATHS: tuple[tuple, ...] = (
     ("firewall", "security-policy"),
     ("firewall", "shaping-policy"),
     ("firewall", "central-snat-map"),
+    ("firewall", "proxy-policy"),   # explicit/transparent proxy policies
 )
 
 # (config-path suffix, attr) pairs where a moved interface may legitimately
@@ -120,12 +121,15 @@ def rewrite_policy_refs(tree: CTree, mapping: dict[str, str], report,
 
 
 def _policy_fingerprint(edit: EditNode) -> tuple:
-    """Match-relevant identity of a policy (name/uuid/comments ignored)."""
+    """Match-relevant identity of a policy (name/uuid/comments ignored).
+    Values are sorted: policy attrs are set-valued in FortiOS, so
+    srcaddr "a" "b" and srcaddr "b" "a" are the same policy."""
     lines = []
     for line in edit.children:
         if isinstance(line, SetLine) and line.attr not in (
                 "name", "uuid", "comments"):
-            lines.append((line.attr, tuple(t.value for t in line.values)))
+            lines.append((line.attr,
+                          tuple(sorted(t.value for t in line.values))))
     return tuple(sorted(lines))
 
 
@@ -183,7 +187,7 @@ def flag_conflicting_policies(tree: CTree, report) -> int:
             if not isinstance(child, EditNode):
                 continue
             match = tuple(
-                (line.attr, tuple(t.value for t in line.values))
+                (line.attr, tuple(sorted(t.value for t in line.values)))
                 for line in child.children
                 if isinstance(line, SetLine) and line.attr in _MATCH_ATTRS)
             groups.setdefault(tuple(sorted(match)), []).append(child)
@@ -202,6 +206,16 @@ def flag_conflicting_policies(tree: CTree, report) -> int:
     return flagged
 
 
+# paths where `set member` values are INTERFACE names; everywhere else
+# (addrgrp, service groups, ...) members are object names that may
+# legitimately collide with an interface name — never flag those
+_INTF_MEMBER_PATHS: tuple[tuple, ...] = (
+    ("system", "interface"),
+    ("system", "virtual-wire-pair"),
+    ("system", "switch-interface"),
+)
+
+
 def audit_leftovers(tree: CTree, moved: set[str], allowed: frozenset,
                     report, area: str) -> int:
     """Warn about every remaining reference to a moved interface that is
@@ -209,6 +223,9 @@ def audit_leftovers(tree: CTree, moved: set[str], allowed: frozenset,
     warned = 0
     for path, line in iter_set_lines(tree):
         if line.attr not in GLOBAL_INTF_ATTRS and line.attr != "member":
+            continue
+        if line.attr == "member" and not any(
+                path_endswith(path, p) for p in _INTF_MEMBER_PATHS):
             continue
         hits = [t.value for t in line.values if t.value in moved]
         if not hits:

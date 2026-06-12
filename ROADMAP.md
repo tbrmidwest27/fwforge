@@ -256,6 +256,17 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.33 — shipped 2026-06-12 (zone-subsystem review hardening)
+Adversarial self-review pass over the zone piece; five fixes, none
+triggered by Adam's config but all real: proxy-policy added to
+ZONE_CAPABLE_PATHS (zone-capable, was audit-only); `set member` audit
+scoped to interface-member contexts (addrgrp member named like a moved
+interface = object ref, was a false warning); dedup/conflict policy
+fingerprints made value-order-insensitive (srcaddr "a" "b" == "b" "a");
+same-zone flag covers security-policy; zone-extend reports on both
+paths. Real-pair regression guard: output byte-identical outside the
+embedded report header. 249 tests.
+
 ### v0.32.1 — shipped 2026-06-12 (FG7H1G verified on real hardware)
 The real 701G's first backup (701G-TOP, 7.4.11 build2878) confirmed the
 derived platform code FG7H1G AND the QSG-derived 34-port inventory

@@ -435,3 +435,117 @@ def test_zone_leftover_audit_silences_legitimate_refs():
     # interface-subnet address + ntp listen list are legitimate stays,
     # the associated-interface ref was rewritten: zero noise left
     assert warned == 0
+
+
+# -- review hardening: proxy-policy, fingerprints, member scoping ------------
+
+REVIEW_SRC = """\
+config system interface
+    edit "port2"
+        set vdom "root"
+    next
+    edit "port9"
+        set vdom "root"
+    next
+end
+config firewall addrgrp
+    edit "grp1"
+        set member "port2"
+    next
+end
+config firewall proxy-policy
+    edit 1
+        set proxy explicit-web
+        set srcintf "port2"
+        set dstintf "port9"
+        set srcaddr "all"
+        set dstaddr "all"
+        set service "webproxy"
+        set action accept
+        set schedule "always"
+    next
+end
+config firewall security-policy
+    edit 1
+        set srcintf "port2"
+        set dstintf "port2"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+    next
+end
+config firewall policy
+    edit 1
+        set srcintf "port2"
+        set dstintf "port9"
+        set srcaddr "net-a" "net-b"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+    next
+    edit 2
+        set srcintf "port2"
+        set dstintf "port9"
+        set srcaddr "net-b" "net-a"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+    next
+end
+"""
+
+
+def test_review_hardening_round():
+    from fwforge.transforms.plan import ZoneSpec
+    tree = ft.parse_config(REVIEW_SRC)
+    report = Report()
+    stats = zones.apply_zones(
+        tree, [ZoneSpec(name="lan", members=["port2"])], report)
+    out = ft.serialize(tree)
+
+    # proxy-policy is zone-capable and gets rewritten like firewall policy
+    assert 'set proxy explicit-web' in out
+    assert out.count('set srcintf "lan"') >= 3  # policy x2 + proxy + sec
+
+    # security-policy with src==dst==zone is flagged same-zone
+    msgs = " | ".join(f.message for f in report.findings)
+    assert "same-zone" in msgs
+
+    # an addrgrp member that happens to equal the interface name is an
+    # ADDRESS reference — never flagged by the leftover audit
+    warned = tree_refs.audit_leftovers(
+        tree, set(stats["mapping"]),
+        tree_refs.BASE_ALLOWED | tree_refs.ZONE_EXTRA_ALLOWED,
+        report, "zones")
+    assert warned == 0
+    assert 'set member "port2"' in out  # untouched
+
+    # policies 1+2 differ only in srcaddr ORDER -> same policy, merged
+    merged = tree_refs.dedup_policies(tree, report)
+    assert merged == 1
+
+
+def test_extend_existing_zone_without_interface_line():
+    from fwforge.transforms.plan import ZoneSpec
+    src = """\
+config system interface
+    edit "port2"
+        set vdom "root"
+    next
+end
+config system zone
+    edit "lan"
+        set intrazone allow
+    next
+end
+"""
+    tree = ft.parse_config(src)
+    report = Report()
+    zones.apply_zones(
+        tree, [ZoneSpec(name="lan", members=["port2"])], report)
+    out = ft.serialize(tree)
+    assert 'set interface "port2"' in out
+    msgs = " | ".join(f.message for f in report.findings)
+    assert "extended existing zone" in msgs

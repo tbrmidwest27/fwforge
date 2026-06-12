@@ -123,6 +123,9 @@ def _upsert_zone(section: ConfigNode, spec: ZoneSpec, report) -> None:
                     return
             edit.children.append(
                 SetLine("interface", [Token(m, True) for m in spec.members]))
+            report.add("info", "zones",
+                       f"extended existing zone '{spec.name}' with "
+                       f"{', '.join(spec.members)}")
             return
     edit = EditNode(Token(spec.name, True))
     edit.children.append(SetLine("intrazone", [Token(spec.intrazone, False)]))
@@ -181,7 +184,8 @@ def _rebind_associated_addresses(tree: CTree, mapping: dict[str, str],
 def _flag_same_zone_policies(tree: CTree, zone_names: set[str],
                              report) -> None:
     for path, node in iter_config_nodes(tree):
-        if not path_endswith(path, ("firewall", "policy")):
+        if not (path_endswith(path, ("firewall", "policy"))
+                or path_endswith(path, ("firewall", "security-policy"))):
             continue
         for edit in node.children:
             if not isinstance(edit, EditNode):
