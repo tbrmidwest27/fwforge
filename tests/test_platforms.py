@@ -5,21 +5,22 @@ from fwforge.transforms.plan import PlanError
 
 
 def test_known_code_passthrough():
-    code, note = platforms.resolve("FG7H1G")
-    assert code == "FG7H1G"
+    code, note = platforms.resolve("FG9H1G")
+    assert code == "FG9H1G"
     assert "confirm" in note  # derived entry carries a verify reminder
 
 
 def test_verified_entry_has_no_note():
     assert platforms.resolve("FGT60F") == ("FGT60F", "")
     assert platforms.resolve("601F") == ("FG6H1F", "")
+    # verified 2026-06-12 against a native 701G backup
+    assert platforms.resolve("701G") == ("FG7H1G", "")
 
 
 def test_bare_model_number_lowercase():
     # the real-world regression: '701g' typed into the platform field
     code, note = platforms.resolve("701g")
     assert code == "FG7H1G"
-    assert "701G" in note
 
 
 def test_product_name_and_sku():

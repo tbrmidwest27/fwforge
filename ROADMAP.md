@@ -256,6 +256,17 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.32.1 — shipped 2026-06-12 (FG7H1G verified on real hardware)
+The real 701G's first backup (701G-TOP, 7.4.11 build2878) confirmed the
+derived platform code FG7H1G AND the QSG-derived 34-port inventory
+exactly (zero differences). Entries promoted to verified. Platform
+header-rewrite finding downgraded to info when the code comes from a
+destination backup. Real-pair run (601F 8.0 → 701G 7.4.11): 0 errors,
+4 warnings (24-port must-remap list + 2 legit downgrade artifacts).
+NOTE: the 701G runs 7.4.11 — recommend upgrading it to 8.0.0 build0167
+(matching the 601F) before the restore, then re-snapshot it as the
+destination file so the version delta disappears.
+
 ### v0.32 — shipped 2026-06-12 (destination reference backup — Adam's design)
 Adam: "config file in one selection and a blank config of the
 destination so that you can combine them sort of like FortiConverter."

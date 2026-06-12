@@ -231,13 +231,20 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 old = child.text[len("#config-version="):].split("-", 1)
                 child.text = (f"#config-version={target_platform}"
                               + (f"-{old[1]}" if len(old) > 1 else ""))
-                report.add(
-                    "warn", "platform",
-                    f"config-version platform rewritten {old[0]} -> "
-                    f"{target_platform}. VERIFY this platform code against "
-                    "a backup taken from the actual target device before "
-                    "restoring — a mismatch makes the FortiGate reject the "
-                    "file.")
+                if target_device and target_device[0] == target_platform:
+                    report.add(
+                        "info", "platform",
+                        f"config-version platform rewritten {old[0]} -> "
+                        f"{target_platform} (read from the destination "
+                        "backup — authoritative)")
+                else:
+                    report.add(
+                        "warn", "platform",
+                        f"config-version platform rewritten {old[0]} -> "
+                        f"{target_platform}. VERIFY this platform code "
+                        "against a backup taken from the actual target "
+                        "device before restoring — a mismatch makes the "
+                        "FortiGate reject the file.")
                 break
 
     if tree_refs.is_multi_vdom(tree):

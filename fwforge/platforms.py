@@ -69,7 +69,8 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform("FG6H1F", "FortiGate 601F", "Mid-range", True),
     # -- high-end -------------------------------------------------------
     Platform("FG7H0G", "FortiGate 700G", "High-end", False),
-    Platform("FG7H1G", "FortiGate 701G", "High-end", False),
+    # verified: native 701G backup header, 7.4.11 build2878 (2026-06-12)
+    Platform("FG7H1G", "FortiGate 701G", "High-end", True),
     Platform("FG9H0G", "FortiGate 900G", "High-end", False),
     Platform("FG9H1G", "FortiGate 901G", "High-end", False),
     Platform("FG1K0F", "FortiGate 1000F", "High-end", False),
@@ -116,9 +117,10 @@ _PORTS_600F = ("ha", "mgmt") \
     + tuple(f"port{i}" for i in range(1, 25)) \
     + tuple(f"x{i}" for i in range(1, 9))
 
-# Fortinet FG-700G-Series QuickStart Guide front panel: WAN1/2 + LAN1-6
-# 5G RJ45, LAN7-22 SFP 1G, X1-X4 FortiLink SFP+ 10G, X5-X8 SFP28 25G,
-# HA 2.5G, MGMT 1G
+# verified against a native 701G backup (34 ports, 2026-06-12);
+# matches the FG-700G-Series QuickStart Guide front panel exactly:
+# WAN1/2 + LAN1-6 5G RJ45, LAN7-22 SFP 1G, X1-X4 FortiLink SFP+ 10G,
+# X5-X8 SFP28 25G, HA 2.5G, MGMT 1G
 _PORTS_700G = ("ha", "mgmt", "wan1", "wan2") \
     + tuple(f"lan{i}" for i in range(1, 23)) \
     + tuple(f"x{i}" for i in range(1, 9))
