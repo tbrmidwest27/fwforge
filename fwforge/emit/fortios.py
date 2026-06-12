@@ -39,7 +39,12 @@ BUILTIN_SERVICES = {
 
 
 def _q(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    # escape backslash/quote, and fold newlines to literal \n so a value
+    # never spans physical lines (a comment line that strips to exactly
+    # "end" or starts with "config " would otherwise break branch
+    # splitting on output)
+    return '"' + (value.replace("\\", "\\\\").replace('"', '\\"')
+                  .replace("\r", "").replace("\n", "\\n")) + '"'
 
 
 def _is_v6(value: str) -> bool:
@@ -561,6 +566,12 @@ class Emitter:
                 self.line(f"        edit {_q(n.ip)}")
                 if n.remote_as:
                     self.line(f"            set remote-as {n.remote_as}")
+                else:
+                    self.report.add(
+                        "error", "routing",
+                        f"BGP neighbor {n.ip}: no remote-as — FortiOS "
+                        "requires it; set it manually before this loads",
+                        n.source)
                 if n.description:
                     self.line(f"            set description "
                               f"{_q(n.description[:63])}")
@@ -621,25 +632,27 @@ class Emitter:
                 self.line(f"        edit {a.id}")
                 self.line("        next")
             self.line("    end")
-            self.line("    config network")
-            i = 0
-            for a in o.areas:
-                for net in a.networks:
-                    try:
-                        n4 = ipaddress.IPv4Network(net, strict=False)
-                    except ValueError:
-                        self.report.add(
-                            "warn", "routing",
-                            f"OSPF network '{net}' (area {a.id}) invalid "
-                            "— skipped", a.source)
-                        continue
-                    i += 1
-                    self.line(f"        edit {i}")
-                    self.line(f"            set prefix "
-                              f"{n4.network_address} {n4.netmask}")
-                    self.line(f"            set area {a.id}")
-                    self.line("        next")
-            self.line("    end")
+            nets_total = sum(len(a.networks) for a in o.areas)
+            if nets_total:
+                self.line("    config network")
+                i = 0
+                for a in o.areas:
+                    for net in a.networks:
+                        try:
+                            n4 = ipaddress.IPv4Network(net, strict=False)
+                        except ValueError:
+                            self.report.add(
+                                "warn", "routing",
+                                f"OSPF network '{net}' (area {a.id}) "
+                                "invalid — skipped", a.source)
+                            continue
+                        i += 1
+                        self.line(f"        edit {i}")
+                        self.line(f"            set prefix "
+                                  f"{n4.network_address} {n4.netmask}")
+                        self.line(f"            set area {a.id}")
+                        self.line("        next")
+                self.line("    end")
         for r in o.redistribute:
             self.line(f'    config redistribute "{r}"')
             self.line("        set status enable")

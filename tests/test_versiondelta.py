@@ -270,3 +270,19 @@ def test_e2e_within_train_downgrade_uses_header_patch(tmp_path):
         (tmp_path / "train.report.json").read_text(encoding="utf-8"))
     assert report["meta"]["fortios_versions"] == "8.0.1 -> 8.0.0"
     assert "downgrade_artifacts" in report["meta"]
+
+
+def test_nested_only_section_is_present():
+    # `config system npu` whose body is only nested sub-tables is PRESENT
+    # -> the 8.0 NP7 note must fire (it counts the section's existence)
+    text = ("#config-version=FGT601F-7.6.6-FW-build3510-250101:opmode=0\n"
+            "config system npu\n"
+            "    config np-queues\n"
+            "        config profile\n"
+            "        end\n"
+            "    end\n"
+            "end\n")
+    tree = ft.parse_config(text)
+    report = Report()
+    vd.scan(tree, (7, 6), (8, 0), report)
+    assert any("NP7 defaults changed" in f.message for f in report.findings)

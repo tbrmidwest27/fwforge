@@ -186,7 +186,12 @@ def _section_entry_count(node: ConfigNode) -> tuple[int, list[str]]:
     if edits:
         return len(edits), [_edit_label(e) for e in edits[:3]]
     sets = sum(1 for c in node.children if isinstance(c, SetLine))
-    return (sets, []) if sets else (0, [])
+    if sets:
+        return sets, []
+    # a section whose body is ONLY nested config (e.g. `config system
+    # npu` holding sub-tables) is still PRESENT — removed/note/introduced
+    # rules describe the section's existence, so count it as one
+    return (1, []) if node.children else (0, [])
 
 
 def scan(tree: CTree, source: tuple, target: tuple, report) -> dict:

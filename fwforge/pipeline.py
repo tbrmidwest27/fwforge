@@ -132,9 +132,13 @@ def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
             report.absorb_parser_findings(vcfg)
         text, unmapped = _cross_one(vcfg, mapping, target, tuning,
                                     nat_mode, report)
-        # drop the per-cfg comment header; one header tops the assembly
-        body = "\n".join(l for l in text.splitlines()
-                         if not l.startswith("#")).strip("\n")
+        # drop ONLY the emitter's leading #-comment header; a `#` inside a
+        # later `set comment` value must survive (don't filter by line)
+        lines = text.splitlines()
+        h = 0
+        while h < len(lines) and lines[h].startswith("#"):
+            h += 1
+        body = "\n".join(lines[h:]).strip("\n")
         bodies.append((vname, body))
         all_unmapped.update(unmapped)
 

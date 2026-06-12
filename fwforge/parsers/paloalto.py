@@ -382,8 +382,12 @@ class PaloParser:
             for ps in pscopes:
                 self._pre_rules += self._rules_of(
                     ps, "pre-rulebase", "security", "rules")
+            # PAN post order: device-group/vsys post BEFORE shared post,
+            # so accumulate the pushed scopes in reverse
+            for ps in reversed(pscopes):
                 self._post_rules += self._rules_of(
                     ps, "post-rulebase", "security", "rules")
+            for ps in pscopes:
                 # pushed objects merge below local ones
                 shared = self._merge_scope(shared, {
                     k: v for k, v in ps.items()
@@ -665,13 +669,22 @@ class PaloParser:
                 comment=f"PAN tunnel {tname} (peer {peer})", source=ref)
 
     def _imported(self, name: str) -> bool:
-        """Is this device-level interface visible to the current vsys?
-        (Always true when not in multi-vsys mode.)"""
+        """Should the parser ENTER this device-level interface for the
+        current vsys — i.e. is the interface itself or any of its
+        subinterfaces imported? (Always true when not multi-vsys.)"""
         if self._import_ifcs is None:
             return True
         imps = self._import_ifcs
-        return (name in imps or name.split(".")[0] in imps
+        return (name in imps
                 or any(i.startswith(name + ".") for i in imps))
+
+    def _owns(self, name: str) -> bool:
+        """Is THIS exact logical interface's own config owned by the
+        current vsys? PAN imports each logical interface (base and each
+        subinterface) individually, so ownership is an exact match — a
+        base interface is NOT owned just because one of its subinterfaces
+        is imported (that would duplicate the base IP into two VDOMs)."""
+        return self._import_ifcs is None or name in self._import_ifcs
 
     def parse_interfaces(self, network):
         if not isinstance(network, dict):
@@ -693,7 +706,7 @@ class PaloParser:
             if not isinstance(fam, dict):
                 continue
             for uname, unode in _entries(fam.get("units")):
-                if not self._imported(uname):
+                if not self._owns(uname):
                     continue
                 sub = Interface(name=uname,
                                 source=self.ref(unode, f"interface {uname}"))
@@ -745,7 +758,7 @@ class PaloParser:
                           "target interface", ref)
             units = layer3.get("units")
             for uname, unode in _entries(units):
-                if not self._imported(uname):
+                if not self._owns(uname):
                     continue
                 sub = Interface(name=uname, parent=name,
                                 source=self.ref(unode, f"interface {uname}"))
@@ -763,7 +776,10 @@ class PaloParser:
                 if isinstance(ucomment, str):
                     sub.description = ucomment
                 self.cfg.interfaces.append(sub)
-        self.cfg.interfaces.append(itf)
+        # only emit the base interface's own config into the VDOM that
+        # owns it (not every VDOM that merely imports a subinterface)
+        if self._owns(name):
+            self.cfg.interfaces.append(itf)
 
     def parse_zones(self, zones):
         for name, node in _entries(zones):
@@ -1036,11 +1052,13 @@ class PaloParser:
             action = str(r.get("action", "allow"))
             services: list[str] = []
             app_default = False
+            appdef_at = 0  # where the application-default placeholder sits
             for svc in _as_list(r.get("service")) or ["any"]:
                 if svc == "any":
                     services.append("ALL")
                 elif svc == "application-default":
                     app_default = True
+                    appdef_at = len(services)
                     services.append("ALL")
                 else:
                     self._ensure_service(svc, ref)
@@ -1066,7 +1084,10 @@ class PaloParser:
             if app_default:
                 tightened = self._appdefault_services(apps, name, ref)
                 if tightened:
-                    services = tightened
+                    # replace only the application-default placeholder,
+                    # keeping any explicitly-listed named services
+                    services = (services[:appdef_at] + tightened
+                                + services[appdef_at + 1:])
                     self.note(
                         "info", "policies",
                         f"rule '{name}': service=application-default "
@@ -1404,6 +1425,23 @@ class PaloParser:
                     continue
         return ""
 
+    def _claim_template(self, dev: tuple, claims: set) -> None:
+        """Claim only the network/* and vsys/*/zone subtrees actually
+        read from the selected template, by their real tree paths."""
+        tnode = self.tree
+        for part in dev + ("template", self._tmpl, "config", "devices"):
+            tnode = tnode.get(part) if isinstance(tnode, dict) else None
+            if tnode is None:
+                return
+        base = dev + ("template", self._tmpl, "config", "devices")
+        for dname, dnode in _entries(tnode):
+            dbase = base + (dname,)
+            for sub in ("interface", "virtual-router", "ike", "tunnel"):
+                claims.add(dbase + ("network", sub))
+            tvsys = dnode.get("vsys") if isinstance(dnode, dict) else None
+            for vname, _vn in _entries(tvsys):
+                claims.add(dbase + ("vsys", vname, "zone"))
+
     # subtree paths the parse functions consume; everything outside these
     # shows up in the coverage map
     def _claims(self) -> set[tuple]:
@@ -1422,7 +1460,11 @@ class PaloParser:
                 claims.add(dg + (rb, "security"))
                 claims.add(("shared", rb, "security"))
             if self._tmpl:
-                claims.add(dev + ("template", self._tmpl))
+                # only the template's network + zone subtrees are read;
+                # claim them by their REAL paths (discovered from the
+                # tree) so unread template config (log-settings, snmp,
+                # ...) still shows as unread
+                self._claim_template(dev, claims)
             return claims
         for sub in ("interface", "virtual-router", "ike", "tunnel"):
             claims.add(dev + ("network", sub))
@@ -1512,7 +1554,10 @@ class PaloParser:
         consumed_vsys = {"zone", "address", "address-group", "service",
                          "service-group", "rulebase", "import",
                          "application", "application-group",
-                         "application-filter", LINE}
+                         "application-filter",
+                         # device-group / Panorama mode: these ARE read
+                         "pre-rulebase", "post-rulebase", "parent-dg",
+                         LINE}
         for key, node in list(vsys.items()):
             if key in consumed_vsys or not isinstance(node, dict):
                 continue

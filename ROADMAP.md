@@ -256,6 +256,47 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.28.1 — shipped 2026-06-12 (bug scrub of v0.22-v0.28)
+Five parallel review agents over all code added since the last scrub
+(schema engine, version-delta, PAN Panorama/vsys, Juniper SRX, BGP/OSPF,
+routing-instances->VDOM, pipeline assembly, web UI). XSS/token-leak
+claims came back CLEAN. ~20 real bugs fixed; 228 tests (11 new). Worst
+first:
+- **SRX bracketed value lists** `[ a b c ]` kept literal `[`/`]` tokens
+  -> bogus address refs / services widened to ALL. Now flattened in
+  both readers. (pervasive Junos idiom — high impact)
+- **SRX `inactive:` marker** in `show configuration` silently dropped/
+  corrupted whole stanzas; now stripped + the stanza marked disabled.
+- **SRX set-format VPN** got DEFAULT crypto: `proposals` was a `_PLAIN`
+  container (removed) and `proxy-identity` selectors collapsed to
+  0.0.0.0/0 (added to `_PLAIN`). Both restored to curly parity.
+- **Emitter newline-in-comment** (`_q`) corrupted branch-file splitting
+  when a comment value line was exactly `end`/`config ` — now folded to
+  literal `\n` (fixes all vendors; PAN multi-line descriptions).
+- **Pipeline VDOM header-strip** dropped any body line starting with `#`
+  (a `#` inside a `set comment`) — now strips only the leading header.
+- SRX: nested `application-set` membership captured; `_resolve_app`
+  per-path cycle set (diamond app-sets no longer -> ALL); set-format
+  range/fqdn/wildcard addresses; apply-groups multi-valued leaves
+  accumulate; `deactivate <stanza>` honored; static-nat nested prefix;
+  dest-nat empty-pool guard.
+- PAN: Panorama post-rulebase order (DG-post before shared-post);
+  `application-default` + named service no longer drops the named one;
+  base interface no longer duplicated into every VDOM importing a
+  subinterface; false "pre/post-rulebase not converted" findings;
+  template coverage-claim narrowed to network/zone.
+- schema: nested-table first-token fallback now requires a real table
+  (scalar attr no longer masks an unknown section); `resolve()` IPv6/
+  named-port guard; `check()` friendly error without `tables`.
+- versiondelta: nested-only sections (e.g. `system npu`) counted as
+  present so removed/note/introduced rules fire.
+- web UI: `esc()` now escapes `>` (cosmetic parity).
+- Deferred by design (agent-confirmed not output bugs): per-scope
+  policy-selection of same-named replicated globals (needs scope-aware
+  selection UI); omitted-singleton `system settings` flip (scanner only
+  sees the tree); `_save_job` silent OSError (acceptable for a local
+  tool).
+
 ### v0.28 — shipped 2026-06-12 (SRX finished: routing-instances, policy-VPN, +)
 - [x] **routing-instances -> VDOMs**: `_partition_by_ri` splits the
       parsed config into per-instance FirewallConfigs (default = 'root')

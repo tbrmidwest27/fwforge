@@ -199,3 +199,27 @@ def test_e2e_cli_schema_check(tmp_path):
     assert "quantum-tunnel" in conf  # output still written
     assert any("does not exist on FortiOS" in line
                for line in conf.splitlines() if line.startswith("#"))
+
+
+def test_scalar_attr_not_accepted_as_nested_table():
+    # a `config <scalar-attr>` block must NOT be masked by the
+    # first-token nested-table fallback (router-id is a leaf, not a table)
+    sch = {"version": "8.0.0", "build": 1, "tables": {
+        "router/bgp": {"as": {}, "router-id": {},
+                       "redistribute": {"status": {}}}}}
+    good = ('config router bgp\n    set as 65001\n'
+            '    config redistribute "connected"\n'
+            '        set status enable\n    end\nend\n')
+    r = Report()
+    assert sc.check(good, sch, r)["unknown_tables"] == 0  # real nested table
+    bad = ('config router bgp\n    set as 65001\n'
+           '    config router-id "x"\n        set foo bar\n    end\nend\n')
+    r2 = Report()
+    assert sc.check(bad, sch, r2)["unknown_tables"] == 1  # scalar, not table
+
+
+def test_check_without_tables_raises():
+    import pytest
+    with pytest.raises(ValueError, match="tables"):
+        sc.check("config system global\nend\n", {"version": "8.0"},
+                 Report())

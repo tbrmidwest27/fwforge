@@ -292,3 +292,100 @@ def test_panorama_cli_lists_choices(tmp_path, capsys):
         encoding="utf-8")
     assert 'set name "dg-pre"' in conf
     assert 'set srcintf "lan"' in conf  # template zone carried through
+
+
+PANO_POST_ORDER = """<config version="11.0.0">
+<shared>
+  <post-rulebase><security><rules>
+    <entry name="shared-post"><from><member>any</member></from>
+      <to><member>any</member></to><source><member>any</member></source>
+      <destination><member>any</member></destination>
+      <application><member>any</member></application>
+      <service><member>any</member></service><action>deny</action></entry>
+  </rules></security></post-rulebase>
+</shared>
+<devices><entry name="localhost.localdomain">
+  <device-group><entry name="dg1">
+    <post-rulebase><security><rules>
+      <entry name="dg-post"><from><member>any</member></from>
+        <to><member>any</member></to><source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action>allow</action></entry>
+    </rules></security></post-rulebase>
+  </entry></device-group>
+</entry></devices></config>"""
+
+
+def test_panorama_post_rulebase_order():
+    # PAN evaluation order: device-group post BEFORE shared post
+    cfg = paloalto.parse(PANO_POST_ORDER, "p.xml", device_group="dg1")
+    names = [p.name for p in cfg.policies]
+    assert names.index("dg-post") < names.index("shared-post")
+
+
+def test_application_default_keeps_named_service():
+    xml = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip>
+      <entry name="10.0.0.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="t"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <service><entry name="custom-8888"><protocol><tcp>
+      <port>8888</port></tcp></protocol></entry></service>
+    <rulebase><security><rules>
+      <entry name="Mixed"><from><member>t</member></from>
+        <to><member>t</member></to><source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>dns</member></application>
+        <service><member>application-default</member>
+          <member>custom-8888</member></service>
+        <action>allow</action></entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+    cfg = paloalto.parse(xml, "m.xml")
+    p = cfg.policies[0]
+    # tightened dns service AND the explicit custom-8888 both present
+    assert "custom-8888" in p.services
+    assert any("53" in s.dst_ports for s in cfg.services
+               if s.name in p.services)
+
+
+def test_base_interface_not_duplicated_across_vsys():
+    xml = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3>
+      <ip><entry name="172.31.0.1/24"/></ip>
+      <units>
+        <entry name="ethernet1/1.30"><tag>30</tag>
+          <ip><entry name="10.30.0.1/24"/></ip></entry>
+        <entry name="ethernet1/1.40"><tag>40</tag>
+          <ip><entry name="10.40.0.1/24"/></ip></entry>
+      </units></layer3></entry>
+  </ethernet></interface></network>
+  <vsys>
+    <entry name="vsys1"><import><network><interface>
+      <member>ethernet1/1.30</member></interface></network></import>
+      <zone><entry name="z1"><network><layer3>
+        <member>ethernet1/1.30</member></layer3></network></entry></zone>
+    </entry>
+    <entry name="vsys2"><import><network><interface>
+      <member>ethernet1/1.40</member></interface></network></import>
+      <zone><entry name="z2"><network><layer3>
+        <member>ethernet1/1.40</member></layer3></network></entry></zone>
+    </entry>
+  </vsys>
+</entry></devices></config>"""
+    cfg = paloalto.parse(xml, "dup.xml")
+    scopes = dict(cfg.meta["vsys_cfgs"])
+    v1 = {i.name for i in scopes["vsys1"].interfaces}
+    v2 = {i.name for i in scopes["vsys2"].interfaces}
+    # each vsys gets only its own subinterface, NOT the shared base
+    assert v1 == {"ethernet1/1.30"}
+    assert v2 == {"ethernet1/1.40"}

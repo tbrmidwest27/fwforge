@@ -116,6 +116,20 @@ def _line_starts(text: str) -> list[int]:
     return pos
 
 
+def _drop_brackets(toks: list[str]) -> list[str]:
+    """A Junos value list `[ a b c ]` flattens to its members — the
+    literal brackets are not config data."""
+    return [t for t in toks if t not in ("[", "]")]
+
+
+def _strip_inactive(toks: list[str]) -> tuple[list[str], bool]:
+    """`inactive:`/`protect:` prefix a deactivated statement in
+    `show configuration` output — strip it, remember it was inactive."""
+    if toks and toks[0] in ("inactive:", "protect:"):
+        return toks[1:], toks[0] == "inactive:"
+    return toks, False
+
+
 def _tree_from_curly(text: str) -> JNode:
     text = _strip_comments(text)
     root = JNode()
@@ -129,13 +143,18 @@ def _tree_from_curly(text: str) -> JNode:
         i = m.start()
         tok = m.group(0)
         if tok == "{":
+            toks, inactive = _strip_inactive([_clean(t) for t in cur])
             node = JNode(cur_line)
-            stack[-1].containers.append((tuple(_clean(t) for t in cur), node))
+            if inactive:
+                node.leaves.append(["inactive"])  # readers detect this
+            stack[-1].containers.append((tuple(toks), node))
             stack.append(node)
             cur = []
         elif tok == ";":
-            if cur:
-                stack[-1].leaves.append([_clean(t) for t in cur])
+            toks, _inact = _strip_inactive(
+                _drop_brackets([_clean(t) for t in cur]))
+            if toks:
+                stack[-1].leaves.append(toks)
             cur = []
         elif tok == "}":
             cur = []
@@ -180,7 +199,7 @@ _PLAIN = {
     "security", "policies", "applications", "nat", "source", "destination",
     "static", "ike", "ipsec", "routing-options", "routing-instances",
     "address-book", "match", "then", "source-nat", "destination-nat",
-    "static-nat", "system", "groups", "zones", "global", "proposals",
+    "static-nat", "system", "groups", "zones", "global", "proxy-identity",
     "traceoptions", "screen", "flow", "forwarding-options", "interfaces",
     "vlans", "protocols", "scheduler", "schedulers", "bgp", "ospf",
     "advanced-policy-based-routing", "tcp-options", "permit", "deny",
@@ -226,7 +245,7 @@ def _set_tokens(line: str) -> list[str]:
     toks: list[str] = []
     for m in _TOKEN.finditer(line):
         t = m.group(0)
-        if t in "{};":
+        if t in ("{", "}", ";", "[", "]"):
             continue
         toks.append(_clean(t))
     return toks
@@ -303,6 +322,10 @@ def _insert_set(root: JNode, toks: list[str], lineno: int,
             leaf = ["inactive"] + leaf
         node.leaves.append(leaf)
         return
+    # `deactivate <path...>` ended on a container (no trailing leaf) —
+    # mark that whole stanza disabled
+    if inactive:
+        node.leaves.append(["inactive"])
 
 
 def _descend(node: JNode, key: tuple, lineno: int) -> JNode:
@@ -361,6 +384,12 @@ def _has_nested_apply_groups(node: JNode, depth: int = 0) -> bool:
                for _k, c in node.containers)
 
 
+# keywords that legally repeat (a stanza may set several) — apply-groups
+# must ACCUMULATE these from a group, not let one explicit value win
+_MULTIVALUE = {"address", "system-services", "protocols", "dns-name",
+               "interface", "member", "neighbor", "export", "import"}
+
+
 def _wild_match(gkey: tuple, dkey: tuple) -> bool:
     """A group key (possibly containing <pattern> tokens) matches a dst
     key of the same arity, token by token."""
@@ -398,13 +427,14 @@ def _merge_into(dst: JNode, src: JNode) -> None:
         else:
             _merge_into(existing, snode)
     have = {tuple(t) for t in dst.leaves}
-    # dst wins per-attribute: skip a group leaf when dst already sets
-    # the same first token
+    # dst wins per-attribute for SINGLE-valued keywords (an explicit
+    # `mtu 1500` beats a group's `mtu 1400`); genuinely multi-valued
+    # keywords (address secondaries, system-services, ...) accumulate
     dst_attrs = {t[0] for t in dst.leaves if t}
     for leaf in src.leaves:
         if tuple(leaf) in have:
             continue
-        if leaf and leaf[0] in dst_attrs:
+        if leaf and leaf[0] not in _MULTIVALUE and leaf[0] in dst_attrs:
             continue
         dst.leaves.append(leaf)
 
@@ -537,8 +567,10 @@ class JunosParser:
         for key, aset in apps.find("application-set"):
             if len(key) < 2:
                 continue
-            self._app_sets[key[1]] = [
-                t[0] for t in aset.leaf_all("application") if t]
+            # an application-set can nest other application-sets
+            self._app_sets[key[1]] = (
+                [t[0] for t in aset.leaf_all("application") if t]
+                + [t[0] for t in aset.leaf_all("application-set") if t])
 
     def _app_to_specs(self, app: JNode) -> list[tuple[str, str]] | None:
         # an application can be a single term or a set of `term` blocks
@@ -568,17 +600,16 @@ class JunosParser:
         return spec.replace(" ", "")
 
     def _resolve_app(self, name: str,
-                     seen: set | None = None) -> list[tuple[str, str]] | None:
-        seen = seen or set()
-        if name in seen:
+                     seen: frozenset = frozenset()
+                     ) -> list[tuple[str, str]] | None:
+        if name in seen:  # cycle on THIS path only (not siblings)
             return None
-        seen.add(name)
         if name in self._app_specs:
             return self._app_specs[name]
         if name in self._app_sets:
             merged: list[tuple[str, str]] = []
             for m in self._app_sets[name]:
-                s = self._resolve_app(m, seen)
+                s = self._resolve_app(m, seen | {name})
                 if s is None:
                     return None
                 merged += s
@@ -668,7 +699,7 @@ class JunosParser:
             ifn = zn.get("interfaces")
             if ifn is not None:
                 for toks in ifn.leaves:
-                    if toks:
+                    if toks and toks[0] != "inactive":
                         members.append(toks[0])
                         self._note_allowaccess(zname, toks[0], zone_hit)
                 for ikey, inode in ifn.containers:
@@ -759,7 +790,21 @@ class JunosParser:
                 self._add_address(scope, name, val, anode, ref)
         for atoks in book.leaf_all("address"):
             if len(atoks) >= 2:
-                self._add_address(scope, atoks[0], atoks[1:], book, ref)
+                # set-format flat leaf: range/dns/wildcard arrive as plain
+                # tokens — translate to the sentinels _add_address expects
+                name, rest = atoks[0], atoks[1:]
+                kw = rest[0]
+                if kw == "range-address":
+                    self._add_address(scope, name,
+                                      ["__range__"] + rest[1:], book, ref)
+                elif kw == "dns-name":
+                    self._add_address(scope, name,
+                                      ["__fqdn__"] + rest[1:], book, ref)
+                elif kw == "wildcard-address":
+                    self._add_address(scope, name,
+                                      ["__wild__"] + rest[1:], book, ref)
+                else:
+                    self._add_address(scope, name, rest, book, ref)
         for key, aset in book.find("address-set"):
             if len(key) < 2:
                 continue
@@ -1005,8 +1050,13 @@ class JunosParser:
                     continue
                 mapped = pool.leaf_str("address")
                 mapped_ip = mapped.split("/")[0]
-                mapped_port = pool.leaf_str("address port") \
-                    or pool.leaf_str("port")
+                if not mapped_ip:
+                    self.note("warn", "nat",
+                              f"destination-nat '{rname}': pool "
+                              f"'{pool_name}' has no address — convert to "
+                              "a VIP manually", ref)
+                    continue
+                mapped_port = pool.leaf_str("port")
                 vip = Vip(
                     name=f"vip-{rname}",
                     ext_ip=ext.split("/")[0], mapped_ip=mapped_ip,
@@ -1039,8 +1089,8 @@ class JunosParser:
                 prefix = snat.leaf_str("prefix")
                 if not prefix:
                     pfx = snat.get("prefix")
-                    if pfx:
-                        prefix = pfx.leaf_str("__first__") or ""
+                    if pfx is not None and pfx.leaves:
+                        prefix = pfx.leaves[0][0]  # `prefix { 10.x/32; }`
                 for pk, _pn in snat.find("prefix"):
                     if len(pk) > 1:
                         prefix = pk[1]

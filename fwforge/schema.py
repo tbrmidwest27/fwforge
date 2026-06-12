@@ -130,8 +130,16 @@ def resolve(ref: str, token: str = "") -> tuple[dict, bool]:
             raise ValueError(
                 f"'{ref}' is not a file; fetching live needs an API "
                 "token (--schema-token or FWFORGE_API_TOKEN)")
-        host, _, port = ref.partition(":")
-        schema = fetch(host, token, port=int(port) if port else 443)
+        host, _, port = ref.rpartition(":")
+        if not host:  # no ':' present — rpartition put it all in `port`
+            host, port = port, ""
+        try:
+            port_i = int(port) if port else 443
+        except ValueError:
+            raise ValueError(
+                f"port in '{ref}' must be numeric (for an IPv6 literal, "
+                "pass a cached schema file instead)")
+        schema = fetch(host, token, port=port_i)
         save(schema)
         return schema, True
     raise ValueError(f"schema reference '{ref}' is neither a file nor "
@@ -161,10 +169,14 @@ def _walk(children: dict, node, problems: dict, where: str) -> int:
         elif isinstance(child, ConfigNode):
             sub = ".".join(child.path)
             # `config redistribute "connected"` = a NAMED nested table:
-            # the schema keys it by the first token only
+            # the schema keys it by the first token only. Only accept the
+            # fallback when that first token is itself a TABLE (truthy
+            # children) — a scalar attribute's empty {} must not mask an
+            # unknown nested section.
             nested = children.get(sub)
             if nested is None and len(child.path) > 1:
-                nested = children.get(child.path[0])
+                cand = children.get(child.path[0])
+                nested = cand if cand else None
             if nested is None:
                 problems.setdefault(("table", f"{where} > {sub}", ""), 0)
                 problems[("table", f"{where} > {sub}", "")] += 1
@@ -178,7 +190,10 @@ def check(out_text: str, schema: dict, report,
           target: str = "") -> dict:
     """Validate emitted FortiOS CLI against a build schema. Adds
     findings; returns stats."""
-    tables = schema["tables"]
+    tables = schema.get("tables")
+    if tables is None:
+        raise ValueError("not a fwforge schema (no 'tables') — load it "
+                         "with schema.load() / schema.resolve()")
     label = f"{schema.get('version', '?')} build{schema.get('build', '?')}"
     if target:
         t_train = ".".join(str(target).split(".")[:2])

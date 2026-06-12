@@ -627,3 +627,107 @@ def test_ri_vdom_blocks_emitted(tmp_path):
         [l for l in out.splitlines() if l.startswith("edit ")][1]) <= 16
     assert any("VDOM" in f.message and "11 chars" in f.message
                for f in result.report.findings)
+
+
+def test_bracketed_value_lists():
+    # `[ a b c ]` lists must flatten to members, not keep literal brackets
+    text = """security {
+    zones { security-zone trust { address-book {
+        address h1 10.0.0.1/32;
+        address h2 10.0.0.2/32; } } }
+    policies { from-zone trust to-zone trust {
+        policy p { match {
+            source-address [ h1 h2 ];
+            destination-address any;
+            application [ junos-http junos-https ];
+        } then { permit; } } } }
+}"""
+    cfg = juniper_srx.parse(text, "br.conf")
+    p = cfg.policies[0]
+    assert p.src_addrs == ["h1", "h2"]
+    assert "[" not in p.src_addrs and "]" not in p.src_addrs
+    assert "ALL" not in p.services  # both apps resolved, no bracket noise
+    assert len(p.services) == 2
+
+
+def test_inactive_marker_curly():
+    text = """security {
+    zones { security-zone z { } }
+    policies { from-zone z to-zone z {
+        inactive: policy dead { match { source-address any;
+            destination-address any; application any; } then { permit; } }
+        policy live { match { source-address any;
+            destination-address any; application any; } then { permit; } }
+    } }
+}"""
+    cfg = juniper_srx.parse(text, "ia.conf")
+    by = {p.name: p for p in cfg.policies}
+    assert by["dead"].disabled is True     # inactive: marker honored
+    assert by["live"].disabled is False
+    assert "inactive:" not in by["dead"].src_addrs  # marker stripped clean
+
+
+def test_setformat_vpn_crypto_and_selectors():
+    # set-format `proposals` (leaf) and `proxy-identity` (container) must
+    # parse the same as curly — regression for two set-only crypto bugs
+    text = set_text()  # generated from srx_sample.conf
+    setc = juniper_srx.parse(text, "x.set")
+    curly = parse_curly()
+    sp1 = curly.phase1s[0]
+    tp1 = setc.phase1s[0]
+    # real proposals (not the aes256-sha256 default) survive in set format
+    assert tp1.proposals == sp1.proposals
+    assert tp1.dhgrp == sp1.dhgrp
+    assert "aes256-sha256" not in tp1.proposals or sp1.proposals == tp1.proposals
+    # selectors match (traffic-selector form here; proxy-identity tested below)
+    assert [(p.src, p.dst) for p in setc.phase2s] == \
+           [(p.src, p.dst) for p in curly.phase2s]
+
+
+def test_setformat_proxy_identity_selectors():
+    text = """security {
+    zones { security-zone untrust { interfaces { ge-0/0/0.0; } } }
+    ike { proposal pr { dh-group group14;
+            authentication-algorithm sha-256;
+            encryption-algorithm aes-256-cbc; }
+        policy po { proposals pr; pre-shared-key ascii-text sec; }
+        gateway gw { ike-policy po; address 198.51.100.1;
+            external-interface ge-0/0/0.0; } }
+    ipsec { proposal ip { authentication-algorithm hmac-sha-256-128;
+            encryption-algorithm aes-256-cbc; }
+        policy ipo { proposals ip; }
+        vpn v { bind-interface st0.0; ike { gateway gw; ipsec-policy ipo;
+            proxy-identity { local 10.1.0.0/24; remote 10.2.0.0/24; } } } }
+}"""
+    curly = juniper_srx.parse(text, "pi.conf")
+    # build set form and reparse
+    root = juniper_srx._tree_from_curly(text)
+    setlines = _to_set(root, [])
+    setc = juniper_srx.parse("\n".join(setlines) + "\n", "pi.set")
+    assert (curly.phase2s[0].src, curly.phase2s[0].dst) == \
+           ("10.1.0.0/24", "10.2.0.0/24")
+    assert (setc.phase2s[0].src, setc.phase2s[0].dst) == \
+           (curly.phase2s[0].src, curly.phase2s[0].dst)
+    # not the 0.0.0.0/0 fallback
+    assert setc.phase2s[0].src != "0.0.0.0/0"
+
+
+def test_nested_application_set():
+    text = """applications {
+    application-set inner { application junos-https; }
+    application-set outer { application-set inner; application junos-ssh; }
+}
+security {
+    zones { security-zone z { } }
+    policies { from-zone z to-zone z {
+        policy p { match { source-address any; destination-address any;
+            application outer; } then { permit; } } } }
+}"""
+    cfg = juniper_srx.parse(text, "nas.conf")
+    p = cfg.policies[0]
+    assert "ALL" not in p.services  # nested set resolved, not widened
+    # multi-proto set -> one service group; check its member ports
+    grp = next(g for g in cfg.svc_groups if g.name in p.services)
+    ports = sorted(s.dst_ports for s in cfg.services
+                   if s.name in grp.members)
+    assert "443" in ports and "22" in ports
