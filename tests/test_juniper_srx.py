@@ -179,6 +179,13 @@ def test_both_formats_parity():
             "vip": sorted((v.name, v.ext_ip, v.mapped_ip) for v in c.vips),
             "rt": sorted((r.dest, r.gateway) for r in c.routes),
             "p1": sorted((p.name, p.remote_gw) for p in c.phase1s),
+            "bgp": (c.bgp.asn, c.bgp.router_id,
+                    sorted((n.ip, n.remote_as) for n in c.bgp.neighbors))
+            if c.bgp else None,
+            "ospf": (c.ospf.router_id,
+                     sorted((a.id, tuple(sorted(a.networks)),
+                             tuple(sorted(a.passive)))
+                            for a in c.ospf.areas)) if c.ospf else None,
         }
 
     assert summ(curly) == summ(setc)
@@ -242,3 +249,48 @@ security {
     cfg = juniper_srx.parse(text, "cov.conf")
     msgs = [m for _, _, m, _ in findings(cfg)]
     assert any("unread stanza" in m and "idp" in m for m in msgs)
+
+
+def test_bgp_parsed():
+    cfg = parse_curly()
+    b = cfg.bgp
+    assert b.asn == "65001" and b.router_id == "10.1.0.1"
+    nb = {n.ip: n for n in b.neighbors}
+    assert nb["203.0.113.1"].remote_as == "65000"      # eBGP group peer-as
+    assert nb["10.1.0.7"].remote_as == "65001"         # iBGP -> local AS
+    assert nb["10.1.0.7"].description == "dc core"
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("export policies" in m and "send-statics" in m
+               for m in msgs)
+
+
+def test_ospf_parsed():
+    cfg = parse_curly()
+    o = cfg.ospf
+    assert o.router_id == "10.1.0.1"
+    area = o.areas[0]
+    assert area.id == "0.0.0.0"
+    # networks derived from the area interfaces' connected subnets
+    assert sorted(area.networks) == ["10.1.0.0/24", "192.168.30.0/24"]
+    assert area.passive == ["ge-0/0/1.30"]
+
+
+def test_bgp_ospf_emitted(tmp_path):
+    mapfile = tmp_path / "ports.map"
+    mapfile.write_text(
+        "ge-0/0/0.0 = wan1\nge-0/0/1.0 = internal1\n"
+        "ge-0/0/1.30 = vlan30\nst0.0 = st0.0\n", encoding="utf-8")
+    rc = cli.main(["convert", str(FIX / "srx_sample.conf"),
+                   "-o", str(tmp_path), "--map", str(mapfile)])
+    assert rc == 0
+    conf = (tmp_path / "srx_sample.config-all.txt").read_text(
+        encoding="utf-8")
+    assert "config router bgp" in conf
+    assert "set as 65001" in conf
+    assert "set router-id 10.1.0.1" in conf
+    assert 'edit "203.0.113.1"' in conf
+    assert "set remote-as 65000" in conf
+    assert "config router ospf" in conf
+    assert "set prefix 10.1.0.0 255.255.255.0" in conf
+    assert "set area 0.0.0.0" in conf
+    assert 'set passive-interface "vlan30"' in conf  # mapped name

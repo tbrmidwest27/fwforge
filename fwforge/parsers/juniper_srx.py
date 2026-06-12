@@ -181,7 +181,7 @@ _PLAIN = {
     "address-book", "match", "then", "source-nat", "destination-nat",
     "static-nat", "system", "groups", "zones", "global", "proposals",
     "traceoptions", "screen", "flow", "forwarding-options", "interfaces",
-    "vlans", "protocols", "scheduler", "schedulers",
+    "vlans", "protocols", "scheduler", "schedulers", "bgp", "ospf",
     "advanced-policy-based-routing", "tcp-options", "permit", "deny",
 }
 # keywords that open a sub-container consuming the next token as its name
@@ -189,7 +189,7 @@ _NAMED = {
     "security-zone", "policy", "rule-set", "rule", "application",
     "application-set", "address-set", "proposal", "vpn",
     "unit", "family", "profile", "pool", "route", "instance",
-    "scheduler", "traffic-selector",
+    "scheduler", "traffic-selector", "area", "group", "neighbor",
 }
 # parents whose immediate child token is a bare-name container
 _BARE_NAME_PARENT = {"interfaces", "routing-instances", "vlans", "groups"}
@@ -436,6 +436,7 @@ class JunosParser:
         self.parse_policies()
         self.parse_nat()
         self.parse_routes()
+        self.parse_protocols()
         self.parse_vpn()
         self.flag_routing_instances()
         self.report_coverage()
@@ -1030,6 +1031,141 @@ class JunosParser:
         self.cfg.routes.append(Route(
             dest=str(net), gateway=gw, interface="", source=ref))
 
+    # -- dynamic routing (BGP / OSPF) ------------------------------------
+
+    def parse_protocols(self) -> None:
+        prot = self.tree.get("protocols")
+        if prot is None:
+            return
+        ro = self.tree.get("routing-options") or JNode()
+        local_as = ""
+        asn = ro.leaf("autonomous-system")
+        if asn:
+            local_as = asn[0]
+        router_id = ro.leaf_str("router-id")
+        bgp = prot.get("bgp")
+        if bgp is not None:
+            self._parse_bgp(bgp, local_as, router_id)
+        ospf = prot.get("ospf")
+        if ospf is not None:
+            self._parse_ospf(ospf, router_id)
+
+    def _parse_bgp(self, bgp: JNode, local_as: str,
+                   router_id: str) -> None:
+        from ..model import BgpConfig, BgpNeighbor
+        ref = self.ref(bgp, "protocols bgp")
+        if not local_as:
+            self.note("warn", "routing",
+                      "BGP configured but routing-options "
+                      "autonomous-system is missing — set 'set as' "
+                      "manually", ref)
+        cfg = BgpConfig(asn=local_as or "0", router_id=router_id,
+                        source=ref)
+        exports: list[str] = []
+        for toks in bgp.leaf_all("export"):
+            exports += toks
+        for gkey, grp in bgp.find("group"):
+            gname = gkey[1] if len(gkey) > 1 else "group"
+            gtype = grp.leaf_str("type")
+            g_as = grp.leaf_str("peer-as")
+            if gtype == "internal" and not g_as:
+                g_as = local_as
+            g_auth = bool(grp.leaf_str("authentication-key"))
+            g_descr = grp.leaf_str("description")
+            for toks in grp.leaf_all("export"):
+                exports += toks
+            # bare `neighbor 10.0.0.2;` leaves
+            for toks in grp.leaf_all("neighbor"):
+                if toks:
+                    cfg.neighbors.append(BgpNeighbor(
+                        ip=toks[0], remote_as=g_as,
+                        description=g_descr or gname,
+                        has_password=g_auth,
+                        source=self.ref(grp, f"bgp group {gname}")))
+            # `neighbor 10.0.0.2 { peer-as ...; }` containers
+            for nkey, nb in grp.find("neighbor"):
+                if len(nkey) < 2:
+                    continue
+                cfg.neighbors.append(BgpNeighbor(
+                    ip=nkey[1],
+                    remote_as=nb.leaf_str("peer-as") or g_as,
+                    description=nb.leaf_str("description")
+                    or g_descr or gname,
+                    has_password=g_auth
+                    or bool(nb.leaf_str("authentication-key")),
+                    source=self.ref(nb, f"bgp neighbor {nkey[1]}")))
+        if exports:
+            self.note("warn", "routing",
+                      "BGP export policies "
+                      f"({', '.join(dict.fromkeys(exports))}) are how "
+                      "Junos advertises routes — NOT converted; recreate "
+                      "as FortiOS route-maps / network statements and "
+                      "verify advertisements", ref)
+        self.cfg.bgp = cfg
+
+    def _parse_ospf(self, ospf: JNode, router_id: str) -> None:
+        from ..model import OspfArea, OspfConfig
+        ref = self.ref(ospf, "protocols ospf")
+        cfg = OspfConfig(router_id=router_id, source=ref)
+        exports = [t for toks in ospf.leaf_all("export") for t in toks]
+        for akey, area in ospf.find("area"):
+            if len(akey) < 2:
+                continue
+            aid = self._area_id(akey[1])
+            a = OspfArea(id=aid, source=self.ref(area, f"area {aid}"))
+            entries: list[tuple[str, bool]] = []
+            for toks in area.leaf_all("interface"):
+                if toks:
+                    entries.append((toks[0], "passive" in toks[1:]))
+            for ikey, inode in area.find("interface"):
+                if len(ikey) > 1:
+                    entries.append((ikey[1],
+                                    inode.has_leaf("passive")))
+            for ifname, passive in entries:
+                if ifname == "all":
+                    self.note("warn", "routing",
+                              f"OSPF area {aid}: 'interface all' — "
+                              "FortiOS needs explicit network "
+                              "statements; add them per interface",
+                              a.source)
+                    continue
+                net = self._connected_net(ifname)
+                if net:
+                    if net not in a.networks:
+                        a.networks.append(net)
+                else:
+                    self.note("warn", "routing",
+                              f"OSPF area {aid}: interface {ifname} has "
+                              "no known address — add its network "
+                              "statement manually", a.source)
+                if passive:
+                    a.passive.append(ifname)
+            cfg.areas.append(a)
+        if exports:
+            self.note("warn", "routing",
+                      "OSPF export policies "
+                      f"({', '.join(dict.fromkeys(exports))}) not "
+                      "converted — recreate as FortiOS redistribute / "
+                      "route-maps", ref)
+        self.cfg.ospf = cfg
+
+    @staticmethod
+    def _area_id(raw: str) -> str:
+        if raw.isdigit():
+            n = int(raw)
+            return (f"{(n >> 24) & 255}.{(n >> 16) & 255}."
+                    f"{(n >> 8) & 255}.{n & 255}")
+        return raw
+
+    def _connected_net(self, ifname: str) -> str:
+        itf = self.cfg.interface_by_name(ifname)
+        if itf is None or not itf.ip:
+            return ""
+        try:
+            return str(ipaddress.ip_interface(itf.ip).network)
+        except ValueError:
+            return ""
+
     # -- VPN (route-based st0) ------------------------------------------
 
     def parse_vpn(self) -> None:
@@ -1279,9 +1415,10 @@ class JunosParser:
     def report_coverage(self) -> None:
         consumed_top = {"security", "interfaces", "applications",
                         "routing-options", "system", "groups",
-                        "apply-groups", "version"}
+                        "apply-groups", "version", "protocols"}
         consumed_sec = {"zones", "policies", "nat", "address-book",
                         "ike", "ipsec"}
+        consumed_prot = {"bgp", "ospf"}
         unread: list[tuple[str, int]] = []
         for key, node in self.tree.containers:
             if not key or key[0] in consumed_top:
@@ -1291,6 +1428,13 @@ class JunosParser:
             if not key or key[0] in consumed_sec:
                 continue
             unread.append((f"security {' '.join(key)}", self._leaves(node)))
+        prot = self.tree.get("protocols")
+        if prot is not None:
+            for key, node in prot.containers:
+                if not key or key[0] in consumed_prot:
+                    continue
+                unread.append((f"protocols {' '.join(key)}",
+                               self._leaves(node)))
         for label, n in sorted(unread, key=lambda x: -x[1])[:15]:
             self.note("info", "coverage",
                       f"unread stanza: {label} ({n} statement(s)) — not "

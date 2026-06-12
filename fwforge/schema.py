@@ -160,7 +160,11 @@ def _walk(children: dict, node, problems: dict, where: str) -> int:
             lines += _walk(children, child, problems, where)
         elif isinstance(child, ConfigNode):
             sub = ".".join(child.path)
+            # `config redistribute "connected"` = a NAMED nested table:
+            # the schema keys it by the first token only
             nested = children.get(sub)
+            if nested is None and len(child.path) > 1:
+                nested = children.get(child.path[0])
             if nested is None:
                 problems.setdefault(("table", f"{where} > {sub}", ""), 0)
                 problems[("table", f"{where} > {sub}", "")] += 1

@@ -256,6 +256,32 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.27 — shipped 2026-06-11 (dynamic routing: BGP + OSPF)
+- [x] **BGP/OSPF conversion** for SRX and Palo Alto (per Adam's
+      follow-up). IR gained BgpConfig/BgpNeighbor/OspfConfig/OspfArea;
+      the emitter writes `config router bgp` (as, router-id, neighbors
+      with remote-as/description, network statements, redistribute
+      blocks) and `config router ospf` (router-id, areas, network
+      statements derived per area, passive-interface with portmap
+      applied, redistribute) — emitted shape schema-certified CLEAN
+      against the live FortiOS 8.0 build (named
+      `config redistribute "connected"` tables included; the schema
+      walker learned that named nested tables key by first token).
+      SRX: `protocols bgp` groups (type internal -> local AS,
+      per-neighbor peer-as overrides, bare + container neighbor forms,
+      authentication-key -> error finding), `protocols ospf` areas with
+      interface->connected-network derivation, `interface all` and
+      export policies flagged (Junos advertises via export — warned
+      loudly); router-id/AS from routing-options; coverage map now
+      descends into `protocols` (bgp/ospf consumed, lldp etc. unread).
+      PAN: virtual-router `protocol bgp` (local-as, peer-groups/peers)
+      + `protocol ospf` (areas, passive), redistribution profiles
+      flagged, second VR's instance flagged (first wins), honors the
+      multi-vsys VR import filter. Missing router-id derives from the
+      first interface IP with a warning (both vendors auto-derive
+      theirs). FMG device-level note extended to dynamic routing.
+      211 tests (5 new incl. curly<->set parity for both protocols).
+
 ### v0.26 — shipped 2026-06-11 (Juniper SRX parser + smoothness)
 - [x] **Juniper SRX (Junos) parser** (4th cross-vendor source):
       parsers/juniper_srx.py. Both export formats normalized into one

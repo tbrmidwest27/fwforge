@@ -118,6 +118,8 @@ class Emitter:
         if self.nat_mode == "central":
             self.central_snat()
         self.routes()
+        self.bgp()
+        self.ospf()
         self.policies()
         return "\n".join(self.out) + "\n"
 
@@ -523,6 +525,134 @@ class Emitter:
             self.report.add("info", "routes",
                             f"{len(v6)} IPv6 route(s) emitted as router "
                             "static6")
+
+    def _derived_router_id(self, proto: str) -> str:
+        """A usable router-id when the source relied on auto-derivation:
+        the first interface IP (deterministic), loudly reported."""
+        for itf in self.cfg.interfaces:
+            if itf.ip:
+                rid = itf.ip.split("/")[0]
+                self.report.add(
+                    "warn", "routing",
+                    f"{proto}: source had no explicit router-id (Junos/"
+                    f"PAN auto-derive theirs) — set to {rid} (first "
+                    "interface IP); change it if the design expects "
+                    "another")
+                return rid
+        self.report.add(
+            "error", "routing",
+            f"{proto}: no router-id and no interface IP to derive one — "
+            "set 'set router-id' manually before this section loads")
+        return ""
+
+    def bgp(self):
+        b = self.cfg.bgp
+        if b is None:
+            return
+        rid = b.router_id or self._derived_router_id("BGP")
+        self.line()
+        self.line("config router bgp")
+        self.line(f"    set as {b.asn}")
+        if rid:
+            self.line(f"    set router-id {rid}")
+        if b.neighbors:
+            self.line("    config neighbor")
+            for n in b.neighbors:
+                self.line(f"        edit {_q(n.ip)}")
+                if n.remote_as:
+                    self.line(f"            set remote-as {n.remote_as}")
+                if n.description:
+                    self.line(f"            set description "
+                              f"{_q(n.description[:63])}")
+                self.line("        next")
+                if n.has_password:
+                    self.report.add(
+                        "error", "routing",
+                        f"BGP neighbor {n.ip}: source uses MD5/auth "
+                        "password — not carried over; set 'set password' "
+                        "on the neighbor", n.source)
+            self.line("    end")
+        if b.networks:
+            self.line("    config network")
+            for i, net in enumerate(b.networks, start=1):
+                try:
+                    n4 = ipaddress.IPv4Network(net, strict=False)
+                except ValueError:
+                    self.report.add("warn", "routing",
+                                    f"BGP network '{net}' invalid — "
+                                    "skipped", b.source)
+                    continue
+                self.line(f"        edit {i}")
+                self.line(f"            set prefix {n4.network_address} "
+                          f"{n4.netmask}")
+                self.line("        next")
+            self.line("    end")
+        for r in b.redistribute:
+            self.line(f'    config redistribute "{r}"')
+            self.line("        set status enable")
+            self.line("    end")
+        self.line("end")
+        self.report.add(
+            "info", "routing",
+            f"BGP converted: AS {b.asn}, {len(b.neighbors)} neighbor(s), "
+            f"{len(b.networks)} network(s)"
+            + (f", redistribute {', '.join(b.redistribute)}"
+               if b.redistribute else "")
+            + ". Import/export routing policies are NOT converted — "
+            "recreate as route-maps and verify advertisements before "
+            "cutover")
+
+    def ospf(self):
+        o = self.cfg.ospf
+        if o is None:
+            return
+        rid = o.router_id or self._derived_router_id("OSPF")
+        self.line()
+        self.line("config router ospf")
+        if rid:
+            self.line(f"    set router-id {rid}")
+        passive = sorted({p for a in o.areas for p in a.passive})
+        if passive:
+            self.line("    set passive-interface "
+                      + " ".join(_q(_intf(self.cfg, p)) for p in passive))
+        if o.areas:
+            self.line("    config area")
+            for a in o.areas:
+                self.line(f"        edit {a.id}")
+                self.line("        next")
+            self.line("    end")
+            self.line("    config network")
+            i = 0
+            for a in o.areas:
+                for net in a.networks:
+                    try:
+                        n4 = ipaddress.IPv4Network(net, strict=False)
+                    except ValueError:
+                        self.report.add(
+                            "warn", "routing",
+                            f"OSPF network '{net}' (area {a.id}) invalid "
+                            "— skipped", a.source)
+                        continue
+                    i += 1
+                    self.line(f"        edit {i}")
+                    self.line(f"            set prefix "
+                              f"{n4.network_address} {n4.netmask}")
+                    self.line(f"            set area {a.id}")
+                    self.line("        next")
+            self.line("    end")
+        for r in o.redistribute:
+            self.line(f'    config redistribute "{r}"')
+            self.line("        set status enable")
+            self.line("    end")
+        self.line("end")
+        nets = sum(len(a.networks) for a in o.areas)
+        self.report.add(
+            "info", "routing",
+            f"OSPF converted: {len(o.areas)} area(s), {nets} network "
+            "statement(s)"
+            + (f", passive: {', '.join(passive)}" if passive else "")
+            + ". Costs, timers, and authentication are NOT carried — "
+            "verify adjacencies form before cutover")
 
     def policies(self):
         if not self.cfg.policies:

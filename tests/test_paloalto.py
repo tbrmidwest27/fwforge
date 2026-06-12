@@ -203,3 +203,55 @@ def test_xml_coverage_map():
     cfg2 = paloalto.parse(text2, "pa2.xml")
     msgs2 = [m for _, _, m, _ in findings(cfg2)]
     assert any("unread subtree:" in m and "botnet" in m for m in msgs2)
+
+
+PA_ROUTING = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network>
+    <interface><ethernet>
+      <entry name="ethernet1/1"><layer3><ip>
+        <entry name="203.0.113.2/29"/></ip></layer3></entry>
+      <entry name="ethernet1/2"><layer3><ip>
+        <entry name="10.1.0.1/24"/></ip></layer3></entry>
+    </ethernet></interface>
+    <virtual-router><entry name="default">
+      <protocol>
+        <bgp>
+          <enable>yes</enable>
+          <router-id>203.0.113.2</router-id>
+          <local-as>65010</local-as>
+          <peer-group><entry name="upstream">
+            <peer><entry name="isp1">
+              <peer-as>65000</peer-as>
+              <peer-address><ip>203.0.113.1</ip></peer-address>
+            </entry></peer>
+          </entry></peer-group>
+        </bgp>
+        <ospf>
+          <enable>yes</enable>
+          <router-id>203.0.113.2</router-id>
+          <area><entry name="0.0.0.0">
+            <interface><entry name="ethernet1/2">
+              <passive>yes</passive></entry></interface>
+          </entry></area>
+        </ospf>
+      </protocol>
+    </entry></virtual-router>
+  </network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="trust"><network><layer3>
+      <member>ethernet1/2</member></layer3></network></entry></zone>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_pan_bgp_ospf_converted():
+    cfg = paloalto.parse(PA_ROUTING, "rt.xml")
+    assert cfg.bgp.asn == "65010"
+    assert cfg.bgp.router_id == "203.0.113.2"
+    assert [(n.ip, n.remote_as) for n in cfg.bgp.neighbors] == [
+        ("203.0.113.1", "65000")]
+    area = cfg.ospf.areas[0]
+    assert area.id == "0.0.0.0"
+    assert area.networks == ["10.1.0.0/24"]
+    assert area.passive == ["ethernet1/2"]

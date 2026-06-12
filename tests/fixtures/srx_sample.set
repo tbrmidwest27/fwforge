@@ -7,8 +7,21 @@ set interfaces ge-0/0/1 unit 0 family inet address 10.1.0.1/24
 set interfaces ge-0/0/1 unit 30 vlan-id 30
 set interfaces ge-0/0/1 unit 30 family inet address 192.168.30.1/24
 set interfaces st0 unit 0 family inet
+set routing-options router-id 10.1.0.1
+set routing-options autonomous-system 65001
 set routing-options static route 0.0.0.0/0 next-hop 203.0.113.1
 set routing-options static route 10.9.0.0/16 next-hop 10.1.0.254
+set protocols bgp group upstream type external
+set protocols bgp group upstream peer-as 65000
+set protocols bgp group upstream export send-statics
+set protocols bgp group upstream neighbor 203.0.113.1
+set protocols bgp group dc type internal
+set protocols bgp group dc neighbor 10.1.0.7 description dc core
+set protocols bgp group dc neighbor 10.1.0.7 peer-as 65001
+set protocols ospf export ospf-redist
+set protocols ospf area 0.0.0.0 interface ge-0/0/1.0
+set protocols ospf area 0.0.0.0 interface ge-0/0/1.30 passive
+set protocols lldp interface all
 set applications application custom-8443 protocol tcp
 set applications application custom-8443 destination-port 8443
 set applications application-set web-apps application junos-http

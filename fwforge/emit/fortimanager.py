@@ -257,12 +257,13 @@ def build_bundle(cfg: FirewallConfig, report, adom: str = "root",
             + (" …" if len(intf_names) > 8 else "")
             + ") — create matching per-device mappings or zones in the "
             "ADOM before installing the package")
-    if cfg.phase1s or cfg.routes:
+    if cfg.phase1s or cfg.routes or cfg.bgp or cfg.ospf:
         report.add(
             "info", "fortimanager",
-            "routes and VPN tunnels are device-level — they are NOT in the "
-            "FortiManager bundle; apply them from the CLI script (or via "
-            "FortiManager's device database / VPN Manager)")
+            "routes, dynamic routing, and VPN tunnels are device-level — "
+            "they are NOT in the FortiManager bundle; apply them from the "
+            "CLI script (or via FortiManager's device database / VPN "
+            "Manager)")
 
     return {
         "fortimanager": {

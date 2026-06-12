@@ -194,6 +194,41 @@ class Route:
 
 
 @dataclass
+class BgpNeighbor:
+    ip: str
+    remote_as: str = ""
+    description: str | None = None
+    has_password: bool = False  # source had auth; key not carried over
+    source: SourceRef | None = None
+
+
+@dataclass
+class BgpConfig:
+    asn: str = ""
+    router_id: str = ""
+    neighbors: list[BgpNeighbor] = field(default_factory=list)
+    networks: list[str] = field(default_factory=list)  # announced CIDRs
+    redistribute: list[str] = field(default_factory=list)  # connected/...
+    source: SourceRef | None = None
+
+
+@dataclass
+class OspfArea:
+    id: str = "0.0.0.0"  # dotted form
+    networks: list[str] = field(default_factory=list)  # CIDRs in the area
+    passive: list[str] = field(default_factory=list)  # interface names
+    source: SourceRef | None = None
+
+
+@dataclass
+class OspfConfig:
+    router_id: str = ""
+    areas: list[OspfArea] = field(default_factory=list)
+    redistribute: list[str] = field(default_factory=list)
+    source: SourceRef | None = None
+
+
+@dataclass
 class FirewallConfig:
     """The IR root — everything a conversion knows about the source."""
 
@@ -213,6 +248,8 @@ class FirewallConfig:
     phase1s: list[VpnPhase1] = field(default_factory=list)
     phase2s: list[VpnPhase2] = field(default_factory=list)
     routes: list[Route] = field(default_factory=list)
+    bgp: BgpConfig | None = None
+    ospf: OspfConfig | None = None
     unparsed: list[SourceRef] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
 

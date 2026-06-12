@@ -1152,6 +1152,75 @@ class PaloParser:
                 return z.members[0]
         return "any"
 
+    def _parse_vr_protocols(self, vrname: str, vr: dict) -> None:
+        """Dynamic routing inside a PAN virtual-router -> IR BGP/OSPF."""
+        prot = vr.get("protocol")
+        if not isinstance(prot, dict):
+            return
+        from ..model import BgpConfig, BgpNeighbor, OspfArea, OspfConfig
+        bgp = prot.get("bgp")
+        if isinstance(bgp, dict) and str(bgp.get("enable", "no")) == "yes":
+            ref = self.ref(bgp, f"vr {vrname} bgp")
+            if self.cfg.bgp is not None:
+                self.note("warn", "routing",
+                          f"vr '{vrname}': a second BGP instance — only "
+                          "the first virtual-router's BGP converted", ref)
+            else:
+                cfg = BgpConfig(
+                    asn=str(bgp.get("local-as", "")) or "0",
+                    router_id=str(bgp.get("router-id", "")), source=ref)
+                for gname, grp in _entries(bgp.get("peer-group")):
+                    for pname, peer in _entries(grp.get("peer")
+                                                if isinstance(grp, dict)
+                                                else None):
+                        pa = peer.get("peer-address", {})
+                        ip = str(pa.get("ip", "")) if isinstance(pa, dict) \
+                            else ""
+                        if not ip:
+                            continue
+                        cfg.neighbors.append(BgpNeighbor(
+                            ip=ip.split("/")[0],
+                            remote_as=str(peer.get("peer-as", "")),
+                            description=f"{gname}/{pname}",
+                            source=self.ref(peer, f"bgp peer {pname}")))
+                if "redist-rules" in bgp or "redistribution-profile" in bgp:
+                    self.note("warn", "routing",
+                              f"vr '{vrname}': BGP redistribution "
+                              "profiles not converted — recreate as "
+                              "FortiOS redistribute/route-maps", ref)
+                self.cfg.bgp = cfg
+        ospf = prot.get("ospf")
+        if isinstance(ospf, dict) \
+                and str(ospf.get("enable", "no")) == "yes":
+            ref = self.ref(ospf, f"vr {vrname} ospf")
+            if self.cfg.ospf is not None:
+                self.note("warn", "routing",
+                          f"vr '{vrname}': a second OSPF instance — only "
+                          "the first virtual-router's OSPF converted", ref)
+                return
+            ocfg = OspfConfig(router_id=str(ospf.get("router-id", "")),
+                              source=ref)
+            for aid, area in _entries(ospf.get("area")):
+                a = OspfArea(id=aid, source=self.ref(area, f"area {aid}"))
+                for ifname, inode in _entries(area.get("interface")
+                                              if isinstance(area, dict)
+                                              else None):
+                    itf = self.cfg.interface_by_name(ifname)
+                    if itf and itf.ip:
+                        net = str(ipaddress.ip_interface(itf.ip).network)
+                        if net not in a.networks:
+                            a.networks.append(net)
+                    else:
+                        self.note("warn", "routing",
+                                  f"OSPF area {aid}: interface {ifname} "
+                                  "has no known address — add its network "
+                                  "statement manually", a.source)
+                    if isinstance(inode, dict) \
+                            and str(inode.get("passive", "no")) == "yes":
+                        a.passive.append(ifname)
+                ocfg.areas.append(a)
+            self.cfg.ospf = ocfg
+
     def _resolve_ip(self, token: str, ref: SourceRef) -> str | None:
         addr = self.cfg.address_by_name(token)
         if addr:
@@ -1281,6 +1350,7 @@ class PaloParser:
             if self._import_vrs is not None \
                     and vrname not in self._import_vrs:
                 continue  # virtual-router belongs to another vsys
+            self._parse_vr_protocols(vrname, vr)
             rt = vr.get("routing-table", {})
             ip = rt.get("ip", {}) if isinstance(rt, dict) else {}
             static = ip.get("static-route") if isinstance(ip, dict) else None
