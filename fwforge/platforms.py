@@ -143,6 +143,39 @@ def ports_for(code: str) -> tuple[str, ...]:
     return PORT_INVENTORY.get(code.strip().upper(), ())
 
 
+_HEADER_RE = re.compile(
+    r"#config-version=([^-\s]+)-(\d+\.\d+\.\d+)-FW")
+
+
+def inventory_from_config(text: str) -> tuple[str, str, tuple[str, ...]]:
+    """(platform_code, version, physical_ports) read from a config
+    backup taken on the DESTINATION device — a factory-fresh backup is
+    ideal. The header supplies the authoritative platform token (no
+    derivation, no probing) and `config system interface` the real port
+    names. The file is reference metadata only; nothing from it is
+    merged into the output."""
+    m = _HEADER_RE.match(text.lstrip())
+    if not m:
+        raise PlanError(
+            "the destination file has no #config-version header — "
+            "provide a config backup taken from the target device "
+            "(System > Configuration > Backup, or "
+            "'execute backup config')")
+    code, version = m.group(1), m.group(2)
+    from .parsers import fortios_tree
+    from .transforms.portmap import tree_interface_details
+    tree = fortios_tree.parse_config(text)
+    ports = tuple(
+        d["name"] for d in tree_interface_details(tree)
+        if d["type"] == "physical" and "." not in d["name"]
+        and d["name"] != "modem")
+    if not ports:
+        raise PlanError(
+            "the destination file has no 'config system interface' "
+            "section — it does not look like a FortiGate backup")
+    return code, version, ports
+
+
 def resolve(text: str) -> tuple[str, str]:
     """Map user input to a platform code.
 

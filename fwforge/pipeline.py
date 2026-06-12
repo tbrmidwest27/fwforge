@@ -183,7 +183,8 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 want_normalized: bool = False, vdom_mode: str = "keep",
                 vdom_name: str = "root", vdom_scope_only: bool = False,
                 hw_switch: str = "keep", sslvpn_to_ipsec: bool = False,
-                sslvpn_psk: str = "CHANGEME-SET-A-REAL-PSK"
+                sslvpn_psk: str = "CHANGEME-SET-A-REAL-PSK",
+                target_device: tuple | None = None
                 ) -> ConversionResult:
     """FortiOS -> FortiOS lossless tree migration. Raises PlanError."""
     report = Report()
@@ -290,6 +291,31 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
 
     result = ConversionResult(mode="migrate", vendor="fortios",
                               report=report)
+
+    if target_device:
+        # (code, version, physical ports) read from a backup of the
+        # actual destination box — validate that every physical source
+        # interface ends up with a name that exists there
+        t_code, t_ver, t_ports = target_device
+        report.meta["target_device"] = (
+            f"{t_code} (FortiOS {t_ver}, {len(t_ports)} physical ports)")
+        src_phys = [
+            d["name"] for d in portmap.tree_interface_details(tree)
+            if d["type"] == "physical" and "." not in d["name"]
+            and d["name"] != "modem"]
+        missing = sorted(
+            {plan.portmap.get(n, n) for n in src_phys} - set(t_ports))
+        if missing:
+            report.add(
+                "warn", "portmap",
+                f"{len(missing)} interface name(s) in the output do "
+                f"not exist on the destination ({t_code}): "
+                f"{', '.join(missing)} — the restore drops them and "
+                "everything referencing them; map each to one of the "
+                "destination's ports")
+        report.add(
+            "info", "portmap",
+            f"destination ports ({t_code}): {', '.join(t_ports)}")
 
     if plan.portmap:
         stats = portmap.apply_tree(tree, plan.portmap)

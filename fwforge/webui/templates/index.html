@@ -67,7 +67,10 @@
     <div style="flex:1 1 300px">
       <form method="post" action="{{ url_for('load') }}"
             enctype="multipart/form-data">
-        <p><input type="file" name="config"></p>
+        <p><label>source config<br>
+          <input type="file" name="config"></label></p>
+        <p><label>destination backup (optional)<br>
+          <input type="file" name="target_config"></label></p>
         <button>Upload &amp; analyze</button>
       </form>
     </div>
@@ -75,9 +78,16 @@
       <form method="post" action="{{ url_for('load') }}">
         <p><input type="text" name="path" style="width:100%"
                   placeholder="...or a path on this machine, e.g. C:\backups\fw.conf"></p>
+        <p><input type="text" name="target_path" style="width:100%"
+                  placeholder="destination backup path (optional)"></p>
         <button class="ghost">Load from path</button>
       </form>
     </div>
   </div>
+  <p class="grid-note">Destination backup: any config backup taken from
+    the TARGET device — a factory-fresh one is ideal. It supplies the
+    authoritative platform code and the real port inventory for the
+    migration (FortiGate&rarr;FortiGate only). Reference only — it is
+    never merged into the output.</p>
 </div>
 {% endblock %}

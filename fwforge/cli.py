@@ -6,6 +6,7 @@
                               [--map portmap] [--plan planfile]
                               [--mode auto|cross|migrate]
                               [--source-os X.Y] [--target-platform FG7H1G]
+                              [--target-config factory-backup.conf]
     fwforge plan    <config>  [-o file]
     fwforge gui     [--host 127.0.0.1] [--port 4848] [--no-browser]
 
@@ -250,6 +251,22 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
             tplat, tplat_note = platforms.resolve(tplat)
             print(f"target platform: {tplat}"
                   + (f" ({tplat_note})" if tplat_note else ""))
+        tdev = None
+        tconf = getattr(args, "target_config", None)
+        if tconf:
+            code, ver, ports = platforms.inventory_from_config(
+                _read(tconf))
+            tdev = (code, ver, ports)
+            print(f"destination device: {code} (FortiOS {ver}, "
+                  f"{len(ports)} physical ports)")
+            if tplat and tplat != code:
+                raise PlanError(
+                    f"--target-platform {tplat} conflicts with the "
+                    f"destination backup's platform code {code} — drop "
+                    "the flag; the backup is authoritative")
+            tplat = code
+            if args.fortios is None:
+                args.fortios = ".".join(ver.split(".")[:2])
         result = pipeline.run_migrate(
             text, src_path, plan, target=args.fortios,
             source_os=getattr(args, "source_os", None),
@@ -260,7 +277,8 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
             hw_switch=getattr(args, "hw_switch", "keep"),
             sslvpn_to_ipsec=getattr(args, "sslvpn_to_ipsec", False),
             sslvpn_psk=getattr(args, "sslvpn_psk", None)
-            or "CHANGEME-SET-A-REAL-PSK")
+            or "CHANGEME-SET-A-REAL-PSK",
+            target_device=tdev)
     except PlanError as e:
         print(f"plan error: {e}", file=sys.stderr)
         return 2
@@ -396,6 +414,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="rewrite the #config-version platform code for the "
                         "target model (e.g. FG7H1G) so the device accepts "
                         "the restore")
+    p.add_argument("--target-config",
+                   help="config backup taken from the DESTINATION device "
+                        "(factory-fresh is ideal): supplies the "
+                        "authoritative platform code and real port "
+                        "inventory — no model tables or probing needed. "
+                        "Reference only; never merged into the output")
     p.add_argument("--vdom-mode", default="keep",
                    choices=["keep", "multi", "single"],
                    help="convert VDOM mode: 'multi' wraps a flat config "

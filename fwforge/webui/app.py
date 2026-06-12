@@ -328,6 +328,36 @@ def create_app() -> Flask:
         # underscore prefix: an upload named e.g. 'source.conf' must not
         # collide with the converted output written into the same dir
         (jdir / "_source.conf").write_text(text, encoding="utf-8")
+
+        # optional destination reference backup: authoritative platform
+        # code + real port inventory for the migration (reference only,
+        # never merged into the output)
+        ttext, tname = "", ""
+        tup = request.files.get("target_config")
+        if tup and tup.filename:
+            ttext = tup.read().decode("utf-8-sig", "replace")
+            tname = tup.filename
+        elif request.form.get("target_path", "").strip():
+            tp = Path(request.form["target_path"].strip())
+            if not tp.is_file():
+                shutil.rmtree(jdir, ignore_errors=True)
+                return redirect(url_for(
+                    "index", error=f"destination file not found: {tp}"))
+            ttext = tp.read_text(encoding="utf-8-sig", errors="replace")
+            tname = tp.name
+        if ttext.strip():
+            try:
+                code, ver, ports = platforms.inventory_from_config(ttext)
+            except PlanError as e:
+                shutil.rmtree(jdir, ignore_errors=True)
+                return redirect(url_for(
+                    "index", error=f"destination config: {e}"))
+            meta["target_code"] = code
+            meta["target_version"] = ver
+            meta["target_ports"] = list(ports)
+            meta["target_name"] = tname
+            (jdir / "_target.conf").write_text(ttext, encoding="utf-8")
+
         JOBS[jid] = meta
         _save_job(jid)
         return redirect(url_for("job", jid=jid))
@@ -356,6 +386,9 @@ def create_app() -> Flask:
                 JOBS[jid] = meta = fresh
                 _save_job(jid)
         src_train = ".".join(meta["source_os"].split(".")[:2])
+        if meta.get("target_version"):
+            # a destination backup pins the target version
+            src_train = ".".join(meta["target_version"].split(".")[:2])
         default_target = (src_train if src_train in FORTIOS_TARGETS
                           else "7.4")
         det = {d["name"]: d for d in meta.get("iface_details", [])}
@@ -385,7 +418,8 @@ def create_app() -> Flask:
         meta = _job(jid)
         jdir = JOBS_DIR / jid
         text = _source_path(jdir).read_text(encoding="utf-8")
-        target = request.form.get("fortios", "7.4")
+        # blank = same as source (migrate) / 7.4 (cross, set below)
+        target = request.form.get("fortios", "").strip() or None
 
         try:
             if meta["vendor"] == "fortios":
@@ -396,6 +430,13 @@ def create_app() -> Flask:
                                              "").strip()
                 if tplat:
                     tplat, _ = platforms.resolve(tplat)
+                tdev = None
+                if meta.get("target_ports"):
+                    tdev = (meta.get("target_code", ""),
+                            meta.get("target_version", ""),
+                            tuple(meta["target_ports"]))
+                    # the destination backup's own code is authoritative
+                    tplat = tplat or meta.get("target_code") or None
                 result = pipeline.run_migrate(
                     text, meta["name"], plan, target=target,
                     source_os=request.form.get("source_os", "").strip()
@@ -410,6 +451,7 @@ def create_app() -> Flask:
                     sslvpn_to_ipsec=bool(request.form.get("sslvpn_to_ipsec")),
                     sslvpn_psk=request.form.get("sslvpn_psk", "").strip()
                     or "CHANGEME-SET-A-REAL-PSK",
+                    target_device=tdev,
                     want_normalized=True)
             else:
                 mapping = {}
@@ -426,7 +468,7 @@ def create_app() -> Flask:
                     }.items() if v}
                 result = pipeline.run_cross(
                     text, meta["vendor"], meta["name"], mapping,
-                    target=target,
+                    target=target or "7.4",
                     tuning=_tuning_from_form(request.form, meta),
                     nat_mode=request.form.get("nat_mode", "policy"),
                     parser_opts=parser_opts or None)

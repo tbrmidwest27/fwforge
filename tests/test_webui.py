@@ -394,3 +394,50 @@ def test_port_inventory_shipped_to_wizard(client):
     page = client.get(f"/job/{jid}").data.decode()
     assert 'id="tp-ports"' in page          # datalist for map_dst inputs
     assert '"FG7H1G"' in page and "lan22" in page  # inventory JSON inline
+
+
+def test_destination_backup_drives_migration(client):
+    import io
+    src = (FIX / "fortios_refactor.conf").read_bytes()
+    tgt = b"""#config-version=FG7H1G-8.0.0-FW-build0167-260420:opmode=0:vdom=0:user=admin
+config system interface
+    edit "mgmt"
+        set type physical
+    next
+    edit "wan1"
+        set type physical
+    next
+    edit "lan1"
+        set type physical
+    next
+end
+"""
+    resp = client.post("/load", data={
+        "config": (io.BytesIO(src), "src.conf"),
+        "target_config": (io.BytesIO(tgt), "factory-701g.conf"),
+    }, content_type="multipart/form-data", follow_redirects=False)
+    assert resp.status_code == 302
+    jid = resp.headers["Location"].rstrip("/").split("/")[-1]
+
+    # wizard shows the destination as authoritative (no dropdown)
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "FG7H1G" in page and "factory-701g.conf" in page
+    assert 'id="tp-select"' not in page
+    assert "TARGET_PORTS" in page and "wan1" in page
+
+    form = {
+        "fortios": "",            # blank: pinned by the destination
+        "source_os": "7.6",
+        "map_src": ["port1", "port2", "port3", "port4", "vlan30"],
+        "map_dst": ["wan1", "lan1", "port3", "port4", "vlan30"],
+    }
+    resp = client.post(f"/job/{jid}/convert", data=form,
+                       follow_redirects=True)
+    page = resp.data.decode()
+    # unmapped physical ports flagged against the real inventory
+    assert "do not exist on the destination" in page
+    assert "port3" in page and "port4" in page
+
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert conf.startswith("#config-version=FG7H1G-")
+    assert 'edit "wan1"' in conf  # portmap applied

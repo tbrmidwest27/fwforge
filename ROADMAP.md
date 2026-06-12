@@ -256,6 +256,29 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.32 — shipped 2026-06-12 (destination reference backup — Adam's design)
+Adam: "config file in one selection and a blank config of the
+destination so that you can combine them sort of like FortiConverter."
+A second optional file at job creation — any backup taken ON the
+destination device (factory-fresh ideal) — replaces probing and curated
+tables with ground truth:
+- `platforms.inventory_from_config()`: platform code + version from the
+  `#config-version` header, physical port names from `config system
+  interface` (modem/dotted/virtual filtered out).
+- The code is authoritative (dropdown replaced by a locked display),
+  the version pins the target train, the ports feed the mapping-step
+  datalist/red-outline from page load.
+- `run_migrate(target_device=...)`: warns with the exact must-remap
+  list — physical source interfaces whose output name does not exist
+  on the destination — plus an info line of the destination's ports.
+- CLI `--target-config FILE` (conflicts with --target-platform raise),
+  GUI second upload + path field. Reference ONLY: nothing from the
+  destination file is merged into the output (standalone-config rule
+  stands — this is not the declined merge feature).
+Demo on the real 601F backup + QSG-derived factory 701G: instantly
+lists all 24 portN names that must be remapped and the 34 valid
+destination ports. 247 tests.
+
 ### v0.31 — shipped 2026-06-12 (per-model port inventories in the mapping step)
 PORT_INVENTORY in platforms.py: physical interface names per platform
 code, confirmed-only with provenance — 600F/601F from the real 601F

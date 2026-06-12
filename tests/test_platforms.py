@@ -68,3 +68,53 @@ def test_port_inventory():
     assert "lan1" not in p601f
     assert platforms.ports_for("FGT60F") == platforms.ports_for("FGT61F")
     assert platforms.ports_for("FG100F") == ()  # unconfirmed model
+
+
+TARGET_CONF = """#config-version=FG7H1G-8.0.0-FW-build0167-260420:opmode=0:vdom=0:user=admin
+config system interface
+    edit "mgmt"
+        set vdom "root"
+        set type physical
+    next
+    edit "wan1"
+        set vdom "root"
+        set type physical
+    next
+    edit "lan1"
+        set vdom "root"
+        set type physical
+    next
+    edit "x1"
+        set vdom "root"
+        set type physical
+    next
+    edit "modem"
+        set vdom "root"
+    next
+    edit "vlan10"
+        set vdom "root"
+        set interface "lan1"
+        set vlanid 10
+    next
+    edit "ssl.root"
+        set vdom "root"
+        set type tunnel
+    next
+end
+"""
+
+
+def test_inventory_from_config():
+    code, ver, ports = platforms.inventory_from_config(TARGET_CONF)
+    assert code == "FG7H1G"
+    assert ver == "8.0.0"
+    # physical only: no modem, no vlan, no tunnel
+    assert set(ports) == {"mgmt", "wan1", "lan1", "x1"}
+
+
+def test_inventory_requires_header_and_interfaces():
+    with pytest.raises(PlanError):
+        platforms.inventory_from_config("config system interface\nend\n")
+    with pytest.raises(PlanError):
+        platforms.inventory_from_config(
+            "#config-version=FG7H1G-8.0.0-FW-build0167-1:x\nconfig x\nend\n")

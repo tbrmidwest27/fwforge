@@ -96,6 +96,14 @@
         </datalist>
       </label>
       {% if meta.vendor == "fortios" %}
+      {% if meta.target_code %}
+      <label>destination device<br>
+        <span class="badge b-ok">{{ meta.target_code }}</span>
+        <span class="muted">FortiOS {{ meta.target_version }},
+          {{ meta.target_ports|length }} ports &mdash; read from
+          {{ meta.target_name }}</span>
+      </label>
+      {% else %}
       <label>target model<br>
         <select name="target_platform" id="tp-select"
                 onchange="document.getElementById('tp-custom').style.display
@@ -114,15 +122,24 @@
         <input type="text" name="target_platform_custom" id="tp-custom"
                size="10" placeholder="e.g. FG7H1G" style="display:none">
       </label>
+      {% endif %}
       <label>source FortiOS<br>
         <input type="text" name="source_os" value="{{ meta.source_os }}" size="6"></label>
       {% endif %}
     </div>
     {% if meta.vendor == "fortios" %}
+    {% if meta.target_code %}
+    <p class="grid-note">Platform code and port inventory come from the
+      uploaded destination backup &mdash; authoritative, nothing to
+      verify. The destination file is reference only and is never merged
+      into the output.</p>
+    {% else %}
     <p class="grid-note">* derived from the FortiOS naming scheme &mdash;
       confirm against a backup taken from the actual target model before
       restoring. The platform token must match the device or it rejects
-      the file.</p>
+      the file. Tip: upload a destination backup on the New conversion
+      page to skip the guesswork entirely.</p>
+    {% endif %}
     <div class="builder-row">
       <label>VDOM mode<br>
         <select name="vdom_mode">
@@ -586,14 +603,17 @@ function setAllMembers(btn, on) {
 
 // ---- target-model port suggestions (Interface Mapping step) ----
 const PORT_INV = {{ port_inventory|tojson }};
+// ports read from an uploaded destination backup beat the model table
+const TARGET_PORTS = {{ meta.get("target_ports", [])|tojson }};
 const PHYS = new Set(DET.filter(d => d.type === "physical")
                         .map(d => d.name));
 function tpPortsChanged() {
   const sel = document.getElementById("tp-select");
   const dl = document.getElementById("tp-ports");
   const hint = document.getElementById("tp-port-hint");
-  if (!sel || !dl) return;
-  const ports = PORT_INV[sel.value] || [];
+  if (!dl) return;
+  const ports = TARGET_PORTS.length ? TARGET_PORTS
+    : ((sel && PORT_INV[sel.value]) || []);
   dl.innerHTML = ports.map(p => `<option value="${esc(p)}">`).join("");
   let missing = 0;
   document.querySelectorAll('input[name="map_dst"]').forEach(inp => {
@@ -611,7 +631,7 @@ function tpPortsChanged() {
   });
   if (hint) {
     hint.textContent = !ports.length ? "" :
-      `target model ports: ${ports.join(", ")}` +
+      `destination ports: ${ports.join(", ")}` +
       (missing ? ` — ${missing} mapped name(s) do not exist on it ` +
                  "(outlined red)" : "");
   }
@@ -621,6 +641,7 @@ if (tpSel) tpSel.addEventListener("change", tpPortsChanged);
 document.addEventListener("input", e => {
   if (e.target && e.target.name === "map_dst") tpPortsChanged();
 });
+tpPortsChanged();  // destination-backup ports apply from page load
 {% endif %}
 function filterPolicies() {
   const q = document.getElementById("polsearch").value.toLowerCase();
