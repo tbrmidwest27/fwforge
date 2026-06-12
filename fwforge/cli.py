@@ -375,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-o", "--outdir", default="out")
     p.add_argument("--vendor", default="auto",
                    choices=["auto", "cisco-asa", "paloalto", "pfsense",
-                            "fortios"])
+                            "juniper-srx", "fortios"])
     p.add_argument("--fortios", default="7.4",
                    help="target FortiOS version (default 7.4)")
     p.add_argument("--source-os",

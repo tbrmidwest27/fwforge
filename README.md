@@ -43,8 +43,9 @@ config**:
 |---|---|
 | `<name>.conf` | complete FortiOS backup — restore wholesale via *System → Configuration → Restore* or `execute restore config`. `#config-version=` stays on line 1; findings are embedded as `#` comments (ignored on load) |
 
-**Anything → FortiGate** (ASA, Palo Alto) → **FortiConverter-style script
-files** (it's a paste-script, not a full backup):
+**Anything → FortiGate** (Cisco ASA, Palo Alto, Juniper SRX, pfSense) →
+**FortiConverter-style script files** (it's a paste-script, not a full
+backup):
 
 | file | what it is |
 |---|---|
@@ -293,11 +294,12 @@ wins — reconcile"). The leftover audit still flags what needs a human
 | Cisco ASA | interfaces, name aliases, network/service objects, object-groups (incl. nested + protocol groups), extended ACLs → policies, access-group bindings, static routes, object NAT (static → VIP, dynamic → interface PAT), route-based `dstintf` inference, **site-to-site VPN**: crypto maps + tunnel-groups → route-based phase1/phase2-interface (IKEv1+IKEv2 policies → proposals, transform-sets/ipsec-proposals, PFS preserved — including ASA's off-by-default vs FortiOS's on-by-default), plus the ramifications: tunnel routes, bidirectional VPN policies with route-inferred LAN interfaces, masked-PSK detection. Dial-up/dynamic maps and cert auth are flagged, not converted |
 | Palo Alto (XML **and** `display set` formats) | interfaces (incl. L3 subinterfaces), zones → real FortiOS zones (`intrazone allow` to preserve PAN's default behavior, flagged), addresses/groups, services/groups (comma port lists, source ports, predefined service-http/https), security rules incl. negate-source/destination, NAT (interface PAT, bi-directional static + destination translation → VIPs with port-forward), static routes (egress inferred when omitted). **App-ID rules convert on their service match and are loudly flagged** — FortiOS application control must be recreated as profiles. Multi-vsys: first vsys, rest flagged. |
 | pfSense (config.xml) | interfaces (incl. VLANs, logical wan/lan/optN names), aliases → addresses/groups/services (multi-entry, nested, port aliases with colon ranges), per-interface filter rules → policies (`lan net`/`wanip` macros, `<not/>` → negate, reject/block, log/disabled), gateways + static routes (incl. `defaultgw4`), port forwards & 1:1 NAT → VIPs, outbound automatic/hybrid → NAT on WAN-egress policies. Floating rules, rule-level policy routing, manual outbound NAT, IPv6, OpenVPN (no FortiOS equivalent), and IPsec are flagged |
+| Juniper SRX (Junos, curly **and** `display set` formats) | **apply-groups inheritance expanded** before parsing; interfaces (units + VLAN sub-interfaces), security zones → FortiOS zones, **zone-scoped address books** flattened with cross-zone collision renames, `applications`/`application-set` + **`junos-*` predefined apps → real ports** (so policies get exact services, not `ALL`), zone-pair **and** global policies → zone policies with address-excluded negation, NAT (source rule-set interface → `nat enable`, destination-nat pool → VIP w/ port-forward, static-nat → 1:1 VIP), static routes, **route-based `st0` IPsec** (ike/ipsec proposal+policy+gateway, traffic-selectors/proxy-identity, PFS, IKEv2; `$9$`-encrypted PSK → placeholder + error). routing-instances flagged as VDOM candidates; policy-based VPN and dynamic routing flagged |
 | FortiOS | full-config lossless tree migration with interface mapping, zone/SD-WAN refactors, multi-VDOM |
-| site-to-site IPsec | converted to route-based phase1/phase2-interface for **all three** cross-vendor sources (ASA crypto-maps, PAN ike-gateway/tunnel, pfSense phase1/phase2) — proposals, PFS, PSK (encrypted-export → placeholder), tunnel routes + bidirectional policies with route-inferred LAN side |
+| site-to-site IPsec | converted to route-based phase1/phase2-interface for **all four** cross-vendor sources (ASA crypto-maps, PAN ike-gateway/tunnel, pfSense phase1/phase2, SRX ike/ipsec + st0) — proposals, PFS, PSK (encrypted-export → placeholder), tunnel routes + bidirectional policies with route-inferred LAN side |
 | Palo Alto App-ID | mapped to FortiOS application-control **categories** — rules generate a `config application list` profile wired onto the policy (`set application-list`); transport apps ignored, unmapped flagged. Category-level (coarser than FortiConverter's licensed per-signature ID table, which can't be reused clean-room) |
 | IPv6 | converted across all parsers — addresses → `address6`, groups → `addrgrp6`, routes → `router static6`, policies → `srcaddr6`/`dstaddr6` (unified table). PAN v6 objects, pfSense inet6 rules + v6 routes, ASA unified-ACL v6 + `ipv6 route`. (Dedicated ASA `ipv6 access-list` and v6 IPsec selectors still flagged) |
-| not yet | ASA twice-NAT (flagged), Check Point / Juniper parsers |
+| not yet | ASA twice-NAT (flagged), Check Point / SonicWall / FTD parsers; SRX routing-instances → VDOM (queued) |
 
 Cross-vendor conversions choose their **NAT mode**: `--nat-mode policy`
 (default — per-policy `nat enable` + VIPs) or `--nat-mode central`

@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import re
 
-from . import cisco_asa, paloalto, pfsense  # noqa: F401
+from . import cisco_asa, juniper_srx, paloalto, pfsense  # noqa: F401
 
 # cross-vendor parsers by vendor id
 CROSS_PARSERS = {
     "cisco-asa": cisco_asa.parse,
     "paloalto": paloalto.parse,
     "pfsense": pfsense.parse,
+    "juniper-srx": juniper_srx.parse,
 }
 
 
@@ -35,6 +36,7 @@ def detect_vendor(text: str) -> tuple[str, float]:
         "cisco-asa": cisco_asa.detect(text),
         "paloalto": paloalto.detect(text),
         "pfsense": pfsense.detect(text),
+        "juniper-srx": juniper_srx.detect(text),
         "fortios": detect_fortios(text),
     }
     vendor = max(scores, key=lambda k: scores[k])

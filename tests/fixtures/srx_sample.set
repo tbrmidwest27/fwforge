@@ -1,0 +1,79 @@
+set apply-groups base-if
+set system host-name srx-lab
+set groups base-if interfaces <ge-*> mtu 1500
+set interfaces ge-0/0/0 unit 0 family inet address 203.0.113.2/29
+set interfaces ge-0/0/1 vlan-tagging
+set interfaces ge-0/0/1 unit 0 family inet address 10.1.0.1/24
+set interfaces ge-0/0/1 unit 30 vlan-id 30
+set interfaces ge-0/0/1 unit 30 family inet address 192.168.30.1/24
+set interfaces st0 unit 0 family inet
+set routing-options static route 0.0.0.0/0 next-hop 203.0.113.1
+set routing-options static route 10.9.0.0/16 next-hop 10.1.0.254
+set applications application custom-8443 protocol tcp
+set applications application custom-8443 destination-port 8443
+set applications application-set web-apps application junos-http
+set applications application-set web-apps application junos-https
+set applications application-set web-apps application custom-8443
+set security address-book global address corp-net 10.0.0.0/8
+set security zones security-zone trust interfaces ge-0/0/1.0
+set security zones security-zone trust interfaces ge-0/0/1.30
+set security zones security-zone trust address-book address lan-net 10.1.0.0/24
+set security zones security-zone trust address-book address web-srv 10.1.0.10/32
+set security zones security-zone trust address-book address-set servers address web-srv
+set security zones security-zone untrust interfaces ge-0/0/0.0
+set security policies from-zone trust to-zone untrust policy allow-web match source-address lan-net
+set security policies from-zone trust to-zone untrust policy allow-web match destination-address any
+set security policies from-zone trust to-zone untrust policy allow-web match application web-apps
+set security policies from-zone trust to-zone untrust policy allow-web then permit
+set security policies from-zone trust to-zone untrust policy allow-web then log session-close
+set security policies from-zone trust to-zone untrust policy allow-ssh match source-address servers
+set security policies from-zone trust to-zone untrust policy allow-ssh match destination-address corp-net
+set security policies from-zone trust to-zone untrust policy allow-ssh match application junos-ssh
+set security policies from-zone trust to-zone untrust policy allow-ssh then permit
+set security policies from-zone untrust to-zone trust policy inbound-web match source-address any
+set security policies from-zone untrust to-zone trust policy inbound-web match destination-address web-srv
+set security policies from-zone untrust to-zone trust policy inbound-web match application junos-https
+set security policies from-zone untrust to-zone trust policy inbound-web then permit
+set security policies from-zone untrust to-zone trust policy block-rest match source-address any
+set security policies from-zone untrust to-zone trust policy block-rest match destination-address any
+set security policies from-zone untrust to-zone trust policy block-rest match application any
+set security policies from-zone untrust to-zone trust policy block-rest then deny
+set security policies global policy global-deny match source-address any
+set security policies global policy global-deny match destination-address any
+set security policies global policy global-deny match application any
+set security policies global policy global-deny then deny
+set security nat source rule-set trust-to-untrust from zone trust
+set security nat source rule-set trust-to-untrust to zone untrust
+set security nat source rule-set trust-to-untrust rule snat-all match source-address 10.1.0.0/24
+set security nat source rule-set trust-to-untrust rule snat-all then source-nat interface
+set security nat destination pool web-pool address 10.1.0.10/32 port 8443
+set security nat destination rule-set dnat from zone untrust
+set security nat destination rule-set dnat rule dnat-web match destination-address 203.0.113.5/32
+set security nat destination rule-set dnat rule dnat-web match destination-port 443
+set security nat destination rule-set dnat rule dnat-web then destination-nat pool web-pool
+set security nat static rule-set static-nat from zone untrust
+set security nat static rule-set static-nat rule static-mail match destination-address 203.0.113.6/32
+set security nat static rule-set static-nat rule static-mail then static-nat prefix 10.1.0.20/32
+set security ike proposal ike-prop authentication-method pre-shared-keys
+set security ike proposal ike-prop dh-group group14
+set security ike proposal ike-prop authentication-algorithm sha-256
+set security ike proposal ike-prop encryption-algorithm aes-256-cbc
+set security ike proposal ike-prop lifetime-seconds 28800
+set security ike policy ike-pol mode main
+set security ike policy ike-pol proposals ike-prop
+set security ike policy ike-pol pre-shared-key ascii-text mysecretkey
+set security ike gateway gw-branch ike-policy ike-pol
+set security ike gateway gw-branch address 198.51.100.9
+set security ike gateway gw-branch external-interface ge-0/0/0.0
+set security ike gateway gw-branch version v2-only
+set security ipsec proposal ipsec-prop protocol esp
+set security ipsec proposal ipsec-prop authentication-algorithm hmac-sha-256-128
+set security ipsec proposal ipsec-prop encryption-algorithm aes-256-cbc
+set security ipsec proposal ipsec-prop lifetime-seconds 3600
+set security ipsec policy ipsec-pol proposals ipsec-prop
+set security ipsec policy ipsec-pol perfect-forward-secrecy keys group14
+set security ipsec vpn branch-vpn bind-interface st0.0
+set security ipsec vpn branch-vpn ike gateway gw-branch
+set security ipsec vpn branch-vpn ike ipsec-policy ipsec-pol
+set security ipsec vpn branch-vpn traffic-selector ts1 local-ip 10.1.0.0/24
+set security ipsec vpn branch-vpn traffic-selector ts1 remote-ip 10.2.0.0/24

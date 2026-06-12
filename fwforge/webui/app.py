@@ -38,7 +38,8 @@ PREVIEW_CAP = 500
 POLICY_CAP = 800
 
 VENDOR_LABELS = {"cisco-asa": "Cisco ASA", "paloalto": "Palo Alto",
-                 "pfsense": "pfSense", "fortios": "FortiOS"}
+                 "pfsense": "pfSense", "juniper-srx": "Juniper SRX",
+                 "fortios": "FortiOS"}
 
 
 def _save_job(jid: str) -> None:

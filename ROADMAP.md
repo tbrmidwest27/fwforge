@@ -256,6 +256,39 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.26 — shipped 2026-06-11 (Juniper SRX parser + smoothness)
+- [x] **Juniper SRX (Junos) parser** (4th cross-vendor source):
+      parsers/juniper_srx.py. Both export formats normalized into one
+      JNode tree (token-tuple containers + leaf statements); a
+      curly<->set parity test guards them. Smoothness features that
+      naive converters miss:
+      - **apply-groups inheritance** expanded before parsing (deep
+        merge, explicit config wins; wildcard `<*>` groups flagged)
+      - **zone-scoped address books** flattened to global IR names with
+        cross-zone collision renames; global address-book `global {}`
+        and flat forms both read
+      - **junos-* predefined applications** -> real ports
+        (junos_apps.py, ~75 apps curated clean-room); custom
+        `application`/`application-set` (recursive) synthesize exact
+        services; multi-proto apps become service groups
+      - **zone-pair + global policies** -> FortiOS zone policies
+        (srcintf/dstintf = zones), address-excluded negation, permit/
+        deny, permit-tunnel and UTM profiles flagged
+      - **NAT**: source rule-set interface -> nat enable (zone pair);
+        pool source-NAT flagged; destination-nat pool -> VIP w/ port
+        forward; static-nat -> 1:1 VIP
+      - **route-based st0 IPsec**: ike/ipsec proposal+policy+gateway
+        resolved, traffic-selector / proxy-identity selectors, PFS,
+        IKEv2 detection, $9$-encrypted PSK -> CHANGEME + error
+      - context-sensitive set-format parsing (gateway/application are
+        named-containers in one place, leaf refs in another)
+      - routing-instances flagged as VDOM candidates; XML-style
+        coverage map (unread top-level stanzas named + counted)
+      Registered in CROSS_PARSERS + detect_vendor; --vendor juniper-srx;
+      GUI vendor tile. Also added the missing pfSense home tile. 207
+      tests (15 new). Queued: routing-instances -> VDOM (reuse the
+      vsys machinery), policy-based VPN, dynamic routing (BGP/OSPF).
+
 ### v0.25 — shipped 2026-06-11 (PAN file-only feature wave: #2/#1/#8/#4)
 - [x] **Panorama awareness (#2)**: a managed firewall's export merges
       Panorama-pushed pre-rulebase -> local -> post-rulebase in PAN
