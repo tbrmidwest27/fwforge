@@ -363,6 +363,7 @@ def create_app() -> Flask:
             "plan.html", jid=jid, meta=meta, targets=FORTIOS_TARGETS,
             default_target=default_target, det=det,
             platform_groups=platforms.GROUPS,
+            port_inventory=platforms.PORT_INVENTORY,
             schemas=schema_mod.list_cached(),
             error=request.args.get("error", ""))
 

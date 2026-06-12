@@ -56,3 +56,15 @@ def test_groups_cover_all_platforms():
     grouped = [p for _, items in platforms.GROUPS for p in items]
     assert sorted(grouped) == sorted(platforms.PLATFORMS)
     assert all(items for _, items in platforms.GROUPS)
+
+
+def test_port_inventory():
+    p701g = platforms.ports_for("FG7H1G")
+    assert "wan1" in p701g and "lan22" in p701g and "x8" in p701g
+    assert "mgmt" in p701g and "ha" in p701g
+    assert "port1" not in p701g  # 700G series has no portN names
+    p601f = platforms.ports_for("fg6h1f")  # case-insensitive
+    assert "port24" in p601f and "x8" in p601f
+    assert "lan1" not in p601f
+    assert platforms.ports_for("FGT60F") == platforms.ports_for("FGT61F")
+    assert platforms.ports_for("FG100F") == ()  # unconfirmed model

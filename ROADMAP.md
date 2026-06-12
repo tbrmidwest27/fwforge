@@ -256,6 +256,19 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.31 — shipped 2026-06-12 (per-model port inventories in the mapping step)
+PORT_INVENTORY in platforms.py: physical interface names per platform
+code, confirmed-only with provenance — 600F/601F from the real 601F
+backup (ha, mgmt, port1-24, x1-x8), 700G/701G from Fortinet's FG-700G
+QSG front panel (ha, mgmt, wan1/2, lan1-22, x1-x8 — NO portN names!),
+60F/61F from a live lab pull (wan1/2, dmz, internal1-5, a, b).
+GUI: picking a target model feeds a datalist into every portmap target
+input, shows the model's full port list, and outlines red any mapped
+name for a PHYSICAL source port that does not exist on the target
+(VLANs/tunnels keep their names, never flagged). Found the real
+601F→701G trap: not one of the 601F's port1-24 exists on the 701G —
+the portmap step is mandatory, not optional, for that migration.
+
 ### v0.30 — shipped 2026-06-12 (zone ramifications round 2 + schema-check honesty)
 All four driven by the live 601F→701G "core" zone migration:
 - **associated-interface rebind**: apply_zones rewrites member-bound

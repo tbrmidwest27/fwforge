@@ -387,3 +387,10 @@ def test_bom_prefixed_config_detected(client, tmp_path):
     assert resp.status_code == 302
     jid = resp.headers["Location"].rstrip("/").split("/")[-1]
     assert webui_app.JOBS[jid]["vendor"] == "fortios"
+
+
+def test_port_inventory_shipped_to_wizard(client):
+    jid = _load(client, "fortios_refactor.conf")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert 'id="tp-ports"' in page          # datalist for map_dst inputs
+    assert '"FG7H1G"' in page and "lan22" in page  # inventory JSON inline

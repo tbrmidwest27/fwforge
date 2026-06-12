@@ -202,6 +202,8 @@
   <p class="grid-note">Source name &rarr; target port. Pre-filled with the
     same name; change what differs on the target model. Empty target =
     leave the name as-is.</p>
+  <p class="grid-note" id="tp-port-hint"></p>
+  <datalist id="tp-ports"></datalist>
   <table style="max-width:{% if det %}860px{% else %}580px{% endif %}">
     <tr><th>source</th>{% if det %}<th>ip</th><th>alias / description</th>{% endif %}{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>target</th></tr>
     {% for ifc in meta.interfaces %}
@@ -217,7 +219,7 @@
       <td><span class="badge b-vdom">{{ meta.vdoms.get(ifc, "root") }}</span></td>
       {% endif %}
       <td><input type="text" name="map_dst" value="{{ ifc }}"
-                 style="width:100%"></td>
+                 list="tp-ports" style="width:100%"></td>
     </tr>
     {% endfor %}
   </table>
@@ -581,6 +583,44 @@ function setAllMembers(btn, on) {
   });
   refreshClaims();
 }
+
+// ---- target-model port suggestions (Interface Mapping step) ----
+const PORT_INV = {{ port_inventory|tojson }};
+const PHYS = new Set(DET.filter(d => d.type === "physical")
+                        .map(d => d.name));
+function tpPortsChanged() {
+  const sel = document.getElementById("tp-select");
+  const dl = document.getElementById("tp-ports");
+  const hint = document.getElementById("tp-port-hint");
+  if (!sel || !dl) return;
+  const ports = PORT_INV[sel.value] || [];
+  dl.innerHTML = ports.map(p => `<option value="${esc(p)}">`).join("");
+  let missing = 0;
+  document.querySelectorAll('input[name="map_dst"]').forEach(inp => {
+    const row = inp.closest("tr");
+    const src = row && row.querySelector('input[name="map_src"]');
+    // only physical source ports must exist on the target model;
+    // VLANs / tunnels / switches keep whatever name they're given
+    const isPhys = src && PHYS.has(src.value);
+    const miss = !!(ports.length && isPhys && inp.value.trim()
+                    && !ports.includes(inp.value.trim()));
+    if (miss) missing++;
+    inp.style.outline = miss ? "2px solid #c0392b" : "";
+    inp.title = miss
+      ? "this port does not exist on the selected target model" : "";
+  });
+  if (hint) {
+    hint.textContent = !ports.length ? "" :
+      `target model ports: ${ports.join(", ")}` +
+      (missing ? ` — ${missing} mapped name(s) do not exist on it ` +
+                 "(outlined red)" : "");
+  }
+}
+const tpSel = document.getElementById("tp-select");
+if (tpSel) tpSel.addEventListener("change", tpPortsChanged);
+document.addEventListener("input", e => {
+  if (e.target && e.target.name === "map_dst") tpPortsChanged();
+});
 {% endif %}
 function filterPolicies() {
   const q = document.getElementById("polsearch").value.toLowerCase();

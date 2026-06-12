@@ -103,6 +103,45 @@ for _p in PLATFORMS:
 _VERIFY_NOTE = ("confirm against a backup taken from the actual target "
                 "device before restoring")
 
+# -- physical port inventories ----------------------------------------------
+# Interface names as FortiOS configures them (lowercase), per platform
+# code. Drives portmap target suggestions: a source port that does not
+# exist on the target model MUST be remapped or the restore drops it and
+# everything referencing it. Only models with a confirmed inventory are
+# listed; provenance per entry. USB modem / npu vlinks excluded (not
+# front-panel ports).
+
+# ground truth: FortiGate 601F backup, config system interface (2026-06)
+_PORTS_600F = ("ha", "mgmt") \
+    + tuple(f"port{i}" for i in range(1, 25)) \
+    + tuple(f"x{i}" for i in range(1, 9))
+
+# Fortinet FG-700G-Series QuickStart Guide front panel: WAN1/2 + LAN1-6
+# 5G RJ45, LAN7-22 SFP 1G, X1-X4 FortiLink SFP+ 10G, X5-X8 SFP28 25G,
+# HA 2.5G, MGMT 1G
+_PORTS_700G = ("ha", "mgmt", "wan1", "wan2") \
+    + tuple(f"lan{i}" for i in range(1, 23)) \
+    + tuple(f"x{i}" for i in range(1, 9))
+
+# live `get system interface physical` on a lab FortiGate 60F (2026-06)
+_PORTS_60F = ("wan1", "wan2", "dmz", "internal1", "internal2",
+              "internal3", "internal4", "internal5", "a", "b")
+
+PORT_INVENTORY: dict[str, tuple[str, ...]] = {
+    "FG6H0F": _PORTS_600F,   # 600F: same chassis as 601F
+    "FG6H1F": _PORTS_600F,
+    "FG7H0G": _PORTS_700G,   # QSG covers FG-700G and FG-701G
+    "FG7H1G": _PORTS_700G,
+    "FGT60F": _PORTS_60F,
+    "FGT61F": _PORTS_60F,    # 61F: 60F chassis + storage
+}
+
+
+def ports_for(code: str) -> tuple[str, ...]:
+    """Known physical-port names for a platform code; empty tuple when
+    the model's inventory has not been confirmed yet."""
+    return PORT_INVENTORY.get(code.strip().upper(), ())
+
 
 def resolve(text: str) -> tuple[str, str]:
     """Map user input to a platform code.
