@@ -122,6 +122,9 @@ PLATFORMS: tuple[Platform, ...] = (
 
 _FAMILY_ORDER = ("Desktop", "Mid-range", "High-end", "Virtual")
 
+# platform code -> product label, e.g. "FG6H1F" -> "FortiGate 601F"
+MODEL_BY_CODE: dict[str, str] = {p.code: p.model for p in PLATFORMS}
+
 GROUPS: tuple[tuple[str, tuple[Platform, ...]], ...] = tuple(
     (fam, tuple(p for p in PLATFORMS if p.family == fam))
     for fam in _FAMILY_ORDER

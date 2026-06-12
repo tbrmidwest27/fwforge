@@ -238,6 +238,16 @@
     .fpgroup { display:flex; flex-direction:column; gap:2px;
                padding:0 .65rem; }
     .fpgroup + .fpgroup { border-left:1px solid #2c323b; }
+    .fpbezel { display:flex; flex-direction:column;
+               justify-content:center; gap:2px; flex:0 0 auto;
+               margin-right:.5rem; padding:.15rem .8rem .15rem .55rem;
+               border-left:3px solid #d7282f;
+               border-right:1px solid #2c323b; }
+    .fpbrand { color:#eef2f7; font-weight:700; font-size:.74rem;
+               letter-spacing:.02em; line-height:1; white-space:nowrap; }
+    .fpmodel { color:#9fb4c8; font-size:.6rem; font-weight:600;
+               letter-spacing:.06em; line-height:1; white-space:nowrap;
+               text-transform:uppercase; }
     .fpglabel { color:#7d8896; font-size:.55rem; text-transform:uppercase;
                 letter-spacing:.07em; white-space:nowrap;
                 text-align:center; }
@@ -739,9 +749,15 @@ function fpShortLabel(name) {
   if (m) return m[1];
   return name.toUpperCase();
 }
-function fpRender(el, spec, side) {
+function fpRender(el, spec, side, model) {
+  // bezel wordmark like the device silkscreen: brand + model number
+  const words = (model || "").split(" ");
+  const bezel = model ? `<div class="fpbezel">
+      <span class="fpbrand">${esc(words[0])}</span>
+      <span class="fpmodel">${esc(words.slice(1).join(" "))}</span>
+    </div>` : "";
   // FortiOS-style: labels above the top row, below the bottom row
-  el.innerHTML = spec.map(g => `
+  el.innerHTML = bezel + spec.map(g => `
     <div class="fpgroup"><div class="fpglabel">${esc(g.label)}</div>
       <div class="fpports"
            style="grid-template-rows:repeat(${g.rows},auto)">
@@ -800,21 +816,25 @@ function refreshFaceplates() {
     p.classList.toggle("lit", n === activeDst);
   });
 }
+const MODEL_BY_CODE = {{ platform_models|tojson }};
 function buildFaceplates() {
   const srcEl = document.getElementById("fp-src");
   const dstEl = document.getElementById("fp-dst");
   if (!srcEl || !dstEl) return;
   const srcPorts = DET.filter(d => d.type === "physical"
       && !d.name.includes(".") && d.name !== "modem").map(d => d.name);
-  fpRender(srcEl, fpSpec(SOURCE_PLATFORM, srcPorts), "src");
+  const srcModel = MODEL_BY_CODE[SOURCE_PLATFORM] || SOURCE_PLATFORM
+    || "FortiGate";
+  fpRender(srcEl, fpSpec(SOURCE_PLATFORM, srcPorts), "src", srcModel);
   document.getElementById("fp-src-name").textContent =
-    SOURCE_PLATFORM || "source";
+    SOURCE_PLATFORM || "";
   const dp = destPortList();
   const dc = destCodeNow();
   document.getElementById("fp-dst-name").textContent = dc;
   document.getElementById("fp-dst-hint").textContent = dp.length ? "" :
     "pick a target model (or load a destination backup) to light this up";
-  fpRender(dstEl, fpSpec(dc, dp), "dst");
+  fpRender(dstEl, fpSpec(dc, dp), "dst",
+           dp.length ? (MODEL_BY_CODE[dc] || dc || "FortiGate") : "");
   refreshFaceplates();
 }
 document.addEventListener("focusin", e => {

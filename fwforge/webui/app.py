@@ -400,6 +400,7 @@ def create_app() -> Flask:
             platform_groups=platforms.GROUPS,
             port_inventory=platforms.PORT_INVENTORY,
             faceplates=platforms.FACEPLATES,
+            platform_models=platforms.MODEL_BY_CODE,
             schemas=schema_mod.list_cached(),
             error=request.args.get("error", ""))
 
