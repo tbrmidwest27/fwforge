@@ -256,6 +256,12 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.34.1 — shipped 2026-06-12 (lineup ceiling: 4801F)
+Adam's call: no 6000/7000-series; 4801F tops the list. Added the seven
+x01 bundle siblings (1801F…4801F) via the 4-char K-rule extension
+(4801→FG4K81F) — least-anchored codes in the table, all * /unverified.
+71 models total. 251 tests.
+
 ### v0.34 — shipped 2026-06-12 (dropdown expanded to the full retail lineup)
 ~35 → 64 models per Adam's "every current model" ask: full G-series
 desktop, F desktop + FortiWiFi + Rugged, E-series mid-range

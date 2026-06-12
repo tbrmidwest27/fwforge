@@ -131,3 +131,11 @@ def test_expanded_lineup_resolves():
     assert platforms.resolve("3001F")[0] == "FG3K1F"
     # bare "60F" still prefers the plain FortiGate over WiFi/Rugged
     assert platforms.resolve("60F")[0] == "FGT60F"
+
+
+def test_lineup_ceiling_is_4801f():
+    assert platforms.resolve("4801F")[0] == "FG4K81F"
+    assert platforms.resolve("1801F")[0] == "FG1K81F"
+    # nothing above the 4801F ceiling, no chassis series
+    assert not any("6000" in p.model or "7000" in p.model
+                   or "7081" in p.model for p in platforms.PLATFORMS)

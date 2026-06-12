@@ -94,16 +94,28 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform("FG9H1G", "FortiGate 901G", "High-end", False),
     Platform("FG1K0F", "FortiGate 1000F", "High-end", False),
     Platform("FG1K1F", "FortiGate 1001F", "High-end", False),
+    # x01 siblings use the 4-char tail extension of the K-rule
+    # (4801 -> 4K81) — the least-anchored derivations in this table;
+    # the * marker / destination-backup flow is the safety net.
+    # Lineup ceiling is 4801F by design owner's call (2026-06-12);
+    # 6000/7000-series chassis are deliberately not listed.
     Platform("FG1K8F", "FortiGate 1800F", "High-end", False),
+    Platform("FG1K81F", "FortiGate 1801F", "High-end", False),
     Platform("FG2K6F", "FortiGate 2600F", "High-end", False),
     Platform("FG3K0F", "FortiGate 3000F", "High-end", False),
     Platform("FG3K1F", "FortiGate 3001F", "High-end", False),
     Platform("FG3K2F", "FortiGate 3200F", "High-end", False),
+    Platform("FG3K21F", "FortiGate 3201F", "High-end", False),
     Platform("FG3K5F", "FortiGate 3500F", "High-end", False),
+    Platform("FG3K51F", "FortiGate 3501F", "High-end", False),
     Platform("FG3K7F", "FortiGate 3700F", "High-end", False),
+    Platform("FG3K71F", "FortiGate 3701F", "High-end", False),
     Platform("FG4K2F", "FortiGate 4200F", "High-end", False),
+    Platform("FG4K21F", "FortiGate 4201F", "High-end", False),
     Platform("FG4K4F", "FortiGate 4400F", "High-end", False),
+    Platform("FG4K41F", "FortiGate 4401F", "High-end", False),
     Platform("FG4K8F", "FortiGate 4800F", "High-end", False),
+    Platform("FG4K81F", "FortiGate 4801F", "High-end", False),
     # -- virtual --------------------------------------------------------
     Platform("FGVM64", "FortiGate VM64", "Virtual", False),
 )
