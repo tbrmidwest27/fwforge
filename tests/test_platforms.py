@@ -35,8 +35,8 @@ def test_bare_model_prefers_fortigate_over_fortiwifi():
 
 
 def test_unknown_but_plausible_code_accepted():
-    code, note = platforms.resolve("fg1k8f")
-    assert code == "FG1K8F"
+    code, note = platforms.resolve("fg9k9f")
+    assert code == "FG9K9F"
     assert "not in the known-model table" in note
 
 
@@ -119,3 +119,15 @@ def test_inventory_requires_header_and_interfaces():
     with pytest.raises(PlanError):
         platforms.inventory_from_config(
             "#config-version=FG7H1G-8.0.0-FW-build0167-1:x\nconfig x\nend\n")
+
+
+def test_expanded_lineup_resolves():
+    # spot-check the lineup expansion: E-series H-substitution,
+    # rugged/WiFi prefixes, thousands K-pattern
+    assert platforms.resolve("300E")[0] == "FG3H0E"
+    assert platforms.resolve("FortiGate Rugged 60F")[0] == "FGR60F"
+    assert platforms.resolve("FortiWiFi 61F")[0] == "FWF61F"
+    assert platforms.resolve("1800F")[0] == "FG1K8F"
+    assert platforms.resolve("3001F")[0] == "FG3K1F"
+    # bare "60F" still prefers the plain FortiGate over WiFi/Rugged
+    assert platforms.resolve("60F")[0] == "FGT60F"

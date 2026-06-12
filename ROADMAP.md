@@ -256,6 +256,16 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.34 — shipped 2026-06-12 (dropdown expanded to the full retail lineup)
+~35 → 64 models per Adam's "every current model" ask: full G-series
+desktop, F desktop + FortiWiFi + Rugged, E-series mid-range
+(H-substitution), F/G mid-range, F high-end through 4800F (thousands
+K-pattern: 1800F=FG1K8F, 3001F=FG3K1F). All new entries marked * /
+unverified; hardware-verified stay FGT60F / FG6H1F / FG7H1G. Excluded
+on purpose (custom code or destination backup instead): x501/x801
+variants (ambiguous vs the K-rule), 7000-series chassis, non-FGVM64
+VM tokens. 250 tests.
+
 ### v0.33 — shipped 2026-06-12 (zone-subsystem review hardening)
 Adversarial self-review pass over the zone piece; five fixes, none
 triggered by Adam's config but all real: proxy-policy added to
