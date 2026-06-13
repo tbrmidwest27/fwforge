@@ -256,6 +256,16 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.38 — shipped 2026-06-13 (physical-port targets are real dropdowns)
+Adam: the mapping target must be a dropdown that knows ALL the
+destination model's ports (601F port1 -> 701G lan1). Physical source
+ports now render a <select> populated client-side with the destination's
+real ports (from the uploaded backup = authoritative all-ports, or the
+model PORT_INVENTORY); same-name auto-selects, an unmatched source shows
+"<name> — choose a port" + red outline. VLANs/tunnels keep free-text
+(names carry over). Faceplate click-to-wire and the red-outline
+validation both work with the selects. 259 tests.
+
 ### v0.37 — shipped 2026-06-13 (zone/SD-WAN membership in the mapping grid)
 Pre-zoned 601F (3rd-Rail-02) — policies reference zone names, members
 hidden behind zones. New "membership" column on the Interface Mapping

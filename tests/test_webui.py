@@ -502,3 +502,14 @@ def test_mapping_grid_shows_zone_membership(client):
     assert "<th>membership</th>" in page
     assert "b-zone" in page
     assert "zone: legacy-zone" in page
+
+
+def test_physical_ports_are_target_dropdowns(client):
+    # physical source ports become <select> dropdowns of destination
+    # ports; VLANs keep a free-text input (their names carry over)
+    jid = _load(client, "fortios_refactor.conf")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert '<select name="map_dst"' in page
+    assert 'data-src="port1"' in page        # physical -> dropdown
+    assert 'data-src="vlan30"' not in page    # vlan -> text input
+    assert "populateSelects" in page          # dropdown-fill JS shipped

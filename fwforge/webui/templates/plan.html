@@ -218,9 +218,12 @@
 <section class="wstep" data-title="Interface Mapping">
 <div class="card">
   <h2>Interface Mapping</h2>
-  <p class="grid-note">Source name &rarr; target port. Pre-filled with the
-    same name; change what differs on the target model. Empty target =
-    leave the name as-is.</p>
+  <p class="grid-note">Source name &rarr; target port. Physical ports are
+    <b>dropdowns of the destination model's real ports</b> (e.g. the
+    601F&rsquo;s <code>port1</code> &rarr; the 701G&rsquo;s
+    <code>lan1</code>) &mdash; load a destination backup or pick a target
+    model to populate them. VLANs and tunnels keep their names unless you
+    change them.</p>
   <style>
     /* FortiOS-style faceplate widget — our own CSS rendering */
     .fpwrap { margin:.4rem 0 .9rem; display:flex; flex-direction:column;
@@ -337,8 +340,11 @@
       {% if meta.multi_vdom %}
       <td><span class="badge b-vdom">{{ meta.vdoms.get(ifc, "root") }}</span></td>
       {% endif %}
-      <td><input type="text" name="map_dst" value="{{ ifc }}"
-                 list="tp-ports" style="width:100%"></td>
+      <td>{% if d and d.type == "physical" %}<select name="map_dst"
+            class="mdst" data-src="{{ ifc }}" style="width:100%">
+            <option value="{{ ifc }}" selected>{{ ifc }}</option>
+          </select>{% else %}<input type="text" name="map_dst"
+            value="{{ ifc }}" list="tp-ports" style="width:100%">{% endif %}</td>
     </tr>
     {% endfor %}
   </table>
@@ -709,34 +715,53 @@ const PORT_INV = {{ port_inventory|tojson }};
 const TARGET_PORTS = {{ meta.get("target_ports", [])|tojson }};
 const PHYS = new Set(DET.filter(d => d.type === "physical")
                         .map(d => d.name));
+// fill each physical-port target <select> with the destination's real
+// ports, keeping the current pick (or same-name match) selected; an
+// unmatched source shows a "needs a port" prompt so it stands out
+function populateSelects(ports) {
+  document.querySelectorAll("select.mdst").forEach(sel => {
+    const src = sel.dataset.src;
+    const cur = sel.value || src;
+    sel.innerHTML = "";
+    if (!ports.length) { sel.add(new Option(src, src, true, true)); return; }
+    const want = ports.includes(cur) ? cur
+               : (ports.includes(src) ? src : "");
+    if (!want) sel.add(new Option(`${cur} — choose a port`, cur, true, true));
+    ports.forEach(p => {
+      const o = new Option(p, p);
+      if (p === want) o.selected = true;
+      sel.add(o);
+    });
+  });
+}
+// red-outline any physical target whose value is not a destination port
+function outlineTargets(ports) {
+  let missing = 0;
+  document.querySelectorAll('[name="map_dst"]').forEach(el => {
+    const row = el.closest("tr");
+    const src = row && row.querySelector('input[name="map_src"]');
+    const isPhys = src && PHYS.has(src.value);
+    const val = (el.value || "").trim();
+    const miss = !!(ports.length && isPhys && val && !ports.includes(val));
+    if (miss) missing++;
+    el.style.outline = miss ? "2px solid #c0392b" : "";
+    el.title = miss ? "this port does not exist on the destination" : "";
+  });
+  return missing;
+}
+// the destination changed (model pick or backup): rebuild the dropdowns
 function tpPortsChanged() {
-  const sel = document.getElementById("tp-select");
   const dl = document.getElementById("tp-ports");
   const hint = document.getElementById("tp-port-hint");
-  if (!dl) return;
-  const ports = TARGET_PORTS.length ? TARGET_PORTS
-    : ((sel && PORT_INV[sel.value]) || []);
-  dl.innerHTML = ports.map(p => `<option value="${esc(p)}">`).join("");
-  let missing = 0;
-  document.querySelectorAll('input[name="map_dst"]').forEach(inp => {
-    const row = inp.closest("tr");
-    const src = row && row.querySelector('input[name="map_src"]');
-    // only physical source ports must exist on the target model;
-    // VLANs / tunnels / switches keep whatever name they're given
-    const isPhys = src && PHYS.has(src.value);
-    const miss = !!(ports.length && isPhys && inp.value.trim()
-                    && !ports.includes(inp.value.trim()));
-    if (miss) missing++;
-    inp.style.outline = miss ? "2px solid #c0392b" : "";
-    inp.title = miss
-      ? "this port does not exist on the selected target model" : "";
-  });
-  if (hint) {
-    hint.textContent = !ports.length ? "" :
-      `destination ports: ${ports.join(", ")}` +
-      (missing ? ` — ${missing} mapped name(s) do not exist on it ` +
-                 "(outlined red)" : "");
-  }
+  const ports = destPortList();
+  if (dl) dl.innerHTML = ports.map(p => `<option value="${esc(p)}">`).join("");
+  populateSelects(ports);
+  const missing = outlineTargets(ports);
+  if (hint) hint.textContent = !ports.length
+    ? "pick a target model or load a destination backup to fill the "
+      + "port dropdowns"
+    : `destination ports: ${ports.join(", ")}`
+      + (missing ? ` — ${missing} still need a port (outlined red)` : "");
 }
 // ---- faceplates: schematic front panels with live port lighting ----
 const FACEPLATES = {{ faceplates|tojson }};
@@ -791,7 +816,7 @@ function destCodeNow() {
 }
 function fpMapping() {
   const m = {};
-  document.querySelectorAll('input[name="map_dst"]').forEach(inp => {
+  document.querySelectorAll('[name="map_dst"]').forEach(inp => {
     const src = inp.closest("tr").querySelector('input[name="map_src"]');
     if (src) m[src.value] = (inp.value || src.value).trim();
   });
@@ -857,15 +882,16 @@ document.addEventListener("click", e => {
   if (p.dataset.side === "src") {
     document.querySelectorAll('input[name="map_src"]').forEach(h => {
       if (h.value === p.dataset.port) {
-        const inp = h.closest("tr")
-          .querySelector('input[name="map_dst"]');
+        const inp = h.closest("tr").querySelector('[name="map_dst"]');
         inp.focus();
         inp.scrollIntoView({block: "center", behavior: "smooth"});
       }
     });
   } else if (fpActive) {
+    // wire the focused row to this destination port (works for the
+    // <select> dropdown and the VLAN text inputs alike)
     fpActive.value = p.dataset.port;
-    fpActive.dispatchEvent(new Event("input", {bubbles: true}));
+    fpActive.dispatchEvent(new Event("change", {bubbles: true}));
     fpActive.focus();
   }
 });
@@ -875,12 +901,14 @@ if (tpSel) tpSel.addEventListener("change", () => {
   tpPortsChanged();
   buildFaceplates();
 });
-document.addEventListener("input", e => {
+// a single row edited: re-outline + relight, but don't rebuild every
+// dropdown (that would disrupt the one being changed)
+["input", "change"].forEach(ev => document.addEventListener(ev, e => {
   if (e.target && e.target.name === "map_dst") {
-    tpPortsChanged();
+    outlineTargets(destPortList());
     refreshFaceplates();
   }
-});
+}));
 tpPortsChanged();    // destination-backup ports apply from page load
 buildFaceplates();   // draw both panels immediately
 {% endif %}
