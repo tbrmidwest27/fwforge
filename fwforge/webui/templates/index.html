@@ -86,8 +86,9 @@
   </div>
   <p class="grid-note">Destination backup: any config backup taken from
     the TARGET device — a factory-fresh one is ideal. It supplies the
-    authoritative platform code and the real port inventory for the
-    migration (FortiGate&rarr;FortiGate only). Reference only — it is
-    never merged into the output.</p>
+    authoritative platform code, the real port inventory, and the
+    device identity (hostname) — the output is named for and carries
+    the destination's identity (FortiGate&rarr;FortiGate only). Its
+    policies and objects are never merged in.</p>
 </div>
 {% endblock %}

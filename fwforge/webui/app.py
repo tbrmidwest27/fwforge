@@ -357,6 +357,9 @@ def create_app() -> Flask:
             meta["target_version"] = ver
             meta["target_ports"] = list(ports)
             meta["target_name"] = tname
+            ident = platforms.device_identity(ttext)
+            meta["target_identity"] = ident
+            meta["target_hostname"] = ident.get("hostname", "")
             (jdir / "_target.conf").write_text(ttext, encoding="utf-8")
 
         JOBS[jid] = meta
@@ -434,11 +437,12 @@ def create_app() -> Flask:
                                              "").strip()
                 if tplat:
                     tplat, _ = platforms.resolve(tplat)
-                tdev = None
+                tdev = tident = None
                 if meta.get("target_ports"):
                     tdev = (meta.get("target_code", ""),
                             meta.get("target_version", ""),
                             tuple(meta["target_ports"]))
+                    tident = meta.get("target_identity") or None
                     # the destination backup's own code is authoritative
                     tplat = tplat or meta.get("target_code") or None
                 result = pipeline.run_migrate(
@@ -455,7 +459,7 @@ def create_app() -> Flask:
                     sslvpn_to_ipsec=bool(request.form.get("sslvpn_to_ipsec")),
                     sslvpn_psk=request.form.get("sslvpn_psk", "").strip()
                     or "CHANGEME-SET-A-REAL-PSK",
-                    target_device=tdev,
+                    target_device=tdev, target_identity=tident,
                     want_normalized=True)
             else:
                 mapping = {}
@@ -501,10 +505,15 @@ def create_app() -> Flask:
                 report.add("error", "schema",
                            f"schema check failed ({e}) — output written "
                            "unvalidated")
-        stem = Path(meta["name"]).stem or "config"
-        if stem.lower() in ("_source", "source", "report", "diff",
-                            "bundle"):
-            stem += "-converted"  # keep clear of the job's own artifacts
+        # name outputs after the destination device when its backup is
+        # present — the converted file IS that box's config
+        if meta.get("target_hostname"):
+            stem = platforms.safe_filename(meta["target_hostname"])
+        else:
+            stem = Path(meta["name"]).stem or "config"
+            if stem.lower() in ("_source", "source", "report", "diff",
+                                "bundle"):
+                stem += "-converted"  # keep clear of the job's artifacts
         fmg_written = False
         (jdir / f"{stem}.fmg.json").unlink(missing_ok=True)  # stale run
         if result.mode == "cross" and request.form.get("fmg_enable"):
@@ -608,7 +617,8 @@ def create_app() -> Flask:
     @app.get("/job/<jid>/dl/<which>")
     def download(jid, which):
         meta = _job(jid)
-        stem = Path(meta["name"]).stem or "config"
+        stem = (meta.get("result", {}).get("stem")
+                or Path(meta["name"]).stem or "config")
         main_name = meta.get("result", {}).get("main_name",
                                                 f"{stem}.config-all.txt")
         files = {
@@ -634,7 +644,8 @@ def create_app() -> Flask:
     @app.get("/job/<jid>/bundle.zip")
     def bundle(jid):
         meta = _job(jid)
-        stem = Path(meta["name"]).stem or "config"
+        stem = (meta.get("result", {}).get("stem")
+                or Path(meta["name"]).stem or "config")
         jdir = JOBS_DIR / jid
         zpath = jdir / "bundle.zip"
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:

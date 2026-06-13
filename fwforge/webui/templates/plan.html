@@ -129,10 +129,12 @@
     </div>
     {% if meta.vendor == "fortios" %}
     {% if meta.target_code %}
-    <p class="grid-note">Platform code and port inventory come from the
+    <p class="grid-note">Platform code, port inventory and device
+      identity (hostname{% if meta.target_hostname %}
+      &ldquo;{{ meta.target_hostname }}&rdquo;{% endif %}) come from the
       uploaded destination backup &mdash; authoritative, nothing to
-      verify. The destination file is reference only and is never merged
-      into the output.</p>
+      verify. The output is named for and carries the destination's
+      identity; its policies/objects are not merged in.</p>
     {% else %}
     <p class="grid-note">* derived from the FortiOS naming scheme &mdash;
       confirm against a backup taken from the actual target model before

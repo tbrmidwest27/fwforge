@@ -201,6 +201,38 @@ def header_platform(text: str) -> str:
     return m.group(1) if m else ""
 
 
+# `config system global` settings that identify the physical box rather
+# than its security config. When a destination backup is supplied these
+# are carried onto the migrated output so the converted file IS the
+# destination device's config (keeps its own name), not a renamed clone
+# of the source. Identity only — NOT policies/objects (that stays the
+# declined merge-into-existing feature). Extend deliberately.
+DEVICE_IDENTITY_ATTRS: tuple[str, ...] = ("hostname", "alias")
+
+
+def device_identity(text: str) -> dict[str, str]:
+    """{attr: value} for the DEVICE_IDENTITY_ATTRS present in a config's
+    `config system global` (global scope on multi-VDOM)."""
+    from .parsers import fortios_tree
+    tree = fortios_tree.parse_config(text)
+    out: dict[str, str] = {}
+    for path, node in fortios_tree.iter_config_nodes(tree):
+        if not fortios_tree.path_endswith(path, ("system", "global")):
+            continue
+        for line in node.children:
+            if isinstance(line, fortios_tree.SetLine) \
+                    and line.attr in DEVICE_IDENTITY_ATTRS and line.values:
+                out[line.attr] = line.values[0].value
+        break
+    return out
+
+
+def safe_filename(name: str, fallback: str = "config") -> str:
+    """A filesystem-safe stem from a device name/hostname."""
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip()).strip("._-")
+    return s or fallback
+
+
 # -- faceplate layouts --------------------------------------------------------
 # Schematic front-panel specs for the GUI's port-lighting view. These
 # are our own schematic drawings (groups of port rectangles) — no

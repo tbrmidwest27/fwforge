@@ -450,3 +450,45 @@ def test_faceplates_shipped_to_wizard(client):
     assert "FACEPLATES" in page and "5G RJ45" in page  # 700G spec inline
     # the fixture header platform is captured for the source panel
     assert webui_app.JOBS[jid]["source_platform"] == "FGT601F"
+
+
+def test_destination_identity_and_filename(client):
+    import io
+    src = (FIX / "fortios_refactor.conf").read_bytes()
+    tgt = b"""#config-version=FG7H1G-8.0.0-FW-build0167-260420:opmode=0:vdom=0:user=admin
+config system global
+    set hostname "edge-fw-01"
+    set alias "FortiGate-701G"
+end
+config system interface
+    edit "mgmt"
+        set type physical
+    next
+    edit "wan1"
+        set type physical
+    next
+    edit "lan1"
+        set type physical
+    next
+end
+"""
+    resp = client.post("/load", data={
+        "config": (io.BytesIO(src), "src.conf"),
+        "target_config": (io.BytesIO(tgt), "edge-fw-01_backup.conf"),
+    }, content_type="multipart/form-data", follow_redirects=False)
+    jid = resp.headers["Location"].rstrip("/").split("/")[-1]
+    assert webui_app.JOBS[jid]["target_hostname"] == "edge-fw-01"
+
+    form = {
+        "fortios": "", "source_os": "7.6",
+        "map_src": ["port1", "port2", "port3", "port4", "vlan30"],
+        "map_dst": ["wan1", "lan1", "mgmt", "lan1", "vlan30"],
+    }
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    # destination identity carried onto the output, source name gone
+    assert 'set hostname "edge-fw-01"' in conf
+    assert "refactor-src" not in conf
+    # output is named for the destination device
+    assert webui_app.JOBS[jid]["result"]["stem"] == "edge-fw-01"
+    assert webui_app.JOBS[jid]["result"]["main_name"] == "edge-fw-01.conf"

@@ -251,14 +251,17 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
             tplat, tplat_note = platforms.resolve(tplat)
             print(f"target platform: {tplat}"
                   + (f" ({tplat_note})" if tplat_note else ""))
-        tdev = None
+        tdev = tident = None
         tconf = getattr(args, "target_config", None)
         if tconf:
-            code, ver, ports = platforms.inventory_from_config(
-                _read(tconf))
+            ttext = _read(tconf)
+            code, ver, ports = platforms.inventory_from_config(ttext)
             tdev = (code, ver, ports)
+            tident = platforms.device_identity(ttext)
             print(f"destination device: {code} (FortiOS {ver}, "
-                  f"{len(ports)} physical ports)")
+                  f"{len(ports)} physical ports)"
+                  + (f", hostname {tident['hostname']}"
+                     if tident.get("hostname") else ""))
             if tplat and tplat != code:
                 raise PlanError(
                     f"--target-platform {tplat} conflicts with the "
@@ -278,14 +281,20 @@ def _convert_migrate(text: str, src_path: str, args, outdir: Path) -> int:
             sslvpn_to_ipsec=getattr(args, "sslvpn_to_ipsec", False),
             sslvpn_psk=getattr(args, "sslvpn_psk", None)
             or "CHANGEME-SET-A-REAL-PSK",
-            target_device=tdev)
+            target_device=tdev, target_identity=tident or None)
     except PlanError as e:
         print(f"plan error: {e}", file=sys.stderr)
         return 2
     report = result.report
     _schema_check(args, result.out_text, report)
 
-    stem = Path(src_path).stem
+    # name the output after the destination device when we have its
+    # backup — the converted file IS that box's config
+    if tident and tident.get("hostname"):
+        stem = platforms.safe_filename(tident["hostname"])
+        print(f"output named for destination: {stem}.conf")
+    else:
+        stem = Path(src_path).stem
     try:
         clobber = (outdir / f"{stem}.conf").resolve() \
             == Path(src_path).resolve()

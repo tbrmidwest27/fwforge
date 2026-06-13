@@ -162,3 +162,19 @@ def test_601f_faceplate_has_distinct_25g_bank():
     by_label = {g["label"]: tuple(g["ports"]) for g in spec}
     assert by_label["10G SFP+"] == ("x1", "x2", "x3", "x4")
     assert by_label["25G SFP28"] == ("x5", "x6", "x7", "x8")
+
+
+def test_device_identity_and_safe_filename():
+    cfg = """#config-version=FG7H1G-7.4.11-FW-build2878-1:x
+config system global
+    set hostname "701G-TOP"
+    set alias "FortiGate-701G"
+    set admin-sport 8443
+end
+"""
+    ident = platforms.device_identity(cfg)
+    assert ident == {"hostname": "701G-TOP", "alias": "FortiGate-701G"}
+    # filename sanitation
+    assert platforms.safe_filename("701G-TOP") == "701G-TOP"
+    assert platforms.safe_filename("DC Firewall/A:1") == "DC_Firewall_A_1"
+    assert platforms.safe_filename("") == "config"

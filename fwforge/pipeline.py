@@ -177,6 +177,33 @@ def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
     return result
 
 
+def _apply_device_identity(tree, identity: dict) -> list[str]:
+    """Carry a destination box's identity (hostname, alias, ...) onto the
+    migrated config's `config system global`, replacing the source's
+    values. Returns human-readable descriptions of what changed."""
+    applied: list[str] = []
+    for path, node in fortios_tree.iter_config_nodes(tree):
+        if not fortios_tree.path_endswith(path, ("system", "global")):
+            continue
+        for attr, val in identity.items():
+            existing = next(
+                (ln for ln in node.children
+                 if isinstance(ln, fortios_tree.SetLine)
+                 and ln.attr == attr), None)
+            if existing is not None:
+                old = existing.values[0].value if existing.values else ""
+                if old != val:
+                    existing.values = [fortios_tree.Token(val, True)]
+                    applied.append(f"{attr} '{old}' -> '{val}'")
+            else:
+                node.children.insert(
+                    0, fortios_tree.SetLine(
+                        attr, [fortios_tree.Token(val, True)]))
+                applied.append(f"{attr} set '{val}'")
+        return applied
+    return applied
+
+
 def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 target: str | None = None, source_os: str | None = None,
                 target_platform: str | None = None,
@@ -184,7 +211,8 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
                 vdom_name: str = "root", vdom_scope_only: bool = False,
                 hw_switch: str = "keep", sslvpn_to_ipsec: bool = False,
                 sslvpn_psk: str = "CHANGEME-SET-A-REAL-PSK",
-                target_device: tuple | None = None
+                target_device: tuple | None = None,
+                target_identity: dict | None = None
                 ) -> ConversionResult:
     """FortiOS -> FortiOS lossless tree migration. Raises PlanError."""
     report = Report()
@@ -323,6 +351,15 @@ def run_migrate(text: str, src_name: str, plan: MigrationPlan,
         report.add(
             "info", "portmap",
             f"destination ports ({t_code}): {', '.join(t_ports)}")
+
+    if target_identity:
+        applied = _apply_device_identity(tree, target_identity)
+        if applied:
+            report.meta["identity_from_destination"] = "; ".join(applied)
+            report.add(
+                "info", "identity",
+                "carried device identity from the destination backup so "
+                f"the output is the destination's config: {'; '.join(applied)}")
 
     if plan.portmap:
         stats = portmap.apply_tree(tree, plan.portmap)

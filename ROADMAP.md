@@ -256,6 +256,24 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.36 — shipped 2026-06-12 (destination identity carried + output named for it)
+Adam: the converted config should take the destination box's identity
+(hostname etc.) and the file should be saved as the destination gate.
+- platforms.device_identity(): reads DEVICE_IDENTITY_ATTRS (hostname,
+  alias) from a config's `config system global`; safe_filename() for
+  stems.
+- run_migrate(target_identity=...): _apply_device_identity rewrites the
+  output's system global hostname/alias to the destination's, reported
+  as an info + meta.identity_from_destination.
+- Output (and all artifacts) named for the destination hostname:
+  701G-TOP.conf, not the source stem. CLI derives it from
+  --target-config; GUI from the stored target_hostname; download/bundle
+  routes use the result stem.
+- Still NOT a merge: identity only, policies/objects stay out (the
+  declined feature). Notes updated to say so. Real pair: output
+  701G-TOP.conf, hostname DC-Firewall-601F-A -> 701G-TOP, 0/0 clean.
+  257 tests.
+
 ### v0.35.1-.3 — shipped 2026-06-12 (faceplate polish)
 .1 FortiOS-look restyle (chassis, RJ45 notch/SFP latch, link-light
 colors, labels outside the ports) + old-job source_platform backfill.
