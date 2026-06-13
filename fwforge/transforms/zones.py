@@ -152,8 +152,12 @@ def _rebind_associated_addresses(tree: CTree, mapping: dict[str, str],
     """FortiOS restricts an associated-interface-bound address to
     policies on that exact interface — a zone containing the member does
     not satisfy the check, so a policy rewritten to the zone would
-    reject the address at load. The attribute accepts zone names, so
-    rebind member -> zone along with the policies."""
+    reject the address at load. The field's datasource is
+    system.interface.name + system.zone.name (verified read-only against
+    a live FortiOS 8.0 box), so a zone is a valid value — rebind member
+    -> zone along with the policies. (Contrast the interface-subnet
+    `interface` field, datasource system.interface.name ONLY, which is
+    why ZONE_EXTRA_ALLOWED keeps it on the member.)"""
     rebound = 0
     for path, node in iter_config_nodes(tree):
         if not any(path_endswith(path, p) for p in _ADDR_PATHS):
