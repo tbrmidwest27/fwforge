@@ -256,6 +256,13 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.37 — shipped 2026-06-13 (zone/SD-WAN membership in the mapping grid)
+Pre-zoned 601F (3rd-Rail-02) — policies reference zone names, members
+hidden behind zones. New "membership" column on the Interface Mapping
+step: teal "zone: X" / amber "SD-WAN" badges from iface_details, so the
+zone structure is visible while mapping ports (complements the
+physical-only faceplate). 258 tests.
+
 ### v0.36 — shipped 2026-06-12 (destination identity carried + output named for it)
 Adam: the converted config should take the destination box's identity
 (hostname etc.) and the file should be saved as the destination gate.

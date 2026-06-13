@@ -492,3 +492,13 @@ end
     # output is named for the destination device
     assert webui_app.JOBS[jid]["result"]["stem"] == "edge-fw-01"
     assert webui_app.JOBS[jid]["result"]["main_name"] == "edge-fw-01.conf"
+
+
+def test_mapping_grid_shows_zone_membership(client):
+    # a pre-zoned source: the fixture's port1 is in "legacy-zone" — the
+    # mapping grid should surface that so you see the zone structure
+    jid = _load(client, "fortios_refactor.conf")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "<th>membership</th>" in page
+    assert "b-zone" in page
+    assert "zone: legacy-zone" in page

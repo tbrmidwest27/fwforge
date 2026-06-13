@@ -317,8 +317,8 @@
   </div>
   <p class="grid-note" id="tp-port-hint"></p>
   <datalist id="tp-ports"></datalist>
-  <table style="max-width:{% if det %}860px{% else %}580px{% endif %}">
-    <tr><th>source</th>{% if det %}<th>ip</th><th>alias / description</th>{% endif %}{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>target</th></tr>
+  <table style="max-width:{% if det %}980px{% else %}580px{% endif %}">
+    <tr><th>source</th>{% if det %}<th>ip</th><th>alias / description</th><th>membership</th>{% endif %}{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>target</th></tr>
     {% for ifc in meta.interfaces %}
     {% set d = det.get(ifc) if det else None %}
     <tr>
@@ -327,6 +327,12 @@
       {% if det %}
       <td class="muted">{{ d.ip if d else "" }}</td>
       <td class="muted">{{ (d.alias or d.descr) if d else "" }}</td>
+      <td>{% if d and d.zone %}<span class="badge b-zone"
+            title="member of zone {{ d.zone }} — policies reference the
+                   zone, not this interface">zone: {{ d.zone }}</span>{%
+          elif d and d.sdwan %}<span class="badge b-sdwan"
+            title="SD-WAN member — policies reference the SD-WAN zone">
+            SD-WAN</span>{% endif %}</td>
       {% endif %}
       {% if meta.multi_vdom %}
       <td><span class="badge b-vdom">{{ meta.vdoms.get(ifc, "root") }}</span></td>
