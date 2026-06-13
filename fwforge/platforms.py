@@ -208,6 +208,10 @@ def header_platform(text: str) -> str:
 # panels stack odd-over-even in column pairs), ports (FortiOS names).
 # Models without a spec render a generic strip from their port list.
 
+# verified against the DC-Firewall-601F-A backup: port1-16 GE RJ45,
+# port17-24 GE SFP, x1-x4 10G SFP+ (speed 10000full), x5-x8 25G SFP28
+# (speed 25000full + FEC). Faceplate shows physical cage type, not the
+# installed optic — a 25G cage running a 10G optic is still a 25G port.
 _FP_600F = (
     {"label": "MGMT / HA", "kind": "rj45", "rows": 2,
      "ports": ("mgmt", "ha")},
@@ -216,7 +220,9 @@ _FP_600F = (
     {"label": "GE SFP", "kind": "sfp", "rows": 2,
      "ports": tuple(f"port{i}" for i in range(17, 25))},
     {"label": "10G SFP+", "kind": "sfp", "rows": 2,
-     "ports": tuple(f"x{i}" for i in range(1, 9))},
+     "ports": ("x1", "x2", "x3", "x4")},
+    {"label": "25G SFP28", "kind": "sfp", "rows": 2,
+     "ports": ("x5", "x6", "x7", "x8")},
 )
 
 # per the FG-700G-Series QSG front panel (verified vs native backup)

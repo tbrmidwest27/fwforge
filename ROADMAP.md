@@ -256,6 +256,18 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.35.1-.3 — shipped 2026-06-12 (faceplate polish)
+.1 FortiOS-look restyle (chassis, RJ45 notch/SFP latch, link-light
+colors, labels outside the ports) + old-job source_platform backfill.
+.2 model wordmark bezel (brand over model number, red accent; text
+nominative branding, no logo artwork). .3 fixed the 601F faceplate to
+split x1-x4 (10G SFP+) / x5-x8 (25G SFP28) — Adam caught all eight
+x-ports lumped as 10G; verified x5-x8 = speed 25000full in the backup.
+Key finding: config `set speed` = installed optic, NOT cage type (701G
+SFP28 cages report 10000full with 10G optics in), so faceplates show
+physical cage type from hand-authored specs — a derive-from-config
+would have mislabeled the 701G. 255 tests.
+
 ### v0.35 — shipped 2026-06-12 (live faceplates on the mapping step)
 Adam's design: schematic front panels for source + destination above
 the mapping grid, ports lighting as you wire them. FACEPLATES specs

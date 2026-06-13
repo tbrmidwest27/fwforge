@@ -153,3 +153,12 @@ def test_header_platform():
     assert platforms.header_platform(
         "#config-version=FG7H1G-7.4.11-FW-build2878-1:x\n") == "FG7H1G"
     assert platforms.header_platform("config system global\nend\n") == ""
+
+
+def test_601f_faceplate_has_distinct_25g_bank():
+    # x5-x8 are 25G SFP28 (verified: speed 25000full in the 601F backup),
+    # x1-x4 are 10G SFP+ — they must be separate, correctly-labeled banks
+    spec = platforms.FACEPLATES["FG6H1F"]
+    by_label = {g["label"]: tuple(g["ports"]) for g in spec}
+    assert by_label["10G SFP+"] == ("x1", "x2", "x3", "x4")
+    assert by_label["25G SFP28"] == ("x5", "x6", "x7", "x8")
