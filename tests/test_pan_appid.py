@@ -175,18 +175,20 @@ def test_default_ports_lookup():
 def test_application_default_tightened():
     cfg = paloalto.parse(APPDEF, "appdef.xml")
     tight = next(p for p in cfg.policies if p.name == "Tight")
-    # custom erp-app (file ports) + ssh + dns resolved -> real services
+    # custom erp-app (file ports) + ssh + dns resolve -> real services,
+    # collapsed into one port group (several services)
     assert "ALL" not in tight.services
-    names = " ".join(tight.services)
-    assert "8443" in names and "22" in names
-    svc = next(s for s in cfg.services if "8443" in s.name)
-    assert svc.protocol == "tcp"
-    assert "9000-9010" in svc.dst_ports
-    dns_svc = next(s for s in cfg.services if s.name in tight.services
+    assert len(tight.services) == 1
+    grp = next(g for g in cfg.svc_groups if g.name == tight.services[0])
+    tcp_svc = next(s for s in cfg.services if s.name in grp.members
+                   and s.protocol == "tcp")
+    assert "8443" in tcp_svc.dst_ports and "22" in tcp_svc.dst_ports
+    assert "9000-9010" in tcp_svc.dst_ports
+    dns_svc = next(s for s in cfg.services if s.name in grp.members
                    and s.protocol == "tcp/udp")
     assert dns_svc.dst_ports == "53"
     msgs = [m for _, _, m, _ in cfg.meta["findings"]]
-    assert any("tightened to" in m for m in msgs)
+    assert any("port-based service" in m for m in msgs)
 
 
 def test_application_default_dynamic_falls_back():
@@ -266,3 +268,45 @@ def test_appgroup_expanded_for_appcontrol_and_ports():
     assert not any("GrpRule" in m and "kept as ALL" in m for m in msgs)
     allports = " ".join(s.dst_ports or "" for s in cfg.services)
     assert "445" in allports and "3306" in allports and "135" in allports
+
+
+ANYAPPS = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip>
+      <entry name="10.0.0.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="trust"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <rulebase><security><rules>
+      <entry name="AnyRule">
+        <from><member>trust</member></from><to><member>trust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>ssh</member><member>dns</member>
+          <member>snmp</member></application>
+        <service><member>any</member></service>
+        <action>allow</action>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_service_any_apps_become_port_group():
+    # the chosen behavior: service=any + App-IDs -> port-based policy
+    # (a port group here, since ssh/dns/snmp span protocols), with the
+    # app-control profile kept on top
+    cfg = paloalto.parse(ANYAPPS, "any.xml")
+    rule = next(p for p in cfg.policies if p.name == "AnyRule")
+    assert "ALL" not in rule.services
+    assert len(rule.services) == 1 and rule.services[0].startswith("appsvc-grp-")
+    grp = next(g for g in cfg.svc_groups if g.name == rule.services[0])
+    allports = " ".join(s.dst_ports for s in cfg.services
+                        if s.name in grp.members)
+    assert "22" in allports and "53" in allports and "161" in allports
+    assert rule.app_list                      # app-control kept (both)
+    msgs = [m for _, _, m, _ in cfg.meta["findings"]]
+    assert any("service=any" in m and "port-based service" in m
+               for m in msgs)

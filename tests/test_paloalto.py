@@ -110,7 +110,8 @@ def test_xml_rules():
     assert svc.protocol == "tcp" and svc.dst_ports == "80 443"
     assert "PAN apps: web-browsing, ssl" in out.comment
     assert any("App-ID" in m for _, _, m, _ in findings(cfg))
-    assert any("application-default" in m and "tightened" in m
+    assert any("App-IDs -> port-based service" in m
+               and "application-default" in m
                for _, _, m, _ in findings(cfg))
 
     neg = _policy(cfg, "Not Updates")

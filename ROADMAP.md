@@ -256,6 +256,18 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.41 — shipped 2026-06-13 (App-ID -> port/port-group SERVICE on policies)
+Adam: "convert application ID's to ports or port group based policies."
+Chosen (AskUserQuestion): scope = application-default + service=any;
+app-control = keep both. paloalto._app_service() resolves a rule's
+App-IDs (groups expanded) to their standard ports and fills the policy
+SERVICE: a single appdef-* service, or a deduped ServiceGroup
+(appsvc-grp-N "port group") when several. service=any + apps now
+tightens to the apps' ports instead of ALL; unknown/dynamic-port apps
+safely stay ALL. The app-control application-list profile is kept on
+top (utm-status). TIS result: 190/379 policies now port-based, 44 port
+groups created. 266 tests.
+
 ### v0.40 — shipped 2026-06-13 (App-ID -> ports + app-control profiles, deeper)
 Adam (off the Jabil TIS PAN-OS 11.1 config): convert apps to the right
 ports AND the App-IDs to the right app-control profiles, creating

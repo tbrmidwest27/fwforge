@@ -1030,6 +1030,30 @@ class PaloParser:
                 out.append(nm)
         return out or None
 
+    def _app_service(self, apps: list[str], rule: str,
+                     ref: SourceRef) -> list[str] | None:
+        """Convert a rule's App-IDs into the policy SERVICE: the apps'
+        resolved port-services, collapsed into a named service GROUP
+        (port group) when there is more than one. Returns the service /
+        group name(s), or None when any app's ports are unknown (the
+        rule then safely stays at ALL — restricting to the known ports
+        would wrongly block the unresolved app)."""
+        svc_names = self._appdefault_services(apps, rule, ref)
+        if not svc_names:
+            return None
+        svc_names = list(dict.fromkeys(svc_names))
+        if len(svc_names) == 1:
+            return svc_names
+        key = tuple(sorted(svc_names))
+        cache = self.cfg.meta.setdefault("_appsvcgrp_cache", {})
+        if key not in cache:
+            gname = f"appsvc-grp-{len(cache) + 1}"
+            self.cfg.svc_groups.append(ServiceGroup(
+                name=gname, members=svc_names,
+                comment="port group from PAN App-IDs", source=ref))
+            cache[key] = gname
+        return [cache[key]]
+
     def _ensure_service(self, name: str, ref: SourceRef) -> None:
         if name in ("any", "application-default"):
             return
@@ -1055,24 +1079,33 @@ class PaloParser:
         for name, r in entries:
             ref = self.ref(r, f"security rule '{name}'")
             action = str(r.get("action", "allow"))
+            apps = _as_list(r.get("application")) or ["any"]
+            pan_services = _as_list(r.get("service")) or ["any"]
+            # Convert App-IDs into the policy SERVICE (ports / port group).
+            # A rule's apps resolve to their standard ports; that service
+            # fills the 'any' and 'application-default' slots so the policy
+            # is port-based. None when the ports are unknown -> stays ALL.
+            app_svc = (self._app_service(apps, name, ref)
+                       if apps != ["any"] else None)
             services: list[str] = []
-            app_default = False
-            appdef_at = 0  # where the application-default placeholder sits
-            for svc in _as_list(r.get("service")) or ["any"]:
-                if svc == "any":
-                    services.append("ALL")
-                elif svc == "application-default":
-                    app_default = True
-                    appdef_at = len(services)
-                    services.append("ALL")
+            filled_from_apps = False
+            for svc in pan_services:
+                if svc in ("any", "application-default"):
+                    if app_svc:
+                        services.extend(app_svc)
+                        filled_from_apps = True
+                    else:
+                        services.append("ALL")
                 else:
                     self._ensure_service(svc, ref)
                     services.append(svc)
-            apps = _as_list(r.get("application")) or ["any"]
+            services = list(dict.fromkeys(services)) or ["ALL"]
+
             comment_bits: list[str] = []
             desc = r.get("description")
             if isinstance(desc, str):
                 comment_bits.append(desc)
+            # keep app-control on top of the port-based service (both)
             app_list = self._app_list_for(apps, name, ref)
             if apps != ["any"]:
                 shown = ", ".join(apps[:6]) + (" ..." if len(apps) > 6
@@ -1086,25 +1119,22 @@ class PaloParser:
                     f"rule '{name}': schedule '{sched}' not converted - "
                     "policy is emitted always-on; recreate a firewall "
                     "schedule and set it on the policy", ref)
-            if app_default:
-                tightened = self._appdefault_services(apps, name, ref)
-                if tightened:
-                    # replace only the application-default placeholder,
-                    # keeping any explicitly-listed named services
-                    services = (services[:appdef_at] + tightened
-                                + services[appdef_at + 1:])
-                    self.note(
-                        "info", "policies",
-                        f"rule '{name}': service=application-default "
-                        f"tightened to {', '.join(tightened)} from the "
-                        "apps' default ports (custom app definitions in "
-                        "the file win over the curated table)", ref)
-                elif apps == ["any"]:
-                    self.note(
-                        "warn", "policies",
-                        f"rule '{name}' uses service=application-default "
-                        "with application=any — converted as ALL, tighten "
-                        "manually", ref)
+            if filled_from_apps:
+                how = ("service=application-default"
+                       if "application-default" in pan_services
+                       else "service=any")
+                self.note(
+                    "info", "policies",
+                    f"rule '{name}': App-IDs -> port-based service "
+                    f"{', '.join(app_svc)} ({how}; from the apps' standard "
+                    "ports). App-control profile kept on top; verify the "
+                    "apps use standard ports.", ref)
+            elif "application-default" in pan_services and apps == ["any"]:
+                self.note(
+                    "warn", "policies",
+                    f"rule '{name}' uses service=application-default with "
+                    "application=any — converted as ALL, tighten manually",
+                    ref)
             if "profile-setting" in r:
                 self.note("info", "policies",
                           f"rule '{name}': security profiles not converted "
