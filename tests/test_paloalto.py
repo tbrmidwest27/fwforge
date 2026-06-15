@@ -329,3 +329,54 @@ def test_subnet_destination_nat_netmap():
     # mismatched sizes (/24 -> /30) is a clear error, not a silent guess
     assert any(l == "error" and "sizes" in m and "BadSize" in m
                for l, m in msgs)
+
+
+AGGCFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface>
+    <aggregate-ethernet>
+      <entry name="ae1"><layer3><units>
+        <entry name="ae1.1"><tag>11</tag>
+          <ip><entry name="10.65.4.7/25"/></ip></entry>
+      </units></layer3></entry>
+    </aggregate-ethernet>
+    <ethernet>
+      <entry name="ethernet1/1"><aggregate-group>ae1</aggregate-group></entry>
+      <entry name="ethernet1/2"><aggregate-group>ae1</aggregate-group></entry>
+    </ethernet>
+  </interface></network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="z"><network><layer3>
+      <member>ae1.1</member></layer3></network></entry></zone>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_aggregate_captured_in_model():
+    cfg = paloalto.parse(AGGCFG, "agg.xml")
+    ae1 = next(i for i in cfg.interfaces if i.name == "ae1")
+    assert ae1.kind == "aggregate"
+    assert ae1.members == ["ethernet1/1", "ethernet1/2"]
+    members = [i for i in cfg.interfaces if i.kind == "aggregate-member"]
+    assert {m.name for m in members} == {"ethernet1/1", "ethernet1/2"}
+    assert all(m.parent == "ae1" for m in members)
+    sub = next(i for i in cfg.interfaces if i.name == "ae1.1")
+    assert sub.kind == "vlan" and sub.parent == "ae1" and sub.vlan_id == 11
+
+
+def test_aggregate_rebuilt_as_lag(tmp_path):
+    (tmp_path / "agg.xml").write_text(AGGCFG, encoding="utf-8")
+    mapfile = tmp_path / "m.map"
+    mapfile.write_text("ethernet1/1 = lan1\nethernet1/2 = lan2\n",
+                       encoding="utf-8")
+    rc = cli.main(["convert", str(tmp_path / "agg.xml"), "-o",
+                   str(tmp_path), "--map", str(mapfile)])
+    conf = (tmp_path / "agg.config-all.txt").read_text(encoding="utf-8")
+    assert "config system interface" in conf
+    assert "set type aggregate" in conf
+    assert 'set member "lan1" "lan2"' in conf      # members mapped to ports
+    assert "set lacp-mode active" in conf
+    # the VLAN subinterface rides the aggregate and carries the L3
+    assert 'set interface "ae1"' in conf
+    assert "set vlanid 11" in conf
+    assert "set ip 10.65.4.7 255.255.255.128" in conf

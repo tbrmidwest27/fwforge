@@ -697,12 +697,19 @@ class PaloParser:
         iface = network.get("interface", {})
         if not isinstance(iface, dict):
             return
+        self._agg_members: dict[str, list[str]] = getattr(
+            self, "_agg_members", {})
         for family in ("ethernet", "aggregate-ethernet"):
             fam = iface.get(family)
             for name, node in _entries(fam):
                 if not self._imported(name):
                     continue
-                self._one_interface(name, node)
+                self._one_interface(name, node,
+                                    is_agg=family == "aggregate-ethernet")
+        # link aggregate members captured above onto their bundle
+        for itf in self.cfg.interfaces:
+            if itf.kind == "aggregate" and itf.name in self._agg_members:
+                itf.members = self._agg_members[itf.name]
         # vlan/loopback/tunnel interfaces live in a <units> container
         # directly under the family node, and their entries carry <ip>
         # without a <layer3> wrapper
@@ -713,8 +720,10 @@ class PaloParser:
             for uname, unode in _entries(fam.get("units")):
                 if not self._owns(uname):
                     continue
-                sub = Interface(name=uname,
-                                source=self.ref(unode, f"interface {uname}"))
+                sub = Interface(
+                    name=uname,
+                    kind="vlan" if family == "vlan" else family,
+                    source=self.ref(unode, f"interface {uname}"))
                 if isinstance(unode, dict):
                     ips = _as_list(unode.get("ip"))
                     if ips:
@@ -727,7 +736,7 @@ class PaloParser:
                         sub.description = ucomment
                 self.cfg.interfaces.append(sub)
 
-    def _one_interface(self, name: str, node: dict):
+    def _one_interface(self, name: str, node: dict, is_agg: bool = False):
         ref = self.ref(node, f"interface {name}")
         layer3 = node.get("layer3") if isinstance(node, dict) else None
         if isinstance(node, dict) and (
@@ -738,12 +747,20 @@ class PaloParser:
                       "conversion; map manually", ref)
             return
         if isinstance(node, dict) and "aggregate-group" in node:
-            self.note("info", "interfaces",
-                      f"interface {name} is a member of aggregate "
-                      f"'{node['aggregate-group']}' — recreate the LACP "
-                      "bundle on the FortiGate", ref)
+            # a physical port bundled into an aggregate: keep it as a
+            # mappable member (it becomes the FortiOS LAG's member port)
+            grp = str(node["aggregate-group"])
+            self._agg_members.setdefault(grp, [])
+            if name not in self._agg_members[grp]:
+                self._agg_members[grp].append(name)
+            if self._owns(name):
+                self.cfg.interfaces.append(Interface(
+                    name=name, kind="aggregate-member", parent=grp,
+                    source=ref))
             return
-        itf = Interface(name=name, source=ref)
+        itf = Interface(name=name,
+                        kind="aggregate" if is_agg else "physical",
+                        source=ref)
         if isinstance(node, dict):
             comment = node.get("comment")
             if isinstance(comment, str):
@@ -765,7 +782,7 @@ class PaloParser:
             for uname, unode in _entries(units):
                 if not self._owns(uname):
                     continue
-                sub = Interface(name=uname, parent=name,
+                sub = Interface(name=uname, parent=name, kind="vlan",
                                 source=self.ref(unode, f"interface {uname}"))
                 tag = unode.get("tag")
                 if isinstance(tag, str) and tag.isdigit():

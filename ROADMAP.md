@@ -256,6 +256,16 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.44 — shipped 2026-06-13 (rebuild aggregate interfaces as LAGs)
+Adam: aggregates weren't a feature (member ports were dropped + flagged).
+model.Interface += kind/members; PAN parser captures aggregate-ethernet
++ keeps member ports as kind=aggregate-member linked to the bundle;
+NEW emit/fortios interfaces() section creates aggregates (set type
+aggregate + mapped members + lacp-mode active), VLAN subinterfaces (type
+vlan + parent + vlanid + ip), loopbacks — cross-vendor emitted NO
+interfaces before. TIS: ae1 -> LAG of lan13-16, ae1.1 carries the L3.
+269 tests. NEXT: GUI cross-vendor mapping dropdowns.
+
 ### v0.43 — shipped 2026-06-13 (App-IDs -> FortiOS BUILT-IN named services)
 Adam: "by ports I mean services on the FortiGate." pan_appid.APP_TO_BUILTIN
 (verified read-only against the live 8.0 service catalogue) maps App-IDs

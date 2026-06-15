@@ -112,6 +112,7 @@ class Emitter:
             self.line("config system settings")
             self.line("    set central-nat enable")
             self.line("end")
+        self.interfaces()
         self.zones()
         self.addresses()
         self.addr_groups()
@@ -153,6 +154,60 @@ class Emitter:
             f"central NAT: {len(rules)} central-snat-map rule(s) generated "
             "from the source's NAT intent; firewall policies carry no "
             "per-policy NAT")
+
+    def interfaces(self):
+        """Create the logical interfaces that don't exist on a target by
+        default: aggregates (the LAG — set type aggregate + member ports
+        + LACP), VLAN subinterfaces (carry the L3 / IPs), and loopbacks.
+        Physical ports are assumed to already exist on the target and are
+        only referenced; aggregate-member ports are consumed by the
+        bundle; tunnels are built by the VPN section."""
+        cfg = self.cfg
+        rows = [i for i in cfg.interfaces
+                if i.kind in ("aggregate", "vlan", "loopback")]
+        if not rows:
+            return
+        self.line()
+        self.line("config system interface")
+        for i in rows:
+            self.line(f"    edit {_q(i.mapped)}")
+            self.line('        set vdom "root"')
+            if i.kind == "aggregate":
+                self.line("        set type aggregate")
+                members = [_intf(cfg, m) for m in i.members]
+                if members:
+                    self.line("        set member "
+                              + " ".join(_q(m) for m in members))
+                self.line("        set lacp-mode active")
+            elif i.kind == "vlan":
+                self.line("        set type vlan")
+                if i.parent:
+                    self.line("        set interface "
+                              f"{_q(_intf(cfg, i.parent))}")
+                if i.vlan_id:
+                    self.line(f"        set vlanid {i.vlan_id}")
+            elif i.kind == "loopback":
+                self.line("        set type loopback")
+            if i.ip and "/" in i.ip and not _is_v6(i.ip):
+                addr, prefix = i.ip.split("/")
+                try:
+                    self.line(f"        set ip {addr} {_mask(int(prefix))}")
+                    self.line("        set allowaccess ping")
+                except ValueError:
+                    pass
+            if i.description:
+                self.line(f"        set description "
+                          f"{_q(i.description[:255])}")
+            self.line("    next")
+        self.line("end")
+        aggs = sum(1 for i in rows if i.kind == "aggregate")
+        if aggs:
+            self.report.add(
+                "info", "interfaces",
+                f"rebuilt {aggs} aggregate(s) as FortiOS 802.3ad LAGs "
+                "(set type aggregate + member ports + lacp-mode active) — "
+                "verify the member ports map to real target ports and the "
+                "LACP mode (active/passive/static) matches the source")
 
     def zones(self):
         emittable = [z for z in self.cfg.zones if z.members]

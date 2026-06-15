@@ -32,6 +32,9 @@ class Interface:
     parent: str | None = None  # physical parent for subinterfaces
     enabled: bool = True
     target_name: str | None = None  # FortiGate port after mapping
+    # physical | aggregate | aggregate-member | vlan | loopback | tunnel
+    kind: str = "physical"
+    members: list[str] = field(default_factory=list)  # for aggregates
     source: SourceRef | None = None
 
     @property
