@@ -121,6 +121,7 @@ def _analyze(text: str, name: str) -> dict:
         if len(scopes) > 1:
             meta["vsys"] = [n for n, _ in scopes]
         seen_if: list[str] = []
+        det_by_name: dict[str, dict] = {}
         counts = {"interfaces": 0, "zones": 0, "addresses": 0,
                   "services": 0, "policies": 0, "nat rules / vips": 0,
                   "routes": 0}
@@ -130,6 +131,20 @@ def _analyze(text: str, name: str) -> dict:
             for i in vcfg.interfaces:
                 if i.name not in seen_if:
                     seen_if.append(i.name)
+                if i.name not in det_by_name:
+                    # physical + aggregate-member both map to a target
+                    # PHYSICAL port (so they get the port dropdown); the
+                    # real kind drives the membership badge
+                    det_by_name[i.name] = {
+                        "name": i.name, "ip": i.ip or "", "alias": "",
+                        "descr": i.description or "",
+                        "type": ("physical" if i.kind in
+                                 ("physical", "aggregate-member")
+                                 else i.kind),
+                        "vlanid": str(i.vlan_id) if i.vlan_id else "",
+                        "parent": i.parent or "", "role": "", "status": "",
+                        "vdom": "root", "zone": "", "sdwan": False,
+                        "policy_refs": 0, "kind": i.kind}
             counts["zones"] += len(vcfg.zones)
             counts["addresses"] += len(vcfg.addresses)
             counts["services"] += len(vcfg.services)
@@ -155,6 +170,7 @@ def _analyze(text: str, name: str) -> dict:
                 pols.append(entry)
         counts["interfaces"] = len(seen_if)
         meta["interfaces"] = seen_if
+        meta["iface_details"] = list(det_by_name.values())
         meta["hostname"] = cfg.hostname
         meta["counts"] = counts
         meta["policies"] = pols

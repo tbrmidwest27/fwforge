@@ -175,7 +175,9 @@ def test_cross_wizard_has_policy_selection(client):
     assert "Cisco ASA" in page
     assert "Policy Selection" in page
     assert "OUTSIDE-IN-1" in page       # parsed rules listed
-    assert "SD-WAN" not in page         # fortios-only step
+    # the SD-WAN/zone Restructure STEP is fortios-only (the JS helpers may
+    # still mention SD-WAN; check the step itself isn't rendered)
+    assert 'data-title="Restructure"' not in page
 
 
 def test_policy_selection_excludes(client):

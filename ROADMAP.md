@@ -256,6 +256,17 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.45 — shipped 2026-06-15 (cross-vendor mapping dropdowns + white faceplate)
+(1) The destination-port dropdowns/faceplate/target-picker now work for
+cross-vendor (PAN/ASA/SRX -> FortiGate), not just FortiOS->FortiOS:
+iface_details built for cross-vendor sources, plan.html gated on `det`
+not vendor; physical + aggregate-member rows get port dropdowns, other
+kinds keep their name; new aggregate / "in <ae>" / vlan membership
+badges. Verified: TIS->701G shows 10 dropdowns (6 physical + 4 ae1
+members) from the 701G backup; ae1 stays a name. (2) Faceplate reskinned
+WHITE like the real FortiGate (silver chassis, dark port openings,
+colored link LEDs). 269 tests.
+
 ### v0.44 — shipped 2026-06-13 (rebuild aggregate interfaces as LAGs)
 Adam: aggregates weren't a feature (member ports were dropped + flagged).
 model.Interface += kind/members; PAN parser captures aggregate-ethernet

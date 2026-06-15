@@ -95,7 +95,6 @@
           {% for t in targets %}<option value="{{ t }}">{% endfor %}
         </datalist>
       </label>
-      {% if meta.vendor == "fortios" %}
       {% if meta.target_code %}
       <label>destination device<br>
         <span class="badge b-ok">{{ meta.target_code }}</span>
@@ -123,25 +122,35 @@
                size="10" placeholder="e.g. FG7H1G" style="display:none">
       </label>
       {% endif %}
+      {% if meta.vendor == "fortios" %}
       <label>source FortiOS<br>
         <input type="text" name="source_os" value="{{ meta.source_os }}" size="6"></label>
       {% endif %}
     </div>
-    {% if meta.vendor == "fortios" %}
-    {% if meta.target_code %}
+    {% if meta.vendor == "fortios" and meta.target_code %}
     <p class="grid-note">Platform code, port inventory and device
       identity (hostname{% if meta.target_hostname %}
       &ldquo;{{ meta.target_hostname }}&rdquo;{% endif %}) come from the
       uploaded destination backup &mdash; authoritative, nothing to
       verify. The output is named for and carries the destination's
       identity; its policies/objects are not merged in.</p>
-    {% else %}
+    {% elif meta.vendor == "fortios" %}
     <p class="grid-note">* derived from the FortiOS naming scheme &mdash;
       confirm against a backup taken from the actual target model before
       restoring. The platform token must match the device or it rejects
       the file. Tip: upload a destination backup on the New conversion
       page to skip the guesswork entirely.</p>
+    {% elif meta.target_code %}
+    <p class="grid-note">Port inventory from the uploaded destination
+      backup ({{ meta.target_code }}, {{ meta.target_ports|length }}
+      ports) &mdash; physical interfaces below map to it with dropdowns;
+      the LAG &amp; VLAN subinterfaces are rebuilt on the target.</p>
+    {% else %}
+    <p class="grid-note">Pick a target model (or upload a destination
+      backup on the New conversion page) to map physical interfaces to
+      its real ports with dropdowns.</p>
     {% endif %}
+    {% if meta.vendor == "fortios" %}
     <div class="builder-row">
       <label>VDOM mode<br>
         <select name="vdom_mode">
@@ -236,50 +245,52 @@
              text-align:right; flex:0 0 auto; }
     .fpname { font-weight:700; font-size:.78rem; color:#266798;
               min-width:4.2rem; flex:0 0 auto; }
-    .fplate { background:linear-gradient(#23272e,#171a1f);
-              border:1px solid #0e1014; border-radius:10px;
+    /* white / silver chassis like the real FortiGate front panel */
+    .fplate { background:linear-gradient(#ffffff,#eceff3);
+              border:1px solid #c4ccd5; border-radius:10px;
               padding:.45rem .8rem; display:flex; gap:0;
               align-items:center; overflow-x:auto;
-              box-shadow:inset 0 1px 0 rgba(255,255,255,.05),
-                         0 2px 5px rgba(0,0,0,.25); min-height:64px; }
+              box-shadow:inset 0 1px 0 rgba(255,255,255,.9),
+                         0 1px 3px rgba(20,30,45,.12); min-height:64px; }
     .fpgroup { display:flex; flex-direction:column; gap:2px;
                padding:0 .65rem; }
-    .fpgroup + .fpgroup { border-left:1px solid #2c323b; }
+    .fpgroup + .fpgroup { border-left:1px solid #d7dde3; }
     .fpbezel { display:flex; flex-direction:column;
                justify-content:center; gap:2px; flex:0 0 auto;
                margin-right:.5rem; padding:.15rem .8rem .15rem .55rem;
-               border-left:3px solid #d7282f;
-               border-right:1px solid #2c323b; }
-    .fpbrand { color:#eef2f7; font-weight:700; font-size:.74rem;
+               border-left:3px solid #da291c;
+               border-right:1px solid #d7dde3; }
+    .fpbrand { color:#1f2933; font-weight:700; font-size:.74rem;
                letter-spacing:.02em; line-height:1; white-space:nowrap; }
-    .fpmodel { color:#9fb4c8; font-size:.6rem; font-weight:600;
+    .fpmodel { color:#5a6470; font-size:.6rem; font-weight:600;
                letter-spacing:.06em; line-height:1; white-space:nowrap;
                text-transform:uppercase; }
-    .fpglabel { color:#7d8896; font-size:.55rem; text-transform:uppercase;
+    .fpglabel { color:#6b7682; font-size:.55rem; text-transform:uppercase;
                 letter-spacing:.07em; white-space:nowrap;
                 text-align:center; }
     .fpports { display:grid; grid-auto-flow:column; gap:4px 5px; }
     .fpcell { display:flex; flex-direction:column; align-items:center;
               gap:1px; }
-    .fpl { font-size:.52rem; color:#8d99a8; line-height:1;
+    .fpl { font-size:.52rem; color:#5f6976; line-height:1;
            pointer-events:none; min-height:7px; }
-    .fport { position:relative; background:#0c0e11;
-             border:1px solid #3c434e; border-radius:2px; width:26px;
+    /* ports are the dark openings on the light chassis */
+    .fport { position:relative; background:#2b323b;
+             border:1px solid #1c2127; border-radius:2px; width:26px;
              height:21px; cursor:pointer;
-             box-shadow:inset 0 0 4px rgba(0,0,0,.9);
+             box-shadow:inset 0 0 3px rgba(0,0,0,.7);
              transition:background .12s, box-shadow .12s,
                         border-color .12s; }
     /* RJ45 clip notch */
     .fport.rj45::after { content:""; position:absolute; left:50%;
              transform:translateX(-50%); bottom:-1px; width:10px;
              height:5px; background:inherit;
-             border:1px solid #3c434e; border-top:none;
+             border:1px solid #1c2127; border-top:none;
              border-radius:0 0 2px 2px; }
     .fport.sfp { width:38px; height:13px; border-radius:1px; }
     /* SFP latch hint */
     .fport.sfp::after { content:""; position:absolute; right:2px;
              top:50%; transform:translateY(-50%); width:4px; height:5px;
-             background:#2a3039; border-radius:1px; }
+             background:#525b66; border-radius:1px; }
     .fport.assigned, .fport.assigned::after {
              background:linear-gradient(#39d353,#1f9d3e);
              border-color:#2ecc40; }
@@ -337,7 +348,16 @@
                    zone, not this interface">zone: {{ d.zone }}</span>{%
           elif d and d.sdwan %}<span class="badge b-sdwan"
             title="SD-WAN member — policies reference the SD-WAN zone">
-            SD-WAN</span>{% endif %}</td>
+            SD-WAN</span>{%
+          elif d and d.kind == "aggregate" %}<span class="badge b-info"
+            title="link aggregation (LAG) — rebuilt as a FortiOS aggregate;
+                   its member ports map to target ports">aggregate</span>{%
+          elif d and d.kind == "aggregate-member" %}<span class="badge b-zone"
+            title="bundled into aggregate {{ d.parent }} — maps to a physical
+                   target port that becomes a LAG member">in {{ d.parent }}</span>{%
+          elif d and d.kind == "vlan" %}<span class="badge b-vdom"
+            title="VLAN subinterface on {{ d.parent }} — keeps its name">vlan{% if d.vlanid %} {{ d.vlanid }}{% endif %}</span>{%
+          endif %}</td>
       {% endif %}
       {% if meta.multi_vdom %}
       <td><span class="badge b-vdom">{{ meta.vdoms.get(ifc, "root") }}</span></td>
@@ -536,7 +556,7 @@ function stepGo(i) {
 }
 stepGo(0);
 
-{% if meta.vendor == "fortios" %}
+{% if det %}
 const IFDET = {{ meta.get("iface_details", [])|tojson }};
 const MULTI_VDOM = {{ "true" if meta.multi_vdom else "false" }};
 // fall back to bare names for jobs analyzed before detail extraction
