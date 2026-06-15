@@ -51,8 +51,13 @@ PREDEFINED_SERVICES = {
 
 def detect(text: str) -> float:
     head = text[:4000]
-    if "<config" in head and "<devices>" in text:
-        if '<entry name="localhost.localdomain">' in text:
+    # Panorama template-merged running-configs carry a `ptpl="..."`
+    # attribute on every tag (<devices ptpl=...>, <entry name="..." ptpl=
+    # ...>), so match tag prefixes, not the bare `<devices>` / closing
+    # `>`. `urldb="paloaltonetworks"` is an unmistakable PAN-OS signal.
+    if "<config" in head and ("<devices" in text
+                              or 'urldb="paloaltonetworks"' in head):
+        if '<entry name="localhost.localdomain"' in text:
             return 0.95
         return 0.7
     set_lines = 0

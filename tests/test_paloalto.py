@@ -38,6 +38,24 @@ def test_detection_both_formats():
         (FIX / "fortios_sample.conf").read_text(encoding="utf-8"))[0] == "fortios"
 
 
+def test_detection_panorama_template_merged():
+    # a Panorama template-merged running-config has a ptpl="..." attribute
+    # on EVERY tag, so <devices> / <entry name="..."> never appear bare.
+    # (real-world: Jabil TIS PAN-OS 11.1 merged-running-config.xml)
+    merged = (
+        '<?xml version="1.0"?>\n'
+        '<config ptpl="T1" version="11.1.0" urldb="paloaltonetworks">\n'
+        '  <devices ptpl="T1">\n'
+        '    <entry name="localhost.localdomain" ptpl="T1">\n'
+        '      <vsys ptpl="T1"><entry name="vsys1" ptpl="T1"/></vsys>\n'
+        '    </entry>\n'
+        '  </devices>\n'
+        '</config>\n')
+    vendor, conf = detect_vendor(merged)
+    assert vendor == "paloalto"
+    assert conf >= 0.9
+
+
 def test_xml_basics():
     cfg = parse_xml()
     assert cfg.hostname == "pa-lab"

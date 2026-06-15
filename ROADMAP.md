@@ -256,6 +256,14 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.39.1 — shipped 2026-06-13 (detect Panorama template-merged PAN configs)
+Real Jabil TIS PAN-OS 11.1 running-config failed detection — a
+template-stack-merged export has ptpl="..." on every tag, so the bare
+`<devices>` / `<entry name="localhost.localdomain">` literals never
+matched. detect() now matches tag prefixes + the
+urldb="paloaltonetworks" signal. The 2.5MB config then parses cleanly
+(38 ifaces, 2629 addrs, 379 policies, 28 VIPs, 100% accounted). 263 tests.
+
 ### v0.39 — shipped 2026-06-13 (auto-guess positional port mappings)
 Adam: auto-guess simple mappings (601F port1 -> 701G lan1) so he doesn't
 map all of them. platforms.guess_portmap(src, dst): exact-name matches
