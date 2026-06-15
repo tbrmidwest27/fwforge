@@ -256,6 +256,17 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.39 — shipped 2026-06-13 (auto-guess positional port mappings)
+Adam: auto-guess simple mappings (601F port1 -> 701G lan1) so he doesn't
+map all of them. platforms.guess_portmap(src, dst): exact-name matches
+keep themselves (mgmt/x1-x8), the source's largest <prefix>N series maps
+by number onto the destination's largest unused series (port1->lan1 ...
+port22->lan22), ambiguous ports (port23/24, spare wan1/2) left for the
+user, never double-maps a destination. Computed server-side for the
+backup and every inventory model, injected as GUESS_BACKUP /
+GUESS_BY_MODEL; the dropdowns default to the guess (overridable, the
+prompt+red-outline shows what still needs a pick). 262 tests.
+
 ### v0.38 — shipped 2026-06-13 (physical-port targets are real dropdowns)
 Adam: the mapping target must be a dropdown that knows ALL the
 destination model's ports (601F port1 -> 701G lan1). Physical source

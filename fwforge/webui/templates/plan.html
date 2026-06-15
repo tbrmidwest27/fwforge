@@ -219,11 +219,13 @@
 <div class="card">
   <h2>Interface Mapping</h2>
   <p class="grid-note">Source name &rarr; target port. Physical ports are
-    <b>dropdowns of the destination model's real ports</b> (e.g. the
-    601F&rsquo;s <code>port1</code> &rarr; the 701G&rsquo;s
-    <code>lan1</code>) &mdash; load a destination backup or pick a target
-    model to populate them. VLANs and tunnels keep their names unless you
-    change them.</p>
+    <b>dropdowns of the destination model's real ports</b>, and fwforge
+    <b>pre-guesses the obvious ones by position</b> (the 601F&rsquo;s
+    <code>port1</code> &rarr; the 701G&rsquo;s <code>lan1</code>,
+    same-name ports like <code>mgmt</code>/<code>x1</code> kept) so you
+    only adjust the rest. A source with no clear match shows
+    &ldquo;&hellip; choose a port&rdquo; in red. VLANs and tunnels keep
+    their names unless you change them.</p>
   <style>
     /* FortiOS-style faceplate widget — our own CSS rendering */
     .fpwrap { margin:.4rem 0 .9rem; display:flex; flex-direction:column;
@@ -715,17 +717,28 @@ const PORT_INV = {{ port_inventory|tojson }};
 const TARGET_PORTS = {{ meta.get("target_ports", [])|tojson }};
 const PHYS = new Set(DET.filter(d => d.type === "physical")
                         .map(d => d.name));
+// positional port-guess maps (src -> dst), computed server-side
+const GUESS_BACKUP = {{ guess_backup|tojson }};
+const GUESS_BY_MODEL = {{ guess_by_model|tojson }};
+function currentGuess() {
+  if (TARGET_PORTS.length) return GUESS_BACKUP;     // backup is authoritative
+  const sel = document.getElementById("tp-select");
+  return (sel && GUESS_BY_MODEL[sel.value]) || {};
+}
 // fill each physical-port target <select> with the destination's real
 // ports, keeping the current pick (or same-name match) selected; an
 // unmatched source shows a "needs a port" prompt so it stands out
 function populateSelects(ports) {
+  const guess = currentGuess();
   document.querySelectorAll("select.mdst").forEach(sel => {
     const src = sel.dataset.src;
     const cur = sel.value || src;
     sel.innerHTML = "";
     if (!ports.length) { sel.add(new Option(src, src, true, true)); return; }
+    // keep the current pick if valid; else fall to the positional guess
+    // (601F port1 -> 701G lan1); else prompt the user to choose
     const want = ports.includes(cur) ? cur
-               : (ports.includes(src) ? src : "");
+               : (guess[src] && ports.includes(guess[src]) ? guess[src] : "");
     if (!want) sel.add(new Option(`${cur} — choose a port`, cur, true, true));
     ports.forEach(p => {
       const o = new Option(p, p);

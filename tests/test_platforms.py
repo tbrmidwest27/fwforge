@@ -178,3 +178,24 @@ end
     assert platforms.safe_filename("701G-TOP") == "701G-TOP"
     assert platforms.safe_filename("DC Firewall/A:1") == "DC_Firewall_A_1"
     assert platforms.safe_filename("") == "config"
+
+
+def test_guess_portmap_601f_to_701g():
+    src = ["mgmt", "ha"] + [f"port{i}" for i in range(1, 25)] \
+        + [f"x{i}" for i in range(1, 9)]
+    dst = list(platforms.ports_for("FG7H1G"))   # mgmt,ha,wan1-2,lan1-22,x1-8
+    g = platforms.guess_portmap(src, dst)
+    # exact names keep themselves
+    assert g["mgmt"] == "mgmt" and g["ha"] == "ha"
+    assert g["x1"] == "x1" and g["x8"] == "x8"
+    # the user's example: port1 -> lan1, positionally through lan22
+    assert g["port1"] == "lan1"
+    assert g["port22"] == "lan22"
+    # ambiguous ports left for the user (no lan23/24; wan1/2 spare)
+    assert "port23" not in g and "port24" not in g
+    # never double-maps a destination
+    assert len(set(g.values())) == len(g.values())
+
+
+def test_guess_portmap_no_dest_is_empty():
+    assert platforms.guess_portmap(["port1", "port2"], []) == {}

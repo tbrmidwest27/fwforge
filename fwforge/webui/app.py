@@ -397,6 +397,20 @@ def create_app() -> Flask:
         default_target = (src_train if src_train in FORTIOS_TARGETS
                           else "7.4")
         det = {d["name"]: d for d in meta.get("iface_details", [])}
+        # positional port-guess maps (601F port1 -> 701G lan1, etc.) so
+        # the target dropdowns default to a sensible mapping. Computed
+        # for the uploaded destination backup and for each model in the
+        # table; the JS picks the one matching the chosen destination.
+        src_phys = [d["name"] for d in meta.get("iface_details", [])
+                    if d.get("type") == "physical"
+                    and "." not in d["name"] and d["name"] != "modem"]
+        guess_backup = (platforms.guess_portmap(src_phys,
+                                                meta["target_ports"])
+                        if meta.get("target_ports") else {})
+        guess_by_model = {code: platforms.guess_portmap(src_phys,
+                                                        list(ports))
+                          for code, ports in
+                          platforms.PORT_INVENTORY.items()}
         return render_template(
             "plan.html", jid=jid, meta=meta, targets=FORTIOS_TARGETS,
             default_target=default_target, det=det,
@@ -404,6 +418,7 @@ def create_app() -> Flask:
             port_inventory=platforms.PORT_INVENTORY,
             faceplates=platforms.FACEPLATES,
             platform_models=platforms.MODEL_BY_CODE,
+            guess_backup=guess_backup, guess_by_model=guess_by_model,
             schemas=schema_mod.list_cached(),
             error=request.args.get("error", ""))
 

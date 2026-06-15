@@ -233,6 +233,51 @@ def safe_filename(name: str, fallback: str = "config") -> str:
     return s or fallback
 
 
+_SERIES_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
+
+
+def _series(names: list[str]) -> dict[str, dict[int, str]]:
+    """Group <prefix><number> names by prefix: {'port': {1:'port1', ...}}."""
+    out: dict[str, dict[int, str]] = {}
+    for n in names:
+        m = _SERIES_RE.match(n)
+        if m:
+            out.setdefault(m.group(1).lower(), {})[int(m.group(2))] = n
+    return out
+
+
+def guess_portmap(source_ports: list[str],
+                  dest_ports: list[str]) -> dict[str, str]:
+    """Best-effort source->dest physical-port guesses, confident only:
+
+    1. exact name match keeps the name (x1->x1, mgmt->mgmt, ha->ha);
+    2. the source's largest still-unmatched `<prefix><N>` series maps by
+       NUMBER onto the destination's largest still-unused series
+       (601F port1->701G lan1 ... port22->lan22).
+
+    Ambiguous ports (a source number with no destination counterpart,
+    spare destination ports like wan1/2) are intentionally left out for
+    the user to map. Never maps two sources onto one destination."""
+    dest_set = set(dest_ports)
+    guess: dict[str, str] = {}
+    used: set[str] = set()
+    for s in source_ports:
+        if s in dest_set and s not in used:
+            guess[s] = s
+            used.add(s)
+    src_series = _series([s for s in source_ports if s not in guess])
+    dest_series = _series([d for d in dest_ports if d not in used])
+    if src_series and dest_series:
+        s_prefix = max(src_series, key=lambda k: len(src_series[k]))
+        d_prefix = max(dest_series, key=lambda k: len(dest_series[k]))
+        for num, sname in sorted(src_series[s_prefix].items()):
+            dname = dest_series[d_prefix].get(num)
+            if dname and dname not in used:
+                guess[sname] = dname
+                used.add(dname)
+    return guess
+
+
 # -- faceplate layouts --------------------------------------------------------
 # Schematic front-panel specs for the GUI's port-lighting view. These
 # are our own schematic drawings (groups of port rectangles) — no

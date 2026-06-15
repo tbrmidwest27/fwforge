@@ -513,3 +513,39 @@ def test_physical_ports_are_target_dropdowns(client):
     assert 'data-src="port1"' in page        # physical -> dropdown
     assert 'data-src="vlan30"' not in page    # vlan -> text input
     assert "populateSelects" in page          # dropdown-fill JS shipped
+
+
+def test_port_guess_prefills_dropdowns(client):
+    import io, json, re
+    src = (FIX / "fortios_refactor.conf").read_bytes()
+    tgt = b"""#config-version=FG7H1G-8.0.0-FW-build0167-260420:opmode=0:vdom=0:user=admin
+config system interface
+    edit "mgmt"
+        set type physical
+    next
+    edit "lan1"
+        set type physical
+    next
+    edit "lan2"
+        set type physical
+    next
+    edit "lan3"
+        set type physical
+    next
+    edit "lan4"
+        set type physical
+    next
+end
+"""
+    resp = client.post("/load", data={
+        "config": (io.BytesIO(src), "src.conf"),
+        "target_config": (io.BytesIO(tgt), "dst.conf"),
+    }, content_type="multipart/form-data", follow_redirects=False)
+    jid = resp.headers["Location"].rstrip("/").split("/")[-1]
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "GUESS_BACKUP" in page
+    m = re.search(r'const GUESS_BACKUP = (\{[^}]*\});', page)
+    gb = json.loads(m.group(1))
+    # the fixture's port1..port4 guess onto the destination's lan1..lan4
+    assert gb.get("port1") == "lan1"
+    assert gb.get("port4") == "lan4"
