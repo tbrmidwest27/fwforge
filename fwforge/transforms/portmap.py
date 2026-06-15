@@ -263,7 +263,8 @@ def tree_interface_details(tree: CTree) -> list[dict]:
                 continue
             d = {"name": edit.name.value, "ip": "", "alias": "",
                  "descr": "", "type": "", "vlanid": "", "parent": "",
-                 "role": "", "status": "", "vdom": ""}
+                 "role": "", "status": "", "vdom": "", "kind": "",
+                 "members": []}
             mode = ""
             for line in edit.children:
                 if not isinstance(line, SetLine) or not line.values:
@@ -285,9 +286,32 @@ def tree_interface_details(tree: CTree) -> list[dict]:
                     d[line.attr] = v
                 elif line.attr == "interface":
                     d["parent"] = v
+                elif line.attr == "member":
+                    d["members"] = [t.value for t in line.values]
             if not d["ip"] and mode in ("dhcp", "pppoe"):
                 d["ip"] = mode
             if not d["type"]:
                 d["type"] = "vlan" if d["vlanid"] else "physical"
             out.append(d)
+    # second pass: aggregate / redundant bundles and their member ports,
+    # so the mapping grid shows the LAG, badges its members, and keeps
+    # VLANs nested on the bundle — same awareness as the cross-vendor path
+    agg_of: dict[str, str] = {}
+    for d in out:
+        if d["type"] in ("aggregate", "redundant"):
+            for m in d["members"]:
+                agg_of[m] = d["name"]
+    for d in out:
+        if d["type"] in ("aggregate", "redundant"):
+            d["kind"] = "aggregate"
+        elif d["name"] in agg_of:
+            d["kind"] = "aggregate-member"
+            d["parent"] = agg_of[d["name"]]
+            d["type"] = "physical"   # maps to a target physical port
+        elif d["type"] == "vlan" or d["vlanid"]:
+            d["kind"] = "vlan"
+        elif d["type"] in ("loopback", "tunnel"):
+            d["kind"] = d["type"]
+        else:
+            d["kind"] = "physical"
     return out

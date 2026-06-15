@@ -256,6 +256,18 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.46 — shipped 2026-06-15 (aggregate awareness on FortiOS->FortiOS too)
+Adam: aggregates + nested VLANs must surface in the FGT->FGT flow, not
+just cross-vendor. tree_interface_details() (the tree path's iface
+details) now detects kind: aggregate/redundant bundles + their member
+ports (kind=aggregate-member, type forced physical so they get a port
+dropdown), VLANs (kept nested on their parent), loopbacks, tunnels —
+same awareness the cross-vendor IR path got in v0.44/45. 601F verified:
+fortilink (member x8) + WAN_SWITCH (member x1) detected as aggregates,
+x1/x8 as members, 37 VLANs. The tree already portmapped members + kept
+VLANs nested; this adds the GUI surfacing (badges + member dropdowns).
+269 tests.
+
 ### v0.45 — shipped 2026-06-15 (cross-vendor mapping dropdowns + white faceplate)
 (1) The destination-port dropdowns/faceplate/target-picker now work for
 cross-vendor (PAN/ASA/SRX -> FortiGate), not just FortiOS->FortiOS:
