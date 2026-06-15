@@ -1316,6 +1316,32 @@ class PaloParser:
         except ValueError:
             return None
 
+    def _resolve_range(self, token: str) -> tuple[str, int] | None:
+        """(fortios_range, address_count) for a host / subnet / range
+        address object — the form a FortiOS VIP's extip/mappedip want for
+        a 1:1 netmap. '10.65.226.0/24' -> ('10.65.226.0-10.65.226.255',
+        256). None if it cannot be resolved to IPv4 ranges."""
+        val = token
+        addr = self.cfg.address_by_name(token)
+        if addr:
+            if addr.type not in ("host", "subnet", "range"):
+                return None
+            val = addr.value
+        val = (val or "").strip()
+        try:
+            if "-" in val and "/" not in val:
+                lo, hi = (p.strip() for p in val.split("-", 1))
+                n = (int(ipaddress.IPv4Address(hi))
+                     - int(ipaddress.IPv4Address(lo)) + 1)
+                return (f"{lo}-{hi}", n) if n >= 1 else None
+            if "/" in val:
+                net = ipaddress.ip_network(val, strict=False)
+                return (f"{net[0]}-{net[-1]}", net.num_addresses)
+            ipaddress.IPv4Address(val)
+            return (val, 1)
+        except ValueError:
+            return None
+
     def parse_nat(self, rules):
         for name, r in _entries(rules):
             ref = self.ref(r, f"nat rule '{name}'")
@@ -1405,10 +1431,38 @@ class PaloParser:
                     self.cfg.vips.append(vip)
                     handled = True
                 else:
-                    self.note("error", "nat",
-                              f"nat rule '{name}': destination NAT could "
-                              "not be resolved to host IPs — convert "
-                              "manually", ref)
+                    # not single hosts — try a 1:1 subnet/range netmap
+                    # (PAN /24 -> /24); FortiOS maps equal-length extip and
+                    # mappedip ranges one-to-one
+                    ext_r = self._resolve_range(dsts[0]) if dsts else None
+                    mapped_r = self._resolve_range(
+                        str(dt.get("translated-address", "")))
+                    if ext_r and mapped_r and ext_r[1] == mapped_r[1]:
+                        self.cfg.vips.append(Vip(
+                            name=f"vip-{name}", ext_ip=ext_r[0],
+                            mapped_ip=mapped_r[0],
+                            ext_intf=self._zone_single_member(frm[0]),
+                            comment=f"from PAN 1:1 subnet destination NAT "
+                                    f"'{name}'", source=ref))
+                        self.note(
+                            "info", "nat",
+                            f"nat rule '{name}': 1:1 subnet destination NAT "
+                            f"{ext_r[0]} -> {mapped_r[0]} ({ext_r[1]} "
+                            "addresses) converted to a range VIP — FortiOS "
+                            "maps the ranges one-to-one", ref)
+                        handled = True
+                    elif ext_r and mapped_r:
+                        self.note(
+                            "error", "nat",
+                            f"nat rule '{name}': destination NAT maps "
+                            f"{ext_r[1]} addresses to {mapped_r[1]} — sizes "
+                            "differ, cannot 1:1 map; convert manually", ref)
+                    else:
+                        self.note(
+                            "error", "nat",
+                            f"nat rule '{name}': destination NAT could not "
+                            "be resolved to host IPs or a 1:1 subnet — "
+                            "convert manually", ref)
 
             if not handled and not st and not dt:
                 self.note("info", "nat",

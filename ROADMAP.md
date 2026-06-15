@@ -256,6 +256,14 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.42 — shipped 2026-06-13 (PAN subnet 1:1 destination NAT -> range VIP)
+The one TIS conversion error (Ericsson NAT Rules-1: /24 -> /24
+destination NAT) now converts. _resolve_range() turns a subnet/range
+address into the FortiOS range form; parse_nat emits a 1:1 range VIP
+when extip/mappedip are equal size (FortiOS maps them one-to-one),
+errors clearly on size mismatch. TIS conversion is now 0 errors.
+267 tests.
+
 ### v0.41 — shipped 2026-06-13 (App-ID -> port/port-group SERVICE on policies)
 Adam: "convert application ID's to ports or port group based policies."
 Chosen (AskUserQuestion): scope = application-default + service=any;

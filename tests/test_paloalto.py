@@ -274,3 +274,56 @@ def test_pan_bgp_ospf_converted():
     assert area.id == "0.0.0.0"
     assert area.networks == ["10.1.0.0/24"]
     assert area.passive == ["ethernet1/2"]
+
+
+NETMAP = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip>
+      <entry name="10.0.0.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="untrust"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <address>
+      <entry name="ext-net"><ip-netmask>10.65.226.0/24</ip-netmask></entry>
+      <entry name="int-net"><ip-netmask>172.19.139.0/24</ip-netmask></entry>
+      <entry name="mismatch"><ip-netmask>10.1.1.0/30</ip-netmask></entry>
+    </address>
+    <rulebase><nat><rules>
+      <entry name="SubnetDNAT">
+        <to><member>untrust</member></to>
+        <from><member>untrust</member></from>
+        <source><member>any</member></source>
+        <destination><member>ext-net</member></destination>
+        <service>any</service>
+        <destination-translation>
+          <translated-address>int-net</translated-address>
+        </destination-translation>
+      </entry>
+      <entry name="BadSize">
+        <to><member>untrust</member></to>
+        <from><member>untrust</member></from>
+        <source><member>any</member></source>
+        <destination><member>ext-net</member></destination>
+        <service>any</service>
+        <destination-translation>
+          <translated-address>mismatch</translated-address>
+        </destination-translation>
+      </entry>
+    </rules></nat></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_subnet_destination_nat_netmap():
+    cfg = paloalto.parse(NETMAP, "netmap.xml")
+    # /24 -> /24 destination NAT becomes a 1:1 range VIP
+    vip = next(v for v in cfg.vips if "SubnetDNAT" in v.name)
+    assert vip.ext_ip == "10.65.226.0-10.65.226.255"
+    assert vip.mapped_ip == "172.19.139.0-172.19.139.255"
+    msgs = [(l, m) for l, _, m, _ in cfg.meta["findings"]]
+    assert any("1:1 subnet destination NAT" in m for _, m in msgs)
+    # mismatched sizes (/24 -> /30) is a clear error, not a silent guess
+    assert any(l == "error" and "sizes" in m and "BadSize" in m
+               for l, m in msgs)
