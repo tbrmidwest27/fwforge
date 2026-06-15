@@ -256,6 +256,18 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.43 — shipped 2026-06-13 (App-IDs -> FortiOS BUILT-IN named services)
+Adam: "by ports I mean services on the FortiGate." pan_appid.APP_TO_BUILTIN
+(verified read-only against the live 8.0 service catalogue) maps App-IDs
+to FortiOS built-in service names; _appdefault_services reworked to
+resolve PER APP (groups expanded to leaves) — built-in name where one
+exists (SMB, SAMBA, HTTPS, DNS, KERBEROS, LDAP, MS-SQL, MYSQL, RDP,
+SNMP, SSH, ...), else a per-app appdef custom service. The old
+merge-everything-by-proto is gone, so each app keeps its own service.
+TIS result: native services everywhere — SMB x111, HTTPS x97, RDP x57,
+SAMBA x30, KERBEROS/LDAP, MS-SQL; only genuinely-no-builtin apps
+(msrpc/135) stay custom. 267 tests.
+
 ### v0.42 — shipped 2026-06-13 (PAN subnet 1:1 destination NAT -> range VIP)
 The one TIS conversion error (Ericsson NAT Rules-1: /24 -> /24
 destination NAT) now converts. _resolve_range() turns a subnet/range

@@ -261,6 +261,46 @@ def _norm(app: str) -> str:
     return a
 
 
+# PAN App-ID -> FortiOS BUILT-IN service name(s). Verified read-only
+# against a live FortiOS 8.0 service catalogue (2026-06-13): these names
+# exist on every FortiGate, so a policy can reference them directly with
+# no custom object. Multi-port apps map to the matching built-in set
+# (ms-ds-smb -> SMB(445)+SAMBA(139)). Apps with no clean built-in
+# (msrpc/135, KMS, WinRM, the AD bundle, ...) fall through to a
+# synthesized appdef-* custom service. Base names; _norm() handles the
+# -base/version suffixes on lookup.
+APP_TO_BUILTIN: dict[str, list[str]] = {
+    "web-browsing": ["HTTP"], "http2": ["HTTP", "HTTPS"],
+    "ssl": ["HTTPS"], "dns": ["DNS"],
+    "ssh": ["SSH"], "telnet": ["TELNET"], "ftp": ["FTP"],
+    "smtp": ["SMTP"], "pop3": ["POP3"], "imap": ["IMAP"],
+    "ntp": ["NTP"], "snmp": ["SNMP"], "snmp-trap": ["SNMP"],
+    "tftp": ["TFTP"], "syslog": ["SYSLOG"], "dhcp": ["DHCP"],
+    "kerberos": ["KERBEROS"], "ldap": ["LDAP"],
+    "ms-ds-smb": ["SMB", "SAMBA"], "smb": ["SMB", "SAMBA"],
+    "ms-ds-smbv2": ["SMB"], "ms-ds-smbv3": ["SMB"],
+    "netbios-ss": ["SAMBA"],
+    "ms-rdp": ["RDP"], "rdp": ["RDP"], "vnc": ["VNC"],
+    "mysql": ["MYSQL"], "mssql-db": ["MS-SQL"], "mssql": ["MS-SQL"],
+    "ms-sql": ["MS-SQL"],
+    "radius": ["RADIUS"], "sip": ["SIP"], "h323": ["H323"],
+    "rtsp": ["RTSP"], "mgcp": ["MGCP"], "ike": ["IKE"],
+    "l2tp": ["L2TP"], "pptp": ["PPTP"],
+    # SaaS / cloud endpoints ride HTTPS
+    "okta": ["HTTPS"], "crowdstrike": ["HTTPS"],
+    "windows-azure": ["HTTPS"],
+    "windows-defender-atp-endpoint": ["HTTPS"],
+    "webdav": ["HTTP", "HTTPS"], "soap": ["HTTP", "HTTPS"],
+}
+
+
+def builtin_services(app: str) -> list[str] | None:
+    """FortiOS built-in service name(s) for a PAN App-ID, or None when
+    the app has no clean native equivalent (caller synthesizes a custom
+    service from its ports)."""
+    return APP_TO_BUILTIN.get(app.lower()) or APP_TO_BUILTIN.get(_norm(app))
+
+
 def map_apps(apps: list[str]) -> tuple[list[str], list[int], list[str],
                                        list[str]]:
     """Return (category-names, category-ids, transport-apps, unmapped-apps)

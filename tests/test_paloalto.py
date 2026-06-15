@@ -103,11 +103,11 @@ def test_xml_rules():
     assert allow.services == ["WEB-ALL"]
 
     out = _policy(cfg, "Out Web")
-    # application-default tightened from the apps' default ports
-    # (web-browsing tcp/80 + ssl tcp/443) instead of broadening to ALL
-    assert out.services == ["appdef-tcp-80_443"]
-    svc = next(s for s in cfg.services if s.name == "appdef-tcp-80_443")
-    assert svc.protocol == "tcp" and svc.dst_ports == "80 443"
+    # application-default -> the apps' FortiOS built-in services
+    # (web-browsing=HTTP, ssl=HTTPS), as a port group, not ALL
+    assert len(out.services) == 1 and out.services[0].startswith("appsvc-grp-")
+    grp = next(g for g in cfg.svc_groups if g.name == out.services[0])
+    assert set(grp.members) == {"HTTP", "HTTPS"}
     assert "PAN apps: web-browsing, ssl" in out.comment
     assert any("App-ID" in m for _, _, m, _ in findings(cfg))
     assert any("App-IDs -> port-based service" in m
@@ -194,7 +194,9 @@ def test_e2e_cli_paloalto(tmp_path):
     # interface PAT pair (trust -> untrust) gets nat enable
     out = next(b for b in blocks if 'set name "Out_Web"' in b)
     assert "set nat enable" in out
-    assert 'set service "appdef-tcp-80_443"' in out  # tightened app-default
+    # app-default -> built-in services HTTP/HTTPS as a port group
+    assert 'set service "appsvc-grp-' in out
+    assert 'set member "HTTP" "HTTPS"' in conf
     # multi-range + source-port emission
     assert "set tcp-portrange 80 8000-8080" in conf
     assert "set udp-portrange 514:1024-65535" in conf

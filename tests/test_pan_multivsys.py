@@ -350,10 +350,10 @@ def test_application_default_keeps_named_service():
 </entry></devices></config>"""
     cfg = paloalto.parse(xml, "m.xml")
     p = cfg.policies[0]
-    # tightened dns service AND the explicit custom-8888 both present
+    # dns -> FortiOS built-in DNS service AND the explicit custom-8888
+    # named service are both present
     assert "custom-8888" in p.services
-    assert any("53" in s.dst_ports for s in cfg.services
-               if s.name in p.services)
+    assert "DNS" in p.services
 
 
 def test_base_interface_not_duplicated_across_vsys():

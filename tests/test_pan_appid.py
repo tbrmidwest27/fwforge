@@ -175,18 +175,15 @@ def test_default_ports_lookup():
 def test_application_default_tightened():
     cfg = paloalto.parse(APPDEF, "appdef.xml")
     tight = next(p for p in cfg.policies if p.name == "Tight")
-    # custom erp-app (file ports) + ssh + dns resolve -> real services,
-    # collapsed into one port group (several services)
+    # ssh/dns map to FortiOS built-in services; the custom erp-app keeps
+    # a synthesized appdef service. All collapse into one port group.
     assert "ALL" not in tight.services
     assert len(tight.services) == 1
     grp = next(g for g in cfg.svc_groups if g.name == tight.services[0])
-    tcp_svc = next(s for s in cfg.services if s.name in grp.members
-                   and s.protocol == "tcp")
-    assert "8443" in tcp_svc.dst_ports and "22" in tcp_svc.dst_ports
-    assert "9000-9010" in tcp_svc.dst_ports
-    dns_svc = next(s for s in cfg.services if s.name in grp.members
-                   and s.protocol == "tcp/udp")
-    assert dns_svc.dst_ports == "53"
+    assert "SSH" in grp.members and "DNS" in grp.members
+    erp = next(s for s in cfg.services if s.name in grp.members
+               and s.protocol == "tcp")
+    assert "8443" in erp.dst_ports and "9000-9010" in erp.dst_ports
     msgs = [m for _, _, m, _ in cfg.meta["findings"]]
     assert any("port-based service" in m for m in msgs)
 
@@ -263,11 +260,15 @@ def test_appgroup_expanded_for_appcontrol_and_ports():
     msgs = [m for _, _, m, _ in cfg.meta["findings"]]
     assert not any("jabil_serv_mysql_smb_app" in m
                    and "no FortiOS app-control" in m for m in msgs)
-    # application-default tightened to real ports — the group's members
-    # (mysql 3306, smb 445, msrpc 135) resolve, so no "kept as ALL"
+    # application-default tightened to FortiGate services — no "kept as ALL"
     assert not any("GrpRule" in m and "kept as ALL" in m for m in msgs)
-    allports = " ".join(s.dst_ports or "" for s in cfg.services)
-    assert "445" in allports and "3306" in allports and "135" in allports
+    grp = next(g for g in cfg.svc_groups if g.name == rule.services[0])
+    # mysql -> built-in MYSQL, ms-ds-smbv2 -> built-in SMB, msrpc -> a
+    # custom appdef service (tcp 135, no FortiOS built-in for MS-RPC)
+    assert "MYSQL" in grp.members and "SMB" in grp.members
+    rpc = next(s for s in cfg.services if s.name in grp.members
+               and s.protocol == "tcp")
+    assert "135" in rpc.dst_ports
 
 
 ANYAPPS = """<config version="11.0.0"><devices>
@@ -303,9 +304,8 @@ def test_service_any_apps_become_port_group():
     assert "ALL" not in rule.services
     assert len(rule.services) == 1 and rule.services[0].startswith("appsvc-grp-")
     grp = next(g for g in cfg.svc_groups if g.name == rule.services[0])
-    allports = " ".join(s.dst_ports for s in cfg.services
-                        if s.name in grp.members)
-    assert "22" in allports and "53" in allports and "161" in allports
+    # ssh/dns/snmp -> FortiOS built-in service names (no custom objects)
+    assert set(grp.members) == {"SSH", "DNS", "SNMP"}
     assert rule.app_list                      # app-control kept (both)
     msgs = [m for _, _, m, _ in cfg.meta["findings"]]
     assert any("service=any" in m and "port-based service" in m

@@ -985,26 +985,57 @@ class PaloParser:
         ports are unknown (caller falls back to ALL + warning)."""
         if apps == ["any"] or not apps:
             return None
-        by_proto: dict[str, set[str]] = {}
-        special: list[str] = []
+        # expand application-groups to leaves first so each real app maps
+        # individually (ssh inside a group -> built-in SSH, not merged)
+        apps = self._expand_app_groups(apps)
+        # resolve PER APP (not merged) so each app keeps its own service —
+        # a FortiOS BUILT-IN name when there is one (SMB, HTTPS, DNS, ...),
+        # else a synthesized custom service from the app's ports
+        out: list[str] = []
         unresolved: list[str] = []
+
+        def add(nm: str) -> None:
+            if nm not in out:
+                out.append(nm)
+
         for app in apps:
+            if app in ("any", "application-default"):
+                continue
+            builtins = pan_appid.builtin_services(app)
+            if builtins:
+                for b in builtins:
+                    add(b)
+                continue
             specs = self._app_port_specs(app)
             if specs is None:
                 unresolved.append(app)
                 continue
+            # merge THIS app's ports by protocol into one service per
+            # proto (one tidy object per app), but never across apps
+            by_proto: dict[str, set[str]] = {}
             for proto, ports in specs:
                 if proto == "icmp":
-                    special.append("ALL_ICMP")
+                    add("ALL_ICMP")
                 elif proto == "ip":
                     nm = f"proto_{ports}"
                     if not any(s.name == nm for s in self.cfg.services):
                         self.cfg.services.append(Service(
                             name=nm, protocol="ip",
                             proto_number=int(ports), source=ref))
-                    special.append(nm)
+                    add(nm)
                 else:
                     by_proto.setdefault(proto, set()).update(ports.split())
+            for proto in sorted(by_proto):
+                ports = " ".join(sorted(by_proto[proto],
+                                        key=lambda p: int(p.split("-")[0])))
+                nm = f"appdef-{proto.replace('/', '')}-" \
+                     + ports.replace(" ", "_")
+                if not any(s.name == nm for s in self.cfg.services):
+                    self.cfg.services.append(Service(
+                        name=nm, protocol=proto, dst_ports=ports,
+                        comment="from PAN application-default ports",
+                        source=ref))
+                add(nm)
         if unresolved:
             self.note(
                 "warn", "policies",
@@ -1012,22 +1043,6 @@ class PaloParser:
                 f"— no default-port data for: {', '.join(unresolved)} "
                 "(dynamic-port or unknown app); tighten manually", ref)
             return None
-        out: list[str] = []
-        for proto in sorted(by_proto):
-            ports = " ".join(sorted(
-                by_proto[proto],
-                key=lambda p: int(p.split("-")[0])))
-            nm = f"appdef-{proto.replace('/', '')}-" \
-                 + ports.replace(" ", "_")
-            if not any(s.name == nm for s in self.cfg.services):
-                self.cfg.services.append(Service(
-                    name=nm, protocol=proto, dst_ports=ports,
-                    comment="from PAN application-default ports",
-                    source=ref))
-            out.append(nm)
-        for nm in special:
-            if nm not in out:
-                out.append(nm)
         return out or None
 
     def _app_service(self, apps: list[str], rule: str,
