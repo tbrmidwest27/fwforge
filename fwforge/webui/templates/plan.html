@@ -265,6 +265,9 @@
     .fpmodel { color:#5a6470; font-size:.6rem; font-weight:600;
                letter-spacing:.06em; line-height:1; white-space:nowrap;
                text-transform:uppercase; }
+    /* a non-FortiGate source: drop the Fortinet-red accent so the
+       source panel doesn't read as a FortiGate */
+    .fpbezel.foreign { border-left-color:#8a94a0; }
     .fpglabel { color:#6b7682; font-size:.55rem; text-transform:uppercase;
                 letter-spacing:.07em; white-space:nowrap;
                 text-align:center; }
@@ -799,6 +802,10 @@ function tpPortsChanged() {
 // ---- faceplates: schematic front panels with live port lighting ----
 const FACEPLATES = {{ faceplates|tojson }};
 const SOURCE_PLATFORM = {{ meta.get("source_platform", "")|tojson }};
+// non-FortiOS sources have no FortiGate platform code; label the source
+// panel by vendor ("Palo Alto") instead of defaulting to "FortiGate"
+const SOURCE_LABEL = {{ meta.get("vendor_label", "")|tojson }};
+const SOURCE_FOREIGN = {{ (meta.vendor != "fortios")|tojson }};
 const TARGET_CODE = {{ meta.get("target_code", "")|tojson }};
 let fpActive = null;   // the map_dst input currently being wired
 
@@ -815,12 +822,17 @@ function fpShortLabel(name) {
   if (m) return m[1];
   return name.toUpperCase();
 }
-function fpRender(el, spec, side, model) {
-  // bezel wordmark like the device silkscreen: brand + model number
+function fpRender(el, spec, side, model, foreign) {
+  // bezel wordmark like the device silkscreen. "FortiGate 601F" splits
+  // into brand + model number; a vendor label with no numeric model
+  // ("Palo Alto", "Cisco ASA") stays whole so the source reads right.
   const words = (model || "").split(" ");
-  const bezel = model ? `<div class="fpbezel">
-      <span class="fpbrand">${esc(words[0])}</span>
-      <span class="fpmodel">${esc(words.slice(1).join(" "))}</span>
+  const hasModel = words.length > 1 && /\d/.test(words[words.length - 1]);
+  const brand = hasModel ? words.slice(0, -1).join(" ") : (model || "");
+  const num = hasModel ? words[words.length - 1] : "";
+  const bezel = model ? `<div class="fpbezel${foreign ? " foreign" : ""}">
+      <span class="fpbrand">${esc(brand)}</span>
+      <span class="fpmodel">${esc(num)}</span>
     </div>` : "";
   // FortiOS-style: labels above the top row, below the bottom row
   el.innerHTML = bezel + spec.map(g => `
@@ -890,17 +902,18 @@ function buildFaceplates() {
   const srcPorts = DET.filter(d => d.type === "physical"
       && !d.name.includes(".") && d.name !== "modem").map(d => d.name);
   const srcModel = MODEL_BY_CODE[SOURCE_PLATFORM] || SOURCE_PLATFORM
-    || "FortiGate";
-  fpRender(srcEl, fpSpec(SOURCE_PLATFORM, srcPorts), "src", srcModel);
+    || SOURCE_LABEL || "FortiGate";
+  fpRender(srcEl, fpSpec(SOURCE_PLATFORM, srcPorts), "src", srcModel,
+           SOURCE_FOREIGN);
   document.getElementById("fp-src-name").textContent =
-    SOURCE_PLATFORM || "";
+    SOURCE_PLATFORM || SOURCE_LABEL || "";
   const dp = destPortList();
   const dc = destCodeNow();
   document.getElementById("fp-dst-name").textContent = dc;
   document.getElementById("fp-dst-hint").textContent = dp.length ? "" :
     "pick a target model (or load a destination backup) to light this up";
   fpRender(dstEl, fpSpec(dc, dp), "dst",
-           dp.length ? (MODEL_BY_CODE[dc] || dc || "FortiGate") : "");
+           dp.length ? (MODEL_BY_CODE[dc] || dc || "FortiGate") : "", false);
   refreshFaceplates();
 }
 document.addEventListener("focusin", e => {

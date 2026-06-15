@@ -452,6 +452,23 @@ def test_faceplates_shipped_to_wizard(client):
     assert "FACEPLATES" in page and "5G RJ45" in page  # 700G spec inline
     # the fixture header platform is captured for the source panel
     assert webui_app.JOBS[jid]["source_platform"] == "FGT601F"
+    # a FortiOS source is not "foreign" — keeps the FortiGate styling
+    assert "const SOURCE_FOREIGN = false" in page
+
+
+def test_cross_vendor_source_faceplate_labeled_by_vendor(client):
+    # regression: a Palo Alto source panel must identify as its own
+    # vendor, not silently default to "FortiGate" — there is no FortiGate
+    # platform code for a non-FortiOS source, so the wordmark fell back to
+    # the hardcoded "FortiGate" and the panel read as the wrong device.
+    jid = _load(client, "pa_sample.xml")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert 'id="fp-src"' in page                       # source panel renders
+    assert 'const SOURCE_LABEL = "Palo Alto"' in page  # drives the wordmark
+    assert "const SOURCE_FOREIGN = true" in page        # drops Forti styling
+    # the source has no FortiGate platform code — exactly the condition
+    # that made the old fallback mislabel it
+    assert not webui_app.JOBS[jid].get("source_platform")
 
 
 def test_destination_identity_and_filename(client):

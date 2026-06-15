@@ -256,6 +256,19 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.46.1 — shipped 2026-06-15 (cross-vendor source faceplate labeled by vendor)
+Bugfix (Adam caught): the mapping-step source faceplate silkscreened
+"FortiGate" for a Palo Alto (or any non-FortiOS) source. source_platform
+is only set on the FortiOS path (it reads the #config-version header), so
+SOURCE_PLATFORM was empty cross-vendor and srcModel fell back to a
+hardcoded "FortiGate". plan.html now plumbs SOURCE_LABEL (vendor_label) +
+SOURCE_FOREIGN through: the source wordmark + fp-src-name use the vendor
+label ("Palo Alto", "Cisco ASA", ...), the bezel split keeps a
+no-numeric-model label whole (no "Palo / ALTO"), and a foreign source
+drops the Fortinet-red accent for neutral grey so the panel doesn't read
+as a FortiGate. Generalizes to ASA/SRX/pfSense; destination unchanged.
+Regression test + a foreign=false assertion on the FortiOS path. 270 tests.
+
 ### v0.46 — shipped 2026-06-15 (aggregate awareness on FortiOS->FortiOS too)
 Adam: aggregates + nested VLANs must surface in the FGT->FGT flow, not
 just cross-vendor. tree_interface_details() (the tree path's iface
