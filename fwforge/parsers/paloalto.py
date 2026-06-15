@@ -1136,12 +1136,36 @@ class PaloParser:
                 pol.comment = "; ".join(comment_bits)[:1023]
             self.cfg.policies.append(pol)
 
+    def _expand_app_groups(self, apps: list[str],
+                           seen: set | None = None) -> list[str]:
+        """Flatten PAN application-groups to their leaf App-IDs (order-
+        preserving, de-duplicated) so the app-control mapping sees the
+        real apps a group contains, not the group's custom name. Custom
+        application objects and filters stay as-is (no leaf apps to
+        map)."""
+        seen = seen if seen is not None else set()
+        out: list[str] = []
+        for a in apps:
+            if a in self._app_groups and a not in seen:
+                seen.add(a)
+                for leaf in self._expand_app_groups(
+                        self._app_groups[a], seen):
+                    if leaf not in out:
+                        out.append(leaf)
+            elif a not in out:
+                out.append(a)
+        return out
+
     def _app_list_for(self, apps: list[str], rule: str,
                       ref: SourceRef) -> str:
         """Map a rule's PAN App-IDs to a FortiOS application-list profile
         (deduped across rules). Returns the profile name, or ''."""
         if apps == ["any"] or not apps:
             return ""
+        # expand application-groups to leaves first — a rule that
+        # references a custom group (jabil_serv_mysql_smb_app) should map
+        # the apps inside it (mysql, smb), not fail on the group name
+        apps = self._expand_app_groups(apps)
         cats, ids, transport, unmapped = pan_appid.map_apps(apps)
         if not cats:
             if unmapped:

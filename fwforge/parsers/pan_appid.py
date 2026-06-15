@@ -85,6 +85,28 @@ APP_TO_CAT = {
     "hotspot-shield": "Proxy", "psiphon": "Proxy",
     "google-base": "General.Interest", "apple-appstore": "General.Interest",
     "google-play": "General.Interest",
+    # Microsoft / Windows infrastructure (RPC-family, file, directory,
+    # management) — common in enterprise PAN rulebases
+    "msrpc": "Network.Service", "ms-netlogon": "Network.Service",
+    "ms-wmi": "Network.Service", "ms-scheduler": "Network.Service",
+    "ms-service-controller": "Network.Service",
+    "ms-kms": "Network.Service", "netbios-ss": "Network.Service",
+    "active-directory": "Network.Service", "cotp": "Network.Service",
+    "ms-ds-smbv2": "Storage.Backup", "ms-ds-smbv3": "Storage.Backup",
+    "windows-remote-management": "Remote.Access",
+    "litemanager": "Remote.Access",
+    "mssql-db": "Business", "mssql-mon": "Business",
+    "ms-scom": "Business", "ms-sms": "Business",
+    # SaaS / cloud endpoints (SSL/443)
+    "okta": "Cloud.IT", "crowdstrike": "Cloud.IT",
+    "windows-azure": "Cloud.IT",
+    "windows-defender-atp-endpoint": "Cloud.IT",
+    "windows-push-notifications": "Cloud.IT",
+    # backup, web, conferencing, diagnostics
+    "arcserve": "Storage.Backup", "commvault": "Storage.Backup",
+    "webdav": "Web.Client", "soap": "Web.Client",
+    "t.120": "Collaboration", "traceroute": "Network.Service",
+    "snmp-trap": "Network.Service",
 }
 
 # apps that are transport/encryption, not really controllable applications
@@ -187,6 +209,39 @@ DEFAULT_PORTS: dict[str, list[tuple[str, str]]] = {
     "google-base": [("tcp", "80 443")],
     "apple-appstore": [("tcp", "80 443")],
     "google-play": [("tcp", "80 443")],
+    # Microsoft / Windows infrastructure (standard ports)
+    "msrpc": [("tcp", "135")],
+    "ms-netlogon": [("tcp", "135")],
+    "ms-wmi": [("tcp", "135")],
+    "ms-scheduler": [("tcp", "135")],
+    "ms-service-controller": [("tcp", "135")],
+    "ms-kms": [("tcp", "1688")],
+    "netbios-ss": [("tcp", "139")],
+    "ms-ds-smbv2": [("tcp", "139 445")],
+    "ms-ds-smbv3": [("tcp", "139 445")],
+    "active-directory": [("tcp", "88 135 389 445 464 636 3268 3269"),
+                         ("udp", "53 88 123 389 464")],
+    "cotp": [("tcp", "102")],
+    "windows-remote-management": [("tcp", "5985 5986")],
+    "litemanager": [("tcp", "5650 5651")],
+    "mssql-db": [("tcp", "1433")],
+    "mssql-mon": [("udp", "1434")],
+    "ms-scom": [("tcp", "5723")],
+    "ms-sms": [("tcp", "80 443")],
+    # SaaS / cloud endpoints (SSL)
+    "okta": [("tcp", "443")],
+    "crowdstrike": [("tcp", "443")],
+    "windows-azure": [("tcp", "443")],
+    "windows-defender-atp-endpoint": [("tcp", "443")],
+    "windows-push-notifications": [("tcp", "443 5223")],
+    # backup, web, conferencing, diagnostics
+    "arcserve": [("tcp", "6050 41523 41524")],
+    "commvault": [("tcp", "8400 8401 8402 8403")],
+    "webdav": [("tcp", "80 443")],
+    "soap": [("tcp", "80 443")],
+    "t.120": [("tcp", "1503")],
+    "traceroute": [("udp", "33434-33534")],
+    "snmp-trap": [("udp", "162")],
 }
 
 
@@ -200,7 +255,7 @@ def default_ports(app: str) -> list[tuple[str, str]] | None:
 def _norm(app: str) -> str:
     a = app.lower()
     for suf in ("-base", "-uploading", "-downloading", "-posting",
-                "-chat", "-video", "-audio"):
+                "-chat", "-video", "-audio", "-encrypted", "-unencrypted"):
         if a.endswith(suf):
             a = a[: -len(suf)]
     return a

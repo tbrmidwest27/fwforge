@@ -256,6 +256,21 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.40 — shipped 2026-06-13 (App-ID -> ports + app-control profiles, deeper)
+Adam (off the Jabil TIS PAN-OS 11.1 config): convert apps to the right
+ports AND the App-IDs to the right app-control profiles, creating
+profiles as needed.
+- pan_appid expanded with 29 enterprise App-IDs (MS infra: msrpc/wmi/
+  netlogon/smbv2-3/mssql/AD/kms/netbios-ss/winrm; SaaS: okta/azure/
+  crowdstrike/defender; backup/web/diag) -> FortiGuard categories AND
+  standard ports. _norm now also strips -encrypted/-unencrypted.
+- paloalto._app_list_for now EXPANDS custom application-groups to their
+  leaf App-IDs before mapping (a rule using jabil_serv_mysql_smb_app maps
+  mysql+smb+rpc instead of failing on the group name).
+- TIS result: app-default "kept as ALL" 121->25, "no app-control
+  category" 80->2, 40 app-control profiles created, 67 appdef port
+  services emitted, total warnings 484->388. 265 tests.
+
 ### v0.39.1 — shipped 2026-06-13 (detect Panorama template-merged PAN configs)
 Real Jabil TIS PAN-OS 11.1 running-config failed detection — a
 template-stack-merged export has ptpl="..." on every tag, so the bare

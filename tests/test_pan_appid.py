@@ -196,3 +196,73 @@ def test_application_default_dynamic_falls_back():
     msgs = [m for _, _, m, _ in cfg.meta["findings"]]
     assert any("no default-port data" in m and "dyn-app" in m
                for m in msgs)
+
+
+def test_enterprise_app_mappings():
+    # ports for the Microsoft/enterprise apps (incl. _norm suffix forms)
+    assert pan_appid.default_ports("msrpc") == [("tcp", "135")]
+    assert pan_appid.default_ports("msrpc-base") == [("tcp", "135")]
+    assert pan_appid.default_ports("ms-ds-smbv2") == [("tcp", "139 445")]
+    assert pan_appid.default_ports("mssql-db-encrypted") == [("tcp", "1433")]
+    assert pan_appid.default_ports("active-directory-base") is not None
+    assert pan_appid.default_ports("windows-remote-management") == \
+        [("tcp", "5985 5986")]
+    # categories
+    cats, ids, transport, unmapped = pan_appid.map_apps(
+        ["msrpc", "ms-ds-smbv2", "mssql-db-encrypted",
+         "active-directory-base", "okta", "windows-remote-management",
+         "snmp-trap", "webdav"])
+    assert unmapped == []
+    for c in ("Network.Service", "Storage.Backup", "Business",
+              "Cloud.IT", "Remote.Access", "Web.Client"):
+        assert c in cats
+
+
+APPGRP = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip>
+      <entry name="10.0.0.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="trust"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <application-group>
+      <entry name="jabil_serv_mysql_smb_app"><members>
+        <member>mysql</member><member>ms-ds-smbv2</member>
+        <member>msrpc</member></members></entry>
+    </application-group>
+    <rulebase><security><rules>
+      <entry name="GrpRule">
+        <from><member>trust</member></from><to><member>trust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>jabil_serv_mysql_smb_app</member></application>
+        <service><member>application-default</member></service>
+        <action>allow</action>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_appgroup_expanded_for_appcontrol_and_ports():
+    # a rule referencing a CUSTOM app-group expands to its member apps:
+    # it must get an app-control profile (not "no category") and the
+    # application-default service tightens to the members' real ports
+    cfg = paloalto.parse(APPGRP, "grp.xml")
+    rule = next(p for p in cfg.policies if p.name == "GrpRule")
+    assert rule.app_list and rule.app_list.startswith("pan-appctrl-")
+    al = next(a for a in cfg.app_lists if a.name == rule.app_list)
+    # mysql->Business, ms-ds-smbv2->Storage.Backup, msrpc->Network.Service
+    assert set(al.cat_names) == {"Business", "Storage.Backup",
+                                 "Network.Service"}
+    # the group name did NOT survive as an unmapped App-ID
+    msgs = [m for _, _, m, _ in cfg.meta["findings"]]
+    assert not any("jabil_serv_mysql_smb_app" in m
+                   and "no FortiOS app-control" in m for m in msgs)
+    # application-default tightened to real ports — the group's members
+    # (mysql 3306, smb 445, msrpc 135) resolve, so no "kept as ALL"
+    assert not any("GrpRule" in m and "kept as ALL" in m for m in msgs)
+    allports = " ".join(s.dst_ports or "" for s in cfg.services)
+    assert "445" in allports and "3306" in allports and "135" in allports
