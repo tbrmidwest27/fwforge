@@ -55,10 +55,14 @@ def _addr_networks(cfg: FirewallConfig, name: str,
                 return [ipaddress.IPv4Network(addr.value, strict=False)]
             if addr.type == "range":
                 lo, hi = addr.value.split("-", 1)
-                return [
-                    ipaddress.IPv4Network(f"{lo}/32"),
-                    ipaddress.IPv4Network(f"{hi}/32"),
-                ]
+                # summarize the WHOLE range, not just its endpoints: the
+                # interior may be unrouted (or routed elsewhere) even when both
+                # endpoints resolve to one interface. Covering every block lets
+                # lookup_net surface that gap and fall back to 'any' instead of
+                # mis-inferring a single dstintf from the endpoints alone.
+                return list(ipaddress.summarize_address_range(
+                    ipaddress.IPv4Address(lo.strip()),
+                    ipaddress.IPv4Address(hi.strip())))
         except ValueError:
             return None
         return None  # fqdn etc.
