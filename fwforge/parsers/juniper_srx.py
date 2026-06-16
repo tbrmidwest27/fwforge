@@ -547,6 +547,27 @@ class JunosParser:
                             if len(akey) > 1:
                                 ipaddr = akey[1]
                                 break
+                # IR Interface.ip is single-valued (no dual-stack); an inet6
+                # address can't ride alongside inet -- but a DROPPED v6 address
+                # must be flagged, never lost silently.
+                inet6 = unit.get("family", "inet6")
+                if inet6 is not None:
+                    v6 = ""
+                    for atoks in inet6.leaf_all("address"):
+                        if atoks:
+                            v6 = atoks[0]
+                            break
+                    if not v6:
+                        for akey, _an in inet6.find("address"):
+                            if len(akey) > 1:
+                                v6 = akey[1]
+                                break
+                    if v6 and v6 != ipaddr:
+                        self.note("warn", "interfaces",
+                                  f"IPv6 interface address {v6} not converted "
+                                  f"on {full} — FortiOS Interface.ip holds one "
+                                  "address; add the v6 address manually",
+                                  self.ref(unit, f"interface {full}"))
                 # a VLAN sub-interface only when it carries an explicit
                 # vlan-id; a bare `unit 0` is a plain L3 interface (never
                 # emit vlanid 0, which FortiOS rejects)
@@ -897,6 +918,15 @@ class JunosParser:
 
     # -- policies -------------------------------------------------------
 
+    @staticmethod
+    def _node_inactive(node) -> bool:
+        """True if a container/policy carries the ["inactive"] sentinel the
+        curly + set readers stamp on a deactivated stanza."""
+        if node is None:
+            return False
+        return node.has_leaf("inactive") or any(
+            l and l[0] == "inactive" for l in node.leaves)
+
     def parse_policies(self) -> None:
         pols = self._sec.get("policies")
         if pols is None:
@@ -905,19 +935,27 @@ class JunosParser:
             if len(key) < 4:
                 continue
             src_zone, dst_zone = key[1], key[3]
+            # a deactivated zone-pair disables EVERY policy inside it
+            # (`deactivate security policies from-zone A to-zone B`, or an
+            # `inactive:` on the from-zone..to-zone container)
+            zp_off = self._node_inactive(zp)
             for pkey, pol in zp.find("policy"):
                 if len(pkey) < 2:
                     continue
-                self._one_policy(pkey[1], pol, src_zone, dst_zone)
+                self._one_policy(pkey[1], pol, src_zone, dst_zone,
+                                 container_off=zp_off)
         gl = pols.get("global")
         if gl is not None:
+            gl_off = self._node_inactive(gl)
             for pkey, pol in gl.find("policy"):
                 if len(pkey) < 2:
                     continue
-                self._one_policy(pkey[1], pol, "any", "any", glob=True)
+                self._one_policy(pkey[1], pol, "any", "any", glob=True,
+                                 container_off=gl_off)
 
     def _one_policy(self, name: str, pol: JNode, src_zone: str,
-                    dst_zone: str, glob: bool = False) -> None:
+                    dst_zone: str, glob: bool = False,
+                    container_off: bool = False) -> None:
         ref = self.ref(pol, f"policy {name}")
         match = pol.get("match") or JNode()
         then = pol.get("then") or JNode()
@@ -937,8 +975,7 @@ class JunosParser:
         if then.has_leaf("reject"):
             action = "deny"
         log = then.get("log") is not None or then.has_leaf("log")
-        disabled = pol.has_leaf("inactive") or any(
-            l and l[0] == "inactive" for l in pol.leaves)
+        disabled = container_off or self._node_inactive(pol)
         services = self._service_names_for(apps, name, ref)
         comment_bits = []
         descr = pol.leaf_str("description")
@@ -1032,6 +1069,33 @@ class JunosParser:
                               "IP-pool source NAT not converted; recreate "
                               "as a FortiOS IP pool + set nat enable", ref)
 
+    def _resolve_nat_ext_ip(self, val: str, rname: str, ref) -> str | None:
+        """A destination-nat match address may be a literal CIDR or a NAMED
+        address-book object. Return a bare external IP, or None (caller warns
+        + skips) — never ship an object name as a VIP external IP."""
+        bare = val.split("/")[0]
+        try:
+            ipaddress.ip_address(bare)
+            return bare
+        except ValueError:
+            pass
+        a = self.cfg.address_by_name(self._alias("", val))
+        if a is not None and a.value:
+            if a.type == "host":
+                return a.value
+            if a.type == "subnet":
+                try:
+                    net = ipaddress.ip_network(a.value, strict=False)
+                    if net.prefixlen in (32, 128):
+                        return str(net.network_address)
+                except ValueError:
+                    pass
+        self.note("warn", "nat",
+                  f"destination-nat '{rname}': match destination-address "
+                  f"'{val}' is not an IP/CIDR and did not resolve to a host "
+                  "address-book object — VIP skipped; create it manually", ref)
+        return None
+
     def _parse_dst_nat(self, dst: JNode | None) -> None:
         if dst is None:
             return
@@ -1068,9 +1132,15 @@ class JunosParser:
                               "a VIP manually", ref)
                     continue
                 mapped_port = pool.leaf_str("port")
+                # the match destination-address may be a NAMED address-book
+                # object, not a literal CIDR — resolve it (warn + skip if it
+                # can't), never ship an object name as the VIP external IP.
+                ext_ip = self._resolve_nat_ext_ip(ext, rname, ref)
+                if ext_ip is None:
+                    continue
                 vip = Vip(
                     name=f"vip-{rname}",
-                    ext_ip=ext.split("/")[0], mapped_ip=mapped_ip,
+                    ext_ip=ext_ip, mapped_ip=mapped_ip,
                     ext_intf=self._ruleset_zones(rs)[1],
                     comment=f"from Junos destination-nat {rname}",
                     source=ref)

@@ -787,3 +787,87 @@ security {
     ports = sorted(s.dst_ports for s in cfg.services
                    if s.name in grp.members)
     assert "443" in ports and "22" in ports
+
+
+def test_deactivated_zone_pair_disables_policies():
+    # a deactivated zone-pair must disable EVERY policy inside it. Regression:
+    # disabled was read only from the policy node, so policies under a
+    # deactivated `from-zone A to-zone B` stayed ENABLED (silently re-enabling
+    # deactivated config).
+    text = """security {
+    zones { security-zone trust { } security-zone untrust { } }
+    policies {
+        inactive: from-zone trust to-zone untrust {
+            policy p1 { match { source-address any; destination-address any;
+                application any; } then { permit; } }
+            policy p2 { match { source-address any; destination-address any;
+                application any; } then { permit; } }
+        }
+        from-zone untrust to-zone trust {
+            policy live { match { source-address any;
+                destination-address any; application any; } then { deny; } }
+        }
+    }
+}"""
+    cfg = juniper_srx.parse(text, "dzp.conf")
+    by = {p.name: p for p in cfg.policies}
+    assert by["p1"].disabled is True and by["p2"].disabled is True
+    assert by["live"].disabled is False
+    # set-format parity (exercises the set reader's container inactive marker)
+    setc = juniper_srx.parse(
+        "\n".join(_to_set(juniper_srx._tree_from_curly(text), [])) + "\n",
+        "dzp.set")
+    sby = {p.name: p for p in setc.policies}
+    assert sby["p1"].disabled is True and sby["p2"].disabled is True
+    assert sby["live"].disabled is False
+
+
+def test_ipv6_only_subinterface_flagged():
+    # an inet6-only unit has no IPv4 address; the v6 address can't ride in the
+    # single-string IR ip, but dropping it MUST be flagged, not silent.
+    text = """interfaces {
+    ge-0/0/0 {
+        unit 0 {
+            family inet6 { address 2001:db8::1/64; }
+        }
+    }
+}"""
+    cfg = juniper_srx.parse(text, "v6.conf")
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("IPv6 interface address 2001:db8::1/64 not converted" in m
+               and "ge-0/0/0.0" in m for m in msgs)
+
+
+def test_dnat_named_match_address_resolved():
+    # destination-nat whose match destination-address is a NAMED address-book
+    # object must resolve to the object's IP, never ship the name as ext_ip.
+    text = """security {
+    zones { security-zone untrust { interfaces { ge-0/0/0.0; }
+        address-book { address pub-vip 203.0.113.50/32; } } }
+    nat { destination {
+        pool dnp { address 10.1.0.10/32; }
+        rule-set rs { from zone untrust;
+            rule r { match { destination-address pub-vip; }
+                then { destination-nat { pool dnp; } } } } } }
+}"""
+    cfg = juniper_srx.parse(text, "dnatname.conf")
+    vip = next(v for v in cfg.vips if v.name == "vip-r")
+    assert vip.ext_ip == "203.0.113.50"   # resolved, not the literal "pub-vip"
+    assert vip.mapped_ip == "10.1.0.10"
+
+
+def test_dnat_unresolvable_match_address_skipped():
+    # neither a CIDR nor a resolvable host object -> warn and SKIP, never a VIP
+    # with a bogus ext_ip.
+    text = """security {
+    zones { security-zone untrust { interfaces { ge-0/0/0.0; } } }
+    nat { destination {
+        pool dnp { address 10.1.0.10/32; }
+        rule-set rs { from zone untrust;
+            rule r { match { destination-address no-such-object; }
+                then { destination-nat { pool dnp; } } } } } }
+}"""
+    cfg = juniper_srx.parse(text, "dnatbad.conf")
+    assert not any(v.name == "vip-r" for v in cfg.vips)
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("skipped" in m and "no-such-object" in m for m in msgs)
