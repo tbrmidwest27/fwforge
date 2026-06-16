@@ -595,7 +595,15 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=cmd_gui)
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except (OSError, PlanError) as e:
+        # known fatal preconditions (missing/unreadable input, invalid plan,
+        # failed write) -> clean exit 2 + message, per the documented contract
+        # (0 clean / 1 errors-in-report / 2 fatal). Unexpected bugs still raise
+        # a traceback.
+        print(f"fatal: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

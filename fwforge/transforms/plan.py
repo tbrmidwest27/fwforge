@@ -111,7 +111,13 @@ def load_plan(path: str, translate: bool = True) -> MigrationPlan:
     renames like port1->port2, port2->port3)."""
     cp = configparser.ConfigParser(interpolation=None)
     cp.optionxform = str  # interface names are case-sensitive
-    read = cp.read(path, encoding="utf-8-sig")
+    try:
+        read = cp.read(path, encoding="utf-8-sig")
+    except configparser.Error as e:
+        # duplicate section/key, missing header, malformed line, ... -> surface
+        # as a clean PlanError (CLI exit 2) instead of a raw configparser
+        # traceback.
+        raise PlanError(f"invalid plan file {path}: {e}") from e
     if not read:
         raise PlanError(f"cannot read plan file: {path}")
 
