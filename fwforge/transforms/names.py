@@ -36,26 +36,46 @@ def sanitize(name: str, maxlen: int, taken: set[str]) -> str:
 
 
 def apply(cfg: FirewallConfig, report) -> dict[str, str]:
-    """Sanitize all object names in-place; returns the rename map."""
-    renames: dict[str, str] = {}
-    taken: set[str] = set()
+    """Sanitize all object names in-place; returns the rename map.
 
-    def fix(obj, maxlen: int = OBJ_MAX):
-        new = sanitize(obj.name, maxlen, taken)
-        if new != obj.name:
-            renames[obj.name] = new
-            report.add(
-                "info", "names",
-                f"renamed '{obj.name}' -> '{new}' (FortiOS naming rules)",
-                obj.source,
-            )
-            obj.name = new
-        taken.add(obj.name)
+    FortiOS object namespaces are independent: an address and a service may
+    legitimately share a name. Each namespace therefore gets its OWN taken-set
+    and rename-map, and a reference is remapped only from the map for the
+    namespace it points into. Sharing one map across namespaces silently
+    corrupted references -- renaming a service 'web' would rewrite a policy's
+    *address* reference 'web' onto the service, or merge two distinct objects.
+    """
+    addr_renames: dict[str, str] = {}
+    svc_renames: dict[str, str] = {}
 
-    for coll in (cfg.addresses, cfg.addr_groups, cfg.services, cfg.svc_groups,
-                 cfg.vips):
+    def make_fix(taken: set[str], renames: dict[str, str], kind: str):
+        def fix(obj, maxlen: int = OBJ_MAX):
+            new = sanitize(obj.name, maxlen, taken)
+            if new != obj.name:
+                renames[obj.name] = new
+                report.add(
+                    "info", "names",
+                    f"renamed {kind} '{obj.name}' -> '{new}' "
+                    "(FortiOS naming rules)",
+                    obj.source,
+                )
+                obj.name = new
+            taken.add(obj.name)
+        return fix
+
+    # Address namespace: firewall address, addrgrp and vip share one namespace.
+    addr_taken: set[str] = set()
+    fix_addr = make_fix(addr_taken, addr_renames, "address")
+    for coll in (cfg.addresses, cfg.addr_groups, cfg.vips):
         for obj in coll:
-            fix(obj)
+            fix_addr(obj)
+
+    # Service namespace: service custom + service group share one namespace.
+    svc_taken: set[str] = set()
+    fix_svc = make_fix(svc_taken, svc_renames, "service")
+    for coll in (cfg.services, cfg.svc_groups):
+        for obj in coll:
+            fix_svc(obj)
 
     # zone names get their own namespace (they collide with nothing above)
     zone_renames: dict[str, str] = {}
@@ -76,30 +96,35 @@ def apply(cfg: FirewallConfig, report) -> dict[str, str]:
             nat.real_ifc = zone_renames.get(nat.real_ifc, nat.real_ifc)
             nat.mapped_ifc = zone_renames.get(nat.mapped_ifc, nat.mapped_ifc)
 
+    # Policy names are their own namespace; nothing references a policy by name,
+    # so policy renames are NOT applied to object references. They are still
+    # returned so the caller can translate --only/--exclude rule names.
+    pol_renames: dict[str, str] = {}
     taken_policies: set[str] = set()
     for pol in cfg.policies:
         if pol.name:
             new = sanitize(pol.name, POLICY_MAX, taken_policies)
             if new != pol.name:
-                renames[pol.name] = new
+                pol_renames[pol.name] = new
             pol.name = new
             taken_policies.add(new)
 
-    if renames:
-        def remap(names: list[str]):
-            for i, n in enumerate(names):
-                if n in renames:
-                    names[i] = renames[n]
+    # Remap each reference from the map for the namespace it points into.
+    def remap(names: list[str], renames: dict[str, str]):
+        for i, n in enumerate(names):
+            if n in renames:
+                names[i] = renames[n]
 
-        for grp in cfg.addr_groups:
-            remap(grp.members)
-        for grp in cfg.svc_groups:
-            remap(grp.members)
-        for pol in cfg.policies:
-            remap(pol.src_addrs)
-            remap(pol.dst_addrs)
-            remap(pol.services)
-        for nat in cfg.nats:
-            if nat.real_obj in renames:
-                nat.real_obj = renames[nat.real_obj]
-    return renames
+    for grp in cfg.addr_groups:
+        remap(grp.members, addr_renames)
+    for grp in cfg.svc_groups:
+        remap(grp.members, svc_renames)
+    for pol in cfg.policies:
+        remap(pol.src_addrs, addr_renames)
+        remap(pol.dst_addrs, addr_renames)
+        remap(pol.services, svc_renames)
+    for nat in cfg.nats:
+        if nat.real_obj in addr_renames:
+            nat.real_obj = addr_renames[nat.real_obj]
+
+    return {**addr_renames, **svc_renames, **pol_renames}
