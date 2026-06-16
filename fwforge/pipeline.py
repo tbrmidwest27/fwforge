@@ -60,13 +60,36 @@ def _cross_one(cfg: FirewallConfig, mapping, target, tuning, nat_mode,
     return out_text, unmapped
 
 
+def _wrap_single_vdom(out_text: str, src_name: str, vdom_name: str,
+                      scope_only: bool, report) -> str:
+    """Wrap a single-context cross-vendor conversion into one named VDOM.
+
+    Round-trips the emitted flat FortiOS text through the same proven
+    `vdommode` wrap the FortiOS->FortiOS path uses, so the global/per-VDOM
+    split is identical: interfaces stay global, while firewall / router /
+    system zone / system virtual-wire-pair move inside the VDOM."""
+    tree = fortios_tree.parse_config(out_text, src_name)
+    vdommode.to_multi_vdom(tree, report, vdom_name, scope_only)
+    # cross-vendor output has no `config system global`, so vdommode can't flip
+    # the box into multi-VDOM for you — call it out (same caveat the multi-vsys
+    # path prints).
+    report.add("warn", "vdom-mode",
+               f"output wrapped into VDOM '{vdom_name}'. Enable multi-VDOM on "
+               "the target BEFORE pasting: config system global / set "
+               "vdom-mode multi-vdom / end")
+    return fortios_tree.serialize(tree)
+
+
 def run_cross(text: str, vendor: str, src_name: str,
               mapping: dict[str, str], target: str = "7.4",
               tuning: TuningOptions | None = None,
               nat_mode: str = "policy",
               parser_opts: dict | None = None,
               authoring: dict | None = None,
-              app_db: dict | None = None) -> ConversionResult:
+              app_db: dict | None = None,
+              vdom_mode: str = "keep",
+              vdom_name: str = "root",
+              vdom_scope_only: bool = False) -> ConversionResult:
     report = Report()
     report.meta = {
         "tool": f"fwforge {__version__}",
@@ -116,11 +139,24 @@ def run_cross(text: str, vendor: str, src_name: str,
 
     vsys_cfgs = cfg.meta.pop("vsys_cfgs", None)
     if vsys_cfgs:
+        # A multi-vsys source is already one VDOM per vsys; it cannot collapse
+        # to a flat non-VDOM config (object/policy names would collide).
+        if vdom_mode == "single":
+            report.add(
+                "warn", "vdom-mode",
+                f"source has {len(vsys_cfgs)} vsys — cannot flatten to a "
+                "single non-VDOM config (names would collide across "
+                "contexts). Emitting one VDOM per vsys; convert just one with "
+                "--pa-vsys / the vsys picker if you need a flat config.")
         return _run_cross_multi(vsys_cfgs, cfg, vendor, mapping, target,
                                 tuning, nat_mode, report, authoring)
 
     out_text, unmapped = _cross_one(cfg, mapping, target, tuning,
                                     nat_mode, report, authoring)
+    if vdom_mode == "multi":
+        out_text = _wrap_single_vdom(out_text, src_name, vdom_name,
+                                     vdom_scope_only, report)
+        report.meta["vdom_mode"] = f"-> multi-VDOM (VDOM '{vdom_name}')"
     result = ConversionResult(
         mode="cross", vendor=vendor, out_text=out_text, report=report,
         cfg=cfg, unmapped=unmapped)

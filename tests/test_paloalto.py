@@ -56,6 +56,23 @@ def test_detection_panorama_template_merged():
     assert conf >= 0.9
 
 
+def test_detection_panorama_set_format():
+    # a Panorama 'set' / display-set export leads with device-group / template /
+    # template-stack lines; detection must recognize those, not only the
+    # firewall-local tokens (deviceconfig/network/rulebase/...)
+    cfg = "\n".join([
+        'set device-group "DG1" rulebase security rules "r1" action allow',
+        'set device-group "DG1" address "a1" ip-netmask 10.0.0.0/24',
+        'set template "T1" config devices localhost.localdomain network '
+        'interface ethernet ethernet1/1 layer3',
+        'set template-stack "TS1" templates "T1"',
+        'set shared address "s1" ip-netmask 172.16.0.0/16',
+    ])
+    vendor, conf = detect_vendor(cfg)
+    assert vendor == "paloalto"
+    assert conf >= 0.7
+
+
 def test_xml_basics():
     cfg = parse_xml()
     assert cfg.hostname == "pa-lab"
@@ -237,6 +254,43 @@ def test_xml_coverage_map():
     cfg2 = paloalto.parse(text2, "pa2.xml")
     msgs2 = [m for _, _, m, _ in findings(cfg2)]
     assert any("unread subtree:" in m and "botnet" in m for m in msgs2)
+
+
+PA_NONL3_ZONES = """<config version="11.1.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <zone>
+      <entry name="trust"><network><layer3>
+        <member>ethernet1/1</member></layer3></network></entry>
+      <entry name="genpop_untrust_TAP"><network><tap>
+        <member>ethernet1/12</member>
+        <member>ethernet1/17</member></tap></network></entry>
+      <entry name="untrust"><network><virtual-wire/></network></entry>
+    </zone>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_non_layer3_zones_classified_not_double_flagged():
+    # FortiOS zones are layer-3 only. A tap/virtual-wire/layer2 PAN zone has no
+    # zone-level equivalent, so it is kept OUT of cfg.zones -- which also stops
+    # the emitter re-flagging it as 'no layer-3 members' -- and reported once:
+    # a loud warn if it binds interfaces, a quiet info if it is empty.
+    cfg = paloalto.parse(PA_NONL3_ZONES, ".merged-running-config.xml")
+    # the real layer-3 zone survives; the tap/vwire zones never reach the IR
+    assert {z.name for z in cfg.zones} == {"trust"}
+    msgs = [(lvl, m) for lvl, area, m, _ in findings(cfg) if area == "zones"]
+    # tap zone with members -> one warn naming the members + the FortiOS target
+    tap = [m for lvl, m in msgs if lvl == "warn" and "genpop_untrust_TAP" in m]
+    assert len(tap) == 1
+    assert "ethernet1/12" in tap[0] and "ethernet1/17" in tap[0]
+    assert "tap zone" in tap[0] and "not converted" in tap[0]
+    assert "sniffer" in tap[0]  # actionable hint, not just a dead end
+    # empty virtual-wire zone -> one quiet info, never a warn
+    vw = [(lvl, m) for lvl, m in msgs if "virtual-wire" in m]
+    assert len(vw) == 1 and vw[0][0] == "info"
+    assert "untrust" in vw[0][1]
+    assert "empty" in vw[0][1] and "skipped" in vw[0][1]
 
 
 PA_ROUTING = """<config version="11.0.0"><devices>

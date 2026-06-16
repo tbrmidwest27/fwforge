@@ -227,6 +227,9 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
             tuning=_tuning_from_args(args),
             nat_mode=getattr(args, "nat_mode", "policy"),
             parser_opts=parser_opts or None,
+            vdom_mode=getattr(args, "vdom_mode", "keep"),
+            vdom_name=getattr(args, "vdom_name", "root"),
+            vdom_scope_only=getattr(args, "vdom_scope_only", False),
             app_db=_resolve_app_db(args, vendor))
     except PanoramaChoiceNeeded as e:
         print("this is a Panorama export — pick a device-group with "

@@ -178,6 +178,55 @@
           <option value="central">central NAT (central-snat-map)</option>
         </select></label>
     </div>
+    {% if meta.get("vsys") %}
+    {# multi-vsys: one VDOM per vsys is the faithful mapping. Flattening can't
+       merge isolated contexts (overlapping IPs / conflicting routes / colliding
+       names), so default to multi-VDOM and, if the user insists on flat,
+       reactively recommend against it and require picking a single vsys. #}
+    <div class="builder-row">
+      <label>VDOM mode<br>
+        <select name="vdom_mode" id="cv-vdom">
+          <option value="multi" selected>multi-VDOM &mdash; one per vsys (recommended)</option>
+          <option value="keep">flat &mdash; single vsys only</option>
+        </select></label>
+      <label id="cv-vsys-pick" style="display:none">convert which vsys<br>
+        <select name="pa_vsys">
+          {% for v in meta.vsys %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+        </select></label>
+    </div>
+    <p class="grid-note" id="cv-vdom-multi"><strong>{{ meta.vsys|length }} vsys</strong>
+      detected ({{ meta.vsys|join(", ") }}) &rarr; one VDOM each.</p>
+    <p class="grid-note" id="cv-vdom-flat"
+       style="display:none;color:#a01010;border-left:3px solid #DA291C;padding-left:8px">
+      &#9888; This config has {{ meta.vsys|length }} vsys with independent
+      routing &mdash; a flat config can&#39;t merge them safely (overlapping IPs,
+      conflicting routes, colliding object names). <strong>Multi-VDOM is
+      recommended.</strong> Flat converts only the single vsys selected above.</p>
+    <script>
+    (function () {
+      var sel = document.getElementById("cv-vdom");
+      if (!sel) return;
+      function sync() {
+        var flat = sel.value === "keep";
+        document.getElementById("cv-vsys-pick").style.display = flat ? "" : "none";
+        document.getElementById("cv-vdom-flat").style.display = flat ? "" : "none";
+        document.getElementById("cv-vdom-multi").style.display = flat ? "none" : "";
+      }
+      sel.addEventListener("change", sync);
+      sync();
+    })();
+    </script>
+    {% else %}
+    <div class="builder-row">
+      <label>VDOM mode<br>
+        <select name="vdom_mode">
+          <option value="keep" selected>flat (non-VDOM)</option>
+          <option value="multi">wrap into one VDOM</option>
+        </select></label>
+      <label>VDOM name<br>
+        <input type="text" name="vdom_name" value="root" size="8"></label>
+    </div>
+    {% endif %}
     <div class="builder-row" style="align-items:center">
       <label>
         <input type="checkbox" name="fmg_enable" value="1">

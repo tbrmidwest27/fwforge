@@ -135,6 +135,68 @@ def test_multivsys_pipeline_emits_vdom_blocks():
     assert "vsys_vdoms" in result.report.meta
 
 
+SINGLE_VSYS = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip>
+      <entry name="10.0.0.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone>
+      <entry name="trust"><network><layer3>
+        <member>ethernet1/1</member></layer3></network></entry>
+      <entry name="untrust"><network><layer3>
+        <member>ethernet1/1</member></layer3></network></entry>
+    </zone>
+    <rulebase><security><rules>
+      <entry name="allow1"><from><member>trust</member></from>
+        <to><member>untrust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action>allow</action></entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_cross_single_vsys_flat_by_default():
+    out = pipeline.run_cross(SINGLE_VSYS, "paloalto", "s.xml", {}).out_text
+    # default keeps today's behaviour: flat, no VDOM wrapping
+    assert "config vdom" not in out
+    assert "config global" not in out
+    assert "config firewall policy" in out
+
+
+def test_cross_single_vsys_wraps_into_named_vdom():
+    result = pipeline.run_cross(SINGLE_VSYS, "paloalto", "s.xml", {},
+                                vdom_mode="multi", vdom_name="CUST1")
+    out = result.out_text
+    assert "config global" in out
+    assert 'edit "CUST1"' in out
+    # per-VDOM sections moved inside the VDOM (after config global); the
+    # cross emitter has no interface section, so global ends up empty
+    assert out.index("config system zone") > out.index("config global")
+    assert out.index("config firewall policy") > out.index("config global")
+    # the can't-set-vdom-mode-for-you caveat is surfaced
+    assert any(f.area == "vdom-mode" and "Enable multi-VDOM" in f.message
+               for f in result.report.findings)
+    assert result.report.meta.get("vdom_mode") == "-> multi-VDOM (VDOM 'CUST1')"
+
+
+def test_cross_multivsys_single_mode_warns_and_stays_multi():
+    # a multi-vsys source can't collapse to one flat config; asking for
+    # 'single' warns but still emits one VDOM per vsys
+    result = pipeline.run_cross(MULTIVSYS, "paloalto", "mv.xml", {},
+                                vdom_mode="single")
+    assert "config vdom" in result.out_text
+    assert 'set name "v1-allow"' in result.out_text
+    assert 'set name "v2-allow"' in result.out_text
+    assert any(f.area == "vdom-mode" and "cannot flatten" in f.message
+               for f in result.report.findings)
+
+
 def test_multivsys_branch_files(tmp_path):
     src = tmp_path / "mv.xml"
     src.write_text(MULTIVSYS, encoding="utf-8")

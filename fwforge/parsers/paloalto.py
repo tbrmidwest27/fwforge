@@ -54,6 +54,15 @@ PREDEFINED_SERVICES = {
     "service-https": ("tcp", "443"),
 }
 
+# FortiOS zones group layer-3 interfaces only; PAN's other zone modes have no
+# zone-level equivalent. Each value points at the real FortiOS target so a
+# flagged zone tells the user where to wire it up by hand.
+_NONL3_ZONE_HINT = {
+    "tap": "one-arm sniffer interfaces + 'config firewall sniffer'",
+    "virtual-wire": "'config system virtual-wire-pair'",
+    "layer2": "transparent-mode / switch interfaces",
+}
+
 
 def detect(text: str) -> float:
     head = text[:4000]
@@ -77,7 +86,9 @@ def detect(text: str) -> float:
         if len(toks) >= 2 and toks[0] == "set" and toks[1] in (
                 "deviceconfig", "network", "zone", "rulebase", "address",
                 "service", "vsys", "address-group", "service-group",
-                "mgt-config", "shared", "tag", "application-group"):
+                "mgt-config", "shared", "tag", "application-group",
+                # Panorama set-format exports lead with these
+                "device-group", "template", "template-stack"):
             set_lines += 1
     if total and set_lines / total > 0.6:
         return 0.9
@@ -853,11 +864,28 @@ class PaloParser:
             members = _as_list(net.get("layer3")) if isinstance(net, dict) \
                 else []
             if isinstance(net, dict) and not members:
-                for mode in ("layer2", "virtual-wire", "tap"):
-                    if mode in net:
-                        self.note("warn", "zones",
-                                  f"zone {name} is {mode} — not converted",
-                                  ref)
+                mode = next((m for m in ("layer2", "virtual-wire", "tap")
+                             if m in net), None)
+                if mode is not None:
+                    # Non-layer-3 zone: FortiOS has no zone-level equivalent.
+                    # Keep it out of cfg.zones so the emitter doesn't ALSO flag
+                    # it as 'no layer-3 members'. An empty one is dead config
+                    # (quiet info); one that binds interfaces is a real gap the
+                    # user must wire up by hand (loud warn, with the target).
+                    mode_members = _as_list(net.get(mode))
+                    if mode_members:
+                        self.note(
+                            "warn", "zones",
+                            f"zone {name} is a {mode} zone — not converted "
+                            "(FortiOS zones are layer-3 only); members "
+                            f"{', '.join(mode_members)} → "
+                            f"{_NONL3_ZONE_HINT[mode]}", ref)
+                    else:
+                        self.note(
+                            "info", "zones",
+                            f"zone {name} is an empty {mode} zone — skipped "
+                            "(no member interfaces)", ref)
+                    continue
             self.cfg.zones.append(Zone(name=name, members=members,
                                        source=ref))
 

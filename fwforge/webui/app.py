@@ -381,6 +381,22 @@ def create_app() -> Flask:
         return render_template("index.html", jobs=jobs,
                                error=request.args.get("error", ""))
 
+    @app.post("/detect")
+    def detect_head():
+        """Live vendor sniff for the upload page: the browser posts the first
+        chunk of the chosen file and gets back the detected vendor, so the
+        first page confirms the format before you commit to the wizard. Reuses
+        the real detect_vendor so the preview can't drift from the parsers."""
+        head = request.form.get("head", "")
+        if not head.strip():
+            return {"vendor": "", "label": "", "confidence": ""}
+        vendor, conf = detect_vendor(head)
+        if vendor == "unknown":
+            return {"vendor": "unknown", "label": "", "confidence": ""}
+        return {"vendor": vendor,
+                "label": VENDOR_LABELS.get(vendor, vendor),
+                "confidence": f"{conf:.0%}"}
+
     @app.post("/load")
     def load():
         text = ""
@@ -561,12 +577,19 @@ def create_app() -> Flask:
                     want_normalized=True)
             else:
                 mapping = _mapping_from_form(request.form)
+                vdom_mode = request.form.get("vdom_mode", "keep")
+                # 'flat' on a multi-vsys source converts ONE vsys (the picker);
+                # in multi-VDOM mode the hidden picker is ignored so every vsys
+                # becomes its own VDOM
+                pa_vsys = (request.form.get("pa_vsys", "").strip()
+                           if vdom_mode == "keep" else "")
                 parser_opts = {
                     k: v for k, v in {
                         "device_group":
                             request.form.get("pa_dg", "").strip(),
                         "template":
                             request.form.get("pa_template", "").strip(),
+                        "vsys": pa_vsys,
                     }.items() if v}
                 result = pipeline.run_cross(
                     text, meta["vendor"], meta["name"], mapping,
@@ -575,6 +598,13 @@ def create_app() -> Flask:
                     nat_mode=request.form.get("nat_mode", "policy"),
                     parser_opts=parser_opts or None,
                     authoring=_authoring_from_form(request.form),
+                    # wrap a single-context source into one named VDOM when the
+                    # cross-vendor VDOM toggle asks for it (multi-vsys is always
+                    # one-VDOM-per-vsys regardless)
+                    vdom_mode=vdom_mode,
+                    vdom_name=request.form.get("vdom_name", "root").strip()
+                    or "root",
+                    vdom_scope_only=bool(request.form.get("vdom_scope_only")),
                     # per-application App-ID when a FortiGuard app DB has been
                     # cached (fwforge app-db <host>); else category-level
                     app_db=appdb_mod.newest())

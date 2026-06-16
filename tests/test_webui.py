@@ -471,6 +471,119 @@ def test_cross_vendor_source_faceplate_labeled_by_vendor(client):
     assert not webui_app.JOBS[jid].get("source_platform")
 
 
+def test_cross_vendor_vdom_toggle_wraps_output(client):
+    # a single-context cross-vendor source offers the VDOM-mode toggle;
+    # choosing 'multi' wraps the whole conversion into one named VDOM
+    jid = _load(client, "pa_sample.xml")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert 'name="vdom_mode"' in page          # toggle present for cross-vendor
+    assert 'name="vdom_name"' in page
+    assert "one VDOM per vsys" not in page      # single-vsys -> not the note
+
+    form = {
+        "fortios": "7.4",
+        "map_src": ["ethernet1/1", "ethernet1/2", "ethernet1/2.30"],
+        "map_dst": ["wan1", "internal1", "vlan30"],
+        "vdom_mode": "multi",
+        "vdom_name": "CUST1",
+    }
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert "config global" in conf
+    assert 'edit "CUST1"' in conf
+    # per-VDOM sections wrapped inside the VDOM
+    assert conf.index("config firewall policy") > conf.index("config global")
+
+
+MULTIVSYS_MIN = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip>
+      <entry name="10.0.0.1/24"/></ip></layer3></entry>
+    <entry name="ethernet1/2"><layer3><ip>
+      <entry name="10.1.0.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys>
+    <entry name="vsys1"><import><network><interface>
+      <member>ethernet1/1</member></interface></network></import>
+      <zone><entry name="z1"><network><layer3>
+        <member>ethernet1/1</member></layer3></network></entry></zone>
+      <rulebase><security><rules><entry name="v1-allow">
+        <from><member>z1</member></from><to><member>z1</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action>allow</action></entry></rules></security></rulebase>
+    </entry>
+    <entry name="vsys2"><import><network><interface>
+      <member>ethernet1/2</member></interface></network></import>
+      <zone><entry name="z2"><network><layer3>
+        <member>ethernet1/2</member></layer3></network></entry></zone>
+      <rulebase><security><rules><entry name="v2-allow">
+        <from><member>z2</member></from><to><member>z2</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action>allow</action></entry></rules></security></rulebase>
+    </entry>
+  </vsys>
+</entry></devices></config>"""
+
+
+def test_multivsys_flat_recommends_multivdom_and_picks_one_vsys(client):
+    import io
+    resp = client.post("/load", data={
+        "config": (io.BytesIO(MULTIVSYS_MIN.encode()), "mv.xml")},
+        content_type="multipart/form-data", follow_redirects=False)
+    jid = resp.headers["Location"].rstrip("/").split("/")[-1]
+
+    # multi-vsys detected: toggle defaults to multi-VDOM (recommended), ships
+    # the per-vsys picker and the flatten-is-dangerous recommendation
+    page = client.get(f"/job/{jid}").data.decode()
+    assert 'name="vdom_mode"' in page
+    assert "recommended" in page
+    assert 'name="pa_vsys"' in page
+    assert "overlapping IPs" in page              # the recommendation banner
+
+    # choosing flat + one vsys converts ONLY that vsys, flat (no VDOMs)
+    form = {
+        "fortios": "7.4",
+        "map_src": ["ethernet1/1", "ethernet1/2"],
+        "map_dst": ["wan1", "internal1"],
+        "vdom_mode": "keep",
+        "pa_vsys": "vsys1",
+    }
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert "config vdom" not in conf              # flat
+    assert 'set name "v1-allow"' in conf          # the picked vsys
+    assert 'set name "v2-allow"' not in conf      # the other vsys excluded
+
+
+def test_multivsys_multivdom_ignores_stale_vsys_pick(client):
+    # the picker is hidden in multi-VDOM mode but still posts its value; the
+    # backend must ignore it so every vsys still becomes its own VDOM
+    import io
+    resp = client.post("/load", data={
+        "config": (io.BytesIO(MULTIVSYS_MIN.encode()), "mv.xml")},
+        content_type="multipart/form-data", follow_redirects=False)
+    jid = resp.headers["Location"].rstrip("/").split("/")[-1]
+    form = {
+        "fortios": "7.4",
+        "map_src": ["ethernet1/1", "ethernet1/2"],
+        "map_dst": ["wan1", "internal1"],
+        "vdom_mode": "multi",
+        "pa_vsys": "vsys1",          # stale value from the hidden picker
+    }
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    assert "config vdom" in conf
+    assert 'set name "v1-allow"' in conf
+    assert 'set name "v2-allow"' in conf          # NOT restricted to vsys1
+
+
 def test_authoring_from_form_parsing():
     from werkzeug.datastructures import MultiDict
     form = MultiDict([
@@ -649,3 +762,30 @@ def test_esc_escapes_single_quote(client):
 def test_upload_size_capped(client):
     # unbounded uploads are a memory-exhaustion DoS; a cap must be set
     assert webui_app.create_app().config["MAX_CONTENT_LENGTH"] == 25 * 1024 * 1024
+
+
+def test_detect_endpoint_recognizes_and_handles_unknown(client):
+    pan_head = ('<?xml version="1.0"?>\n'
+                '<config urldb="paloaltonetworks"><devices>'
+                '<entry name="localhost.localdomain"><vsys/>'
+                '</entry></devices></config>')
+    j = client.post("/detect", data={"head": pan_head}).get_json()
+    assert j["vendor"] == "paloalto"
+    assert j["label"] == "Palo Alto"
+    assert j["confidence"]
+    # gibberish -> unknown, no crash, no label
+    j2 = client.post("/detect",
+                     data={"head": "lorem ipsum not a config at all"}).get_json()
+    assert j2["vendor"] in ("unknown", "")
+    assert not j2["label"]
+    # empty -> empty
+    j3 = client.post("/detect", data={"head": "  "}).get_json()
+    assert j3["vendor"] == ""
+
+
+def test_index_ships_live_detection(client):
+    page = client.get("/").data.decode()
+    assert 'id="cfg-file"' in page        # the file input the readout hooks
+    assert 'id="cfg-detect"' in page      # the live readout element
+    assert "/detect" in page              # the fetch target
+    assert "FileReader" in page           # reads the head client-side
