@@ -148,6 +148,7 @@ class Emitter:
         self.app_lists()
         self.webfilter()
         self.file_filter()
+        self.antivirus()
         self.vpn()
         self.vips()
         if self.nat_mode == "central":
@@ -548,6 +549,30 @@ class Emitter:
             "encrypted-archive detection is an antivirus feature, not "
             "file-filter — review if the source blocked encrypted files.")
 
+    def antivirus(self):
+        """Antivirus profiles (from PAN antivirus/virus)."""
+        if not self.cfg.av_profiles:
+            return
+        self.line()
+        self.line("config antivirus profile")
+        for av in self.cfg.av_profiles:
+            self.line(f"    edit {_q(av.name)}")
+            if av.comment:
+                self.line(f"        set comment {_q(av.comment[:255])}")
+            for proto, action in av.protocols.items():
+                self.line(f"        config {proto}")
+                self.line(f"            set av-scan {action}")
+                self.line("        end")
+            self.line("    next")
+        self.line("end")
+        self.report.add(
+            "info", "policies",
+            f"{len(self.cfg.av_profiles)} antivirus profile(s) created from "
+            "PAN antivirus (per-protocol scan intent). The FortiGuard AV "
+            "engine and signatures do the scanning; scanning HTTPS needs a "
+            "deep-inspection ssl-ssh profile (policies attach the built-in "
+            "certificate-inspection by default).")
+
     def vpn(self):
         cfg = self.cfg
         if not cfg.phase1s:
@@ -889,16 +914,19 @@ class Emitter:
                       + " ".join(_q(s) for s in (p.services or ["ALL"])))
             self.line("        set logtraffic "
                       + ("all" if p.log else "disable"))
-            if p.app_list or p.webfilter or p.file_filter:
+            if p.app_list or p.webfilter or p.file_filter or p.antivirus:
                 self.line("        set utm-status enable")
-                # category webfilter / file-filter need an SSL-inspection
-                # profile; the built-in certificate-inspection (SNI-based)
-                # needs no CA rollout. app-control alone keeps prior behavior.
-                if p.webfilter or p.file_filter:
+                # webfilter / file-filter / antivirus on HTTPS need an SSL-
+                # inspection profile; the built-in certificate-inspection
+                # (SNI-based) needs no CA rollout. app-control alone keeps
+                # prior behavior (no ssl-ssh-profile line).
+                if p.webfilter or p.file_filter or p.antivirus:
                     self.line('        set ssl-ssh-profile '
                               '"certificate-inspection"')
                 if p.app_list:
                     self.line(f"        set application-list {_q(p.app_list)}")
+                if p.antivirus:
+                    self.line(f"        set av-profile {_q(p.antivirus)}")
                 if p.webfilter:
                     self.line("        set webfilter-profile "
                               f"{_q(p.webfilter)}")

@@ -256,6 +256,27 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.51.0 — shipped 2026-06-16 (PAN antivirus → FortiOS antivirus profiles + app-DB freshness warning)
+- **AV conversion**: PAN antivirus/virus profiles → FortiOS antivirus profiles.
+  `parse_profiles` reads `profiles/virus` decoders; a rule's profile-setting
+  (direct or via profile-group) resolves to an av-profile, built lazily and
+  deduped. PAN decoder protocol → FortiOS (http/smtp/imap/pop3/ftp; smb→cifs)
+  and decoder action → av-scan (default / drop / reset-* → block, alert →
+  monitor, allow → disable). A built-in/undefined PAN AV profile
+  (default/strict) emits a sensible block-on-common-protocols profile + flag.
+  emit: `config antivirus profile / config <proto> / set av-scan`; policy gets
+  `set av-profile` + `set utm-status enable` + `set ssl-ssh-profile
+  "certificate-inspection"` (HTTPS AV needs deep-inspection — noted). The
+  FortiGuard AV engine + signatures do the scanning; only per-protocol scan
+  intent is carried. Anti-spyware / vulnerability (PAN's IPS) stay unconverted
+  (signature-level) but flagged. Verified e2e vs the live 601F, schema-cert
+  clean (0 unknown tables/attrs).
+- **App-DB freshness**: conversions use the cached FortiGuard app DB and do
+  NOT phone home per run (deterministic/offline, by design). `run_cross` now
+  warns when the cache is >30 days old (FortiGuard adds App-IDs continuously) —
+  refresh with `fwforge app-db <host> --token`.
+- model.AvProfile + cfg.av_profiles + Policy.antivirus. 291 tests (+3).
+
 ### v0.50.0 — shipped 2026-06-16 (per-application App-ID signatures via the FortiGuard app DB)
 Closes the App-ID granularity gap with FortiConverter: PAN App-IDs now map to
 specific FortiOS application-control **signatures**, not just FortiGuard

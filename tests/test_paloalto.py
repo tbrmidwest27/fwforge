@@ -552,6 +552,7 @@ PROFCFG = """<config version="11.0.0"><devices>
           <url-filtering><member>url-strict</member></url-filtering>
           <file-blocking><member>block-exe</member></file-blocking>
           <virus><member>av-default</member></virus>
+          <spyware><member>strict</member></spyware>
         </profiles></profile-setting>
       </entry>
       <entry name="r-group">
@@ -604,8 +605,70 @@ def test_file_blocking_to_file_filter():
 def test_unconverted_profiles_still_flagged():
     cfg = paloalto.parse(PROFCFG, "prof.xml")
     msgs = " ".join(m for _, _, m, _ in findings(cfg))
-    # AV / signature-level profiles are NOT converted, but ARE flagged
-    assert "not converted" in msgs and "virus" in msgs
+    # IPS-level profiles (anti-spyware / vulnerability) stay unconverted but
+    # ARE flagged; antivirus is now converted so it is no longer in this list
+    assert "not converted" in msgs and "spyware" in msgs
+
+
+def test_antivirus_to_av_profile():
+    cfg = paloalto.parse(PROFCFG, "prof.xml")
+    avs = cfg.av_profiles
+    assert len(avs) == 1                         # deduped across both rules
+    av = avs[0]
+    assert av.name == "av-av-default"
+    # built-in/undefined PAN AV profile -> block on the common protocols
+    assert av.protocols.get("http") == "block"
+    assert av.protocols.get("smtp") == "block"
+    assert all(p.antivirus == "av-av-default" for p in cfg.policies)
+
+
+def test_antivirus_pipeline_emit():
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        PROFCFG, "paloalto", "prof.xml",
+        {"ethernet1/1": "port1", "ethernet1/2": "port2"}, target="7.4")
+    conf = res.out_text
+    assert "config antivirus profile" in conf and 'edit "av-av-default"' in conf
+    assert "config http" in conf and "set av-scan block" in conf
+    assert 'set av-profile "av-av-default"' in conf
+    assert 'set ssl-ssh-profile "certificate-inspection"' in conf
+
+
+AVCFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip><entry name="10.0.0.1/24"/></ip></layer3></entry>
+    <entry name="ethernet1/2"><layer3><ip><entry name="10.0.1.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone>
+      <entry name="trust"><network><layer3><member>ethernet1/1</member></layer3></network></entry>
+      <entry name="untrust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+    </zone>
+    <profiles><virus><entry name="av-custom"><decoder>
+      <entry name="http"><action>reset-both</action></entry>
+      <entry name="smtp"><action>alert</action></entry>
+      <entry name="ftp"><action>allow</action></entry>
+      <entry name="smb"><action>default</action></entry>
+    </decoder></entry></virus></profiles>
+    <rulebase><security><rules><entry name="av-rule">
+      <from><member>trust</member></from><to><member>untrust</member></to>
+      <source><member>any</member></source><destination><member>any</member></destination>
+      <service><member>any</member></service><application><member>any</member></application>
+      <action>allow</action>
+      <profile-setting><profiles><virus><member>av-custom</member></virus></profiles></profile-setting>
+    </entry></rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_antivirus_decoder_action_mapping():
+    cfg = paloalto.parse(AVCFG, "av.xml")
+    av = next(a for a in cfg.av_profiles if a.name == "av-av-custom")
+    assert av.protocols["http"] == "block"      # reset-both -> block
+    assert av.protocols["smtp"] == "monitor"    # alert -> monitor
+    assert av.protocols["ftp"] == "disable"     # allow -> disable
+    assert av.protocols["cifs"] == "block"      # smb -> cifs; default -> block
 
 
 def test_profiles_pipeline_emit():

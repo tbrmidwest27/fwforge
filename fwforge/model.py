@@ -141,6 +141,20 @@ class FileFilterProfile:
 
 
 @dataclass
+class AvProfile:
+    """FortiOS antivirus profile (from PAN antivirus/virus conversion).
+
+    protocols = {fortios protocol: av-scan action ('block'|'monitor'|'disable')}.
+    The engine + signatures are FortiGuard's; only the per-protocol scan intent
+    is carried over."""
+
+    name: str
+    protocols: dict = field(default_factory=dict)
+    comment: str | None = None
+    source: SourceRef | None = None
+
+
+@dataclass
 class Policy:
     name: str = ""
     src_zones: list[str] = field(default_factory=list)  # interface/zone names
@@ -159,6 +173,7 @@ class Policy:
     app_list: str = ""  # FortiOS application-list profile name (App-ID)
     webfilter: str = ""  # FortiOS webfilter profile name (PAN URL-filtering)
     file_filter: str = ""  # FortiOS file-filter profile (PAN file-blocking)
+    antivirus: str = ""  # FortiOS antivirus profile (PAN virus/antivirus)
     family: int = 0  # 0 = derive from addresses, 4, or 6
     source: SourceRef | None = None
 
@@ -279,6 +294,7 @@ class FirewallConfig:
     app_lists: list[AppList] = field(default_factory=list)
     webfilters: list[WebFilterProfile] = field(default_factory=list)
     file_filters: list[FileFilterProfile] = field(default_factory=list)
+    av_profiles: list[AvProfile] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
     vips: list[Vip] = field(default_factory=list)
     nats: list[NatRule] = field(default_factory=list)

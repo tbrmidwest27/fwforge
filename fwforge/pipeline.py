@@ -84,12 +84,29 @@ def run_cross(text: str, vendor: str, src_name: str,
         _idx = _appdb.build_index(app_db)
         if _idx:
             kw["app_index"] = _idx
+            fetched = app_db.get("fetched", "")
             report.add(
                 "info", "policies",
                 "App-ID: per-application signatures from the FortiGuard app DB "
                 f"cached off {app_db.get('host', '?')} (FortiOS "
                 f"{app_db.get('version', '?')} b{app_db.get('build', '?')}, "
-                f"{app_db.get('count', '?')} signatures).")
+                f"{app_db.get('count', '?')} signatures, fetched {fetched}).")
+            # conversions don't phone home; warn when the cache is stale so
+            # new FortiGuard App-IDs aren't silently missed
+            try:
+                from datetime import datetime
+                age = (datetime.now()
+                       - datetime.strptime(fetched, "%Y-%m-%d %H:%M")).days
+            except (ValueError, TypeError):
+                age = None
+            if age is not None and age > 30:
+                report.add(
+                    "warn", "policies",
+                    f"FortiGuard app DB is {age} days old (fetched {fetched}) — "
+                    "FortiGuard adds App-IDs continuously; refresh with "
+                    f"'fwforge app-db {app_db.get('host', '<host>')} --token …' "
+                    "so new applications map to signatures, not category "
+                    "fallback.")
     cfg: FirewallConfig = CROSS_PARSERS[vendor](text, src_name, **kw)
     report.absorb_parser_findings(cfg)
     report.meta["source_vendor"] = cfg.vendor

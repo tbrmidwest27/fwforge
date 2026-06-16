@@ -27,6 +27,7 @@ from ..model import (
     Address,
     AddressGroup,
     AppList,
+    AvProfile,
     FileFilterProfile,
     FirewallConfig,
     Interface,
@@ -1202,7 +1203,7 @@ class PaloParser:
                     f"rule '{name}' uses service=application-default with "
                     "application=any — converted as ALL, tighten manually",
                     ref)
-            webfilter, file_filter = self._resolve_profile_setting(
+            webfilter, file_filter, antivirus = self._resolve_profile_setting(
                 r, name, ref)
 
             pol = Policy(
@@ -1223,6 +1224,7 @@ class PaloParser:
                 app_list=app_list,
                 webfilter=webfilter,
                 file_filter=file_filter,
+                antivirus=antivirus,
                 source=ref,
             )
             if action not in ("allow", "deny", "drop"):
@@ -1348,7 +1350,8 @@ class PaloParser:
         actually references one. Shared/Panorama profiles already merged in."""
         self._url_profiles: dict = {}    # name -> {pan action: [categories]}
         self._file_profiles: dict = {}   # name -> [ {name, action, types} ]
-        self._profile_groups: dict = {}  # group -> {url, file, other}
+        self._virus_profiles: dict = {}  # name -> {pan decoder proto: action}
+        self._profile_groups: dict = {}  # group -> {url, file, virus, other}
         profs = vsys.get("profiles")
         if isinstance(profs, dict):
             for name, p in _entries(profs.get("url-filtering")):
@@ -1363,56 +1366,117 @@ class PaloParser:
                         "action": str(r.get("action", "alert")).strip().lower(),
                         "types": _as_list(r.get("file-type"))})
                 self._file_profiles[name] = rules
+            for name, p in _entries(profs.get("virus")):
+                decoders = {}
+                dec = p.get("decoder") if isinstance(p, dict) else None
+                for dname, d in _entries(dec):
+                    act = str(d.get("action", "default")).strip().lower() \
+                        if isinstance(d, dict) else "default"
+                    decoders[dname.strip().lower()] = act
+                self._virus_profiles[name] = decoders
         for gname, g in _entries(vsys.get("profile-group")):
             url = _as_list(g.get("url-filtering"))
             fb = _as_list(g.get("file-blocking"))
+            vir = _as_list(g.get("virus"))
             self._profile_groups[gname] = {
                 "url": url[0] if url else "",
                 "file": fb[0] if fb else "",
-                "other": [t for t in ("virus", "spyware", "vulnerability",
+                "virus": vir[0] if vir else "",
+                "other": [t for t in ("spyware", "vulnerability",
                                       "wildfire-analysis", "data-filtering")
                           if g.get(t)]}
 
     def _resolve_profile_setting(self, r: dict, rule: str,
-                                 ref: SourceRef) -> tuple[str, str]:
-        """A rule's profile-setting -> (webfilter name, file-filter name).
-        Resolves a profile-group or direct refs; converts url-filtering +
-        file-blocking; flags the profiles fwforge does NOT convert (AV /
-        anti-spyware / vulnerability / WildFire / data-filtering)."""
+                                 ref: SourceRef) -> tuple[str, str, str]:
+        """A rule's profile-setting -> (webfilter, file-filter, antivirus)
+        FortiOS profile names. Resolves a profile-group or direct refs;
+        converts url-filtering + file-blocking + antivirus; flags the
+        profiles fwforge does NOT convert (anti-spyware / vulnerability /
+        WildFire / data-filtering — signature/engine-level)."""
         ps = r.get("profile-setting")
         if not isinstance(ps, dict):
-            return "", ""
-        url_name = file_name = ""
+            return "", "", ""
+        url_name = file_name = virus_name = ""
         other: list[str] = []
         grp = _as_list(ps.get("group"))
         if grp:
             g = self._profile_groups.get(grp[0], {})
             url_name, file_name = g.get("url", ""), g.get("file", "")
+            virus_name = g.get("virus", "")
             other = list(g.get("other", []))
         prof = ps.get("profiles")
         if isinstance(prof, dict):
             u = _as_list(prof.get("url-filtering"))
             f = _as_list(prof.get("file-blocking"))
+            v = _as_list(prof.get("virus"))
             if u:
                 url_name = u[0]
             if f:
                 file_name = f[0]
-            other += [t for t in ("virus", "spyware", "vulnerability",
+            if v:
+                virus_name = v[0]
+            other += [t for t in ("spyware", "vulnerability",
                                   "wildfire-analysis", "data-filtering")
                       if prof.get(t)]
         wf = self._webfilter_for(url_name, rule, ref) if url_name else ""
         ff = self._filefilter_for(file_name, rule, ref) if file_name else ""
+        av = self._antivirus_for(virus_name, rule, ref) if virus_name else ""
         if other:
             self.note("info", "policies",
                       f"rule '{rule}': PAN {', '.join(sorted(set(other)))} "
-                      "profile(s) not converted (signature/AV-level) — attach "
-                      "FortiOS antivirus/IPS profiles manually", ref)
-        return wf, ff
+                      "profile(s) not converted (IPS/signature-level) — attach "
+                      "FortiOS IPS profiles manually", ref)
+        return wf, ff, av
 
     @staticmethod
     def _safe_prof(prefix: str, name: str) -> str:
         clean = re.sub(r"[^A-Za-z0-9_.-]", "_", name or "").strip("_") or "x"
         return f"{prefix}{clean}"[:47]
+
+    # PAN virus-decoder protocol -> FortiOS antivirus protocol block
+    _AV_PROTO = {"http": "http", "smtp": "smtp", "imap": "imap",
+                 "pop3": "pop3", "ftp": "ftp", "smb": "cifs"}
+    # PAN decoder action -> FortiOS av-scan action
+    _AV_ACTION = {"default": "block", "allow": "disable", "alert": "monitor",
+                  "drop": "block", "reset-both": "block",
+                  "reset-client": "block", "reset-server": "block"}
+
+    def _antivirus_for(self, pan_name: str, rule: str, ref: SourceRef) -> str:
+        """Build (deduped) a FortiOS antivirus profile from a PAN virus
+        profile. The FortiGuard engine + signatures do the scanning; only the
+        per-protocol scan intent is carried. Returns the profile name, or ''."""
+        cache = self.cfg.meta.setdefault("_av_cache", {})
+        if pan_name in cache:
+            return cache[pan_name]
+        decoders = self._virus_profiles.get(pan_name)
+        derived = decoders is None
+        if derived:
+            # PAN built-in 'default'/'strict' (or referenced-but-undefined):
+            # emit a sensible AV profile scanning the common protocols
+            decoders = {p: "default" for p in
+                        ("http", "smtp", "imap", "pop3", "ftp")}
+        protocols: dict = {}
+        for proto, action in decoders.items():
+            fproto = self._AV_PROTO.get(proto)
+            if fproto:
+                protocols[fproto] = self._AV_ACTION.get(action, "block")
+        if not protocols:
+            return ""
+        name = self._safe_prof("av-", pan_name)
+        self.cfg.av_profiles.append(AvProfile(
+            name=name, protocols=protocols,
+            comment=f"from PAN antivirus '{pan_name}'", source=ref))
+        cache[pan_name] = name
+        scanned = [p for p, a in protocols.items() if a != "disable"]
+        msg = (f"rule '{rule}': antivirus '{pan_name}' -> av-profile '{name}' "
+               f"(scanning {', '.join(scanned) or '(none)'})")
+        if derived:
+            msg += ("; PAN built-in/undefined AV profile — defaulted to block "
+                    "on common protocols, verify")
+        msg += (". FortiGuard AV engine/signatures apply; scanning HTTPS needs "
+                "a deep-inspection SSL profile.")
+        self.note("warn" if derived else "info", "policies", msg, ref)
+        return name
 
     def _webfilter_for(self, pan_name: str, rule: str, ref: SourceRef) -> str:
         """Build (deduped by source name) a FortiOS webfilter profile from a
