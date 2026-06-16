@@ -256,6 +256,38 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.48.0 — shipped 2026-06-16 (VLAN inheritance + promote physical → aggregate in place)
+Makes the "physical port carrying VLANs" case (PAN `ethernet1/6`) easy,
+replacing the clunky "create a separate aggregate, then re-parent each VLAN
+by hand" flow (whose created-LAG was hard to pick from the VLAN dropdown).
+- **VLAN inheritance** (`refreshNestOptions`): each VLAN's parent dropdown
+  now defaults to its parent's mapped target — `vlanParent(d)` = the
+  parent's "maps to" port or LAG — so mapping (or promoting) the parent
+  flows to all of its VLANs automatically. A per-VLAN override still wins.
+  Also made the desired parent always selectable (a LAG renamed live in its
+  "maps to" field is no longer missing from the dropdown, which had silently
+  dropped the choice to the first option).
+- **Promote physical → aggregate in place**: every physical interface row
+  carries a `physical ↔ 802.3ad aggregate` type toggle (`ifTypeChanged`).
+  Flipping to aggregate gives that row the member-chip picker + LACP control
+  (reads identically to a source LAG like `ae1`), turns its "maps to" into
+  the LAG name (default = sanitized source name via `safeIfName`, e.g.
+  `ethernet1/6` → `ethernet1-6`), seeds the port it used to map to as the
+  first member, and auto-nests its existing VLAN children onto it. Toggling
+  back restores the physical port dropdown. Faceplate counters skip promoted
+  ports (they light via the LAG chips, not a 1:1 map).
+- emit/apply_authoring: `apply_authoring` now promotes a source physical
+  interface **in place** when an aggregate spec's name equals that physical's
+  mapped target (the promotion signal the GUI sends) — same Interface object,
+  so its IP / description / VLAN children ride the LAG; no duplicate
+  interface. A separately-named new LAG that merely bonds a port is still a
+  distinct create (unchanged). VLANs resolve onto the promoted LAG and emit
+  after it (`_dependency_order`).
+- Verified end-to-end against the running GUI (PAN `ethernet1/6` + two
+  VLANs → `set type aggregate` + members, both VLANs `set interface` the LAG,
+  emitted in dependency order). 277 tests (+2). Changes:
+  webui/templates/plan.html, transforms/portmap.py, tests.
+
 ### v0.47.1 — shipped 2026-06-16 (created LAGs as tree rows + description restored + faceplate lights LAG members)
 - Created aggregates now render as first-class rows in the interface tree
   (buildTree: renderNewAggRows + effective-parent grouping), not a separate

@@ -500,6 +500,11 @@ def test_membership_column_live_wiring(client):
     assert 'id="agg-panel"' in page
     assert "function addAgg" in page and "function serializeAggs" in page
     assert 'name="vparent_src"' in page and 'class="vparent"' in page
+    # physical rows carry the in-place physical<->aggregate type toggle, and
+    # VLAN parents now inherit their parent's mapped target by default
+    assert 'class="iftype"' in page and "function ifTypeChanged" in page
+    assert "function safeIfName" in page
+    assert "vlanParent(d)" in page                # refreshNestOptions default
 
 
 def test_destination_identity_and_filename(client):

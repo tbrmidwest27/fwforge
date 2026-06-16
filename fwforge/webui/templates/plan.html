@@ -386,6 +386,7 @@
           elif d and d.kind == "vlan" %}VLAN{% if d.vlanid %} {{ d.vlanid }}{% endif %}{%
           elif d and d.zone %}<span class="badge b-zone">zone: {{ d.zone }}</span>{%
           elif d and d.sdwan %}<span class="badge b-sdwan">SD-WAN</span>{%
+          elif d and d.kind == "physical" %}<span class="iftypewrap"><select class="iftype" data-src="{{ ifc }}" onchange="ifTypeChanged(this)"><option value="physical" selected>physical interface</option><option value="aggregate">802.3ad aggregate</option></select></span>{%
           else %}physical interface{% endif %}</td>
       <td class="memcol" data-mem="{{ ifc }}"></td>
       <td class="muted mono">{{ d.ip if d else "" }}</td>
@@ -802,7 +803,9 @@ function outlineTargets(ports) {
   document.querySelectorAll('[name="map_dst"]').forEach(el => {
     const row = el.closest("tr");
     const src = row && row.querySelector('input[name="map_src"]');
-    const isPhys = src && PHYS.has(src.value);
+    // a promoted physical's "maps to" is a LAG name, not a target port —
+    // don't flag it as a missing port
+    const isPhys = src && PHYS.has(src.value) && !PROMOTED.has(src.value);
     const val = (el.value || "").trim();
     const miss = !!(ports.length && isPhys && val && !ports.includes(val));
     if (miss) missing++;
@@ -904,6 +907,10 @@ function memBadge(cls, txt, title) {
 let AGG_SEQ = 0;
 let AGGS = [];
 let VPARENT = {};
+// source physical interfaces the user flipped to aggregates (promoted in
+// place): their AGGS entry carries src + promoted:true. Tracked as a set
+// too for the faceplate counters (a promoted port no longer maps 1:1).
+let PROMOTED = new Set();
 
 function srcAggMembers(srcName) {
   // a source LAG's member ports, live from the per-row target dropdowns
@@ -992,10 +999,20 @@ function refreshNestOptions() {
   const dports = destPortList();
   const lags = AGGS.map(a => a.name).filter(Boolean);
   document.querySelectorAll("select.vparent").forEach(sel => {
-    const cur = VPARENT[sel.dataset.vsrc] || sel.value || "";
+    // default each VLAN's parent to its parent's mapped target (a LAG or a
+    // physical port) so mapping/promoting the parent flows to all its
+    // VLANs; a per-VLAN override still wins (vlanParent checks VPARENT).
+    const d = DET.find(x => x.name === sel.dataset.vsrc);
+    const cur = (d ? vlanParent(d) : "")
+                || VPARENT[sel.dataset.vsrc] || sel.value || "";
+    // the desired parent may be a LAG renamed live in its "maps to" field
+    // (so it isn't in the AGGS-derived list yet) — keep it selectable so it
+    // serializes as chosen instead of silently falling to the first option
+    const aggNames = cur && !lags.includes(cur) && !dports.includes(cur)
+      ? lags.concat([cur]) : lags;
     let html = "";
-    if (lags.length)
-      html += `<optgroup label="aggregates">` + lags.map(n =>
+    if (aggNames.length)
+      html += `<optgroup label="aggregates">` + aggNames.map(n =>
         `<option${n === cur ? " selected" : ""}>${esc(n)}</option>`).join("")
         + `</optgroup>`;
     html += `<optgroup label="physical ports">` + dports.map(p =>
@@ -1012,6 +1029,63 @@ function vparentChanged(sel) {
 function aggLacpChanged(sel) {
   const a = AGGS.find(x => x.src === sel.dataset.agg);
   if (a) a.lacp = sel.value;
+}
+// FortiOS interface name: letters / digits / _ / - / . only (so a PAN
+// "ethernet1/6" promoted to a LAG defaults to a valid "ethernet1-6")
+function safeIfName(s) {
+  return String(s).replace(/[^A-Za-z0-9_.-]/g, "-") || "agg";
+}
+// build the type cell for a promotable physical row: the physical/aggregate
+// toggle, plus (when aggregate) the LACP picker — same control a source LAG
+// shows, so a promoted row reads identically to ae1.
+function physTypeCell(src, isAgg, lacp) {
+  const ty = `<select class="iftype" data-src="${esc(src)}" onchange="ifTypeChanged(this)">`
+    + `<option value="physical"${isAgg ? "" : " selected"}>physical interface</option>`
+    + `<option value="aggregate"${isAgg ? " selected" : ""}>802.3ad aggregate</option></select>`;
+  if (!isAgg) return ty;
+  const opts = ["active", "passive", "static"].map(m =>
+    `<option${m === lacp ? " selected" : ""}>${m}</option>`).join("");
+  return ty + ` <label class="muted" style="font-size:.72rem">&middot; LACP `
+    + `<select class="agglacp" data-agg="${esc(src)}" onchange="aggLacpChanged(this)">`
+    + opts + `</select></label>`;
+}
+// flip a physical interface to an 802.3ad aggregate in place (or back).
+// Promote: the row gains the member-chip picker + LACP, its "maps to" turns
+// into the LAG name (default = sanitized source name), the port it used to
+// map to seeds as the first member, and its VLAN children auto-nest on it.
+function ifTypeChanged(sel) {
+  const src = sel.dataset.src;
+  const d = DET.find(x => x.name === src);
+  if (!d) return;
+  const tr = document.querySelector(
+    'input[name="map_src"][value="' + src + '"]').closest("tr");
+  const tyWrap = tr.querySelector(".iftypewrap");
+  const mapCell = tr.querySelector('[name="map_dst"]').closest("td");
+  if (sel.value === "aggregate") {
+    d.kind = "aggregate";
+    PROMOTED.add(src);
+    const dports = destPortList();
+    const prev = (mapCell.querySelector('[name="map_dst"]') || {}).value || "";
+    const seed = dports.includes(prev) ? [prev] : [];   // keep the wiring
+    const name = safeIfName(src);
+    if (!AGGS.some(a => a.src === src))
+      AGGS.push({id: ++AGG_SEQ, name: name, lacp: "active",
+                 members: seed, src: src, promoted: true});
+    tyWrap.innerHTML = physTypeCell(src, true, "active");
+    mapCell.innerHTML = `<input type="text" name="map_dst" value="${esc(name)}" `
+      + `list="tp-ports" style="width:100%">`;
+  } else {
+    d.kind = "physical";
+    PROMOTED.delete(src);
+    const a = AGGS.find(x => x.src === src);
+    if (a) for (const k in VPARENT) if (VPARENT[k] === a.name) delete VPARENT[k];
+    AGGS = AGGS.filter(x => !(x.promoted && x.src === src));
+    tyWrap.innerHTML = physTypeCell(src, false, "active");
+    mapCell.innerHTML = `<select name="map_dst" class="mdst" data-src="${esc(src)}" `
+      + `style="width:100%"><option value="${esc(src)}" selected>${esc(src)}</option></select>`;
+    populateSelects(destPortList());   // refill the restored port dropdown
+  }
+  buildTree(); refreshNestOptions(); refreshMembership(); refreshFaceplates();
 }
 // live "nests on" column: an aggregate lists its member ports; each VLAN
 // row carries a parent picker + the ports the chosen LAG rides on.
@@ -1184,7 +1258,10 @@ function refreshFaceplates() {
   const memberSrc = new Set(DET.filter(d => d.kind === "aggregate-member")
                                .map(d => d.name));
   Object.entries(mapping).forEach(([s, d]) => {
-    if (PHYS.has(s) && !memberSrc.has(s)) counts[d] = (counts[d] || 0) + 1;
+    // a promoted physical no longer maps 1:1 — its ports light via the LAG
+    // chips below, not its (now LAG-named) "maps to" value
+    if (PHYS.has(s) && !memberSrc.has(s) && !PROMOTED.has(s))
+      counts[d] = (counts[d] || 0) + 1;
   });
   AGGS.forEach(a => aggMembers(a).forEach(p => {
     counts[p] = (counts[p] || 0) + 1;
@@ -1196,7 +1273,7 @@ function refreshFaceplates() {
   srcEl.querySelectorAll(".fport").forEach(p => {
     const n = p.dataset.port;
     p.classList.toggle("lit", n === activeSrc);
-    p.classList.toggle("miss", PHYS.has(n) && dports.length
+    p.classList.toggle("miss", PHYS.has(n) && !PROMOTED.has(n) && dports.length
       && !dports.includes(mapping[n] || n));
   });
   dstEl.querySelectorAll(".fport").forEach(p => {
@@ -1258,7 +1335,12 @@ document.addEventListener("click", e => {
 const tpSel = document.getElementById("tp-select");
 if (tpSel) tpSel.addEventListener("change", () => {
   tpPortsChanged();
-  AGGS.forEach(a => { if (a.src) a.members = derivedMembers(a.src); });
+  // re-derive source-LAG members from the new model; for a promoted
+  // physical (no source members) just drop ports the new model lacks
+  AGGS.forEach(a => {
+    if (a.promoted) a.members = a.members.filter(p => destPortList().includes(p));
+    else if (a.src) a.members = derivedMembers(a.src);
+  });
   buildFaceplates();
   renderPanel();
   refreshNestOptions();

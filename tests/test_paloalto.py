@@ -354,6 +354,26 @@ AGGCFG = """<config version="11.0.0"><devices>
 </entry></devices></config>"""
 
 
+# a physical port carrying a nested VLAN subinterface (the ethernet1/6 case)
+PHYSCFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface>
+    <ethernet>
+      <entry name="ethernet1/6"><layer3><units>
+        <entry name="ethernet1/6.100"><tag>100</tag>
+          <ip><entry name="10.20.0.1/24"/></ip></entry>
+      </units></layer3></entry>
+      <entry name="ethernet1/7"><layer3/></entry>
+      <entry name="ethernet1/8"><layer3/></entry>
+    </ethernet>
+  </interface></network>
+  <vsys><entry name="vsys1">
+    <zone><entry name="z"><network><layer3>
+      <member>ethernet1/6.100</member></layer3></network></entry></zone>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
 def test_aggregate_captured_in_model():
     cfg = paloalto.parse(AGGCFG, "agg.xml")
     ae1 = next(i for i in cfg.interfaces if i.name == "ae1")
@@ -428,6 +448,61 @@ def test_authoring_repoints_bonded_port():
     agg = next(i for i in cfg.interfaces if i.kind == "aggregate")
     assert agg.mapped == "bond0" and agg.members == ["x9"]
     assert cfg.zones[0].members == ["bond0"]   # zone follows the bonded port
+
+
+def test_authoring_promotes_physical_in_place():
+    # the GUI "physical -> 802.3ad aggregate" toggle: the SAME interface
+    # becomes the LAG (kind flips, chosen target ports attach as members,
+    # its L3 / VLAN children ride it) — no separate, duplicate aggregate.
+    # The promoted row's map_dst already carries the LAG name, so the
+    # physical's mapped target == the LAG spec name (the promotion signal).
+    from fwforge.model import FirewallConfig, Interface
+    from fwforge.report import Report
+    from fwforge.transforms import portmap
+    cfg = FirewallConfig(vendor="paloalto")
+    cfg.interfaces.append(Interface(name="ethernet1/6", kind="physical",
+                                    target_name="lag6", ip="10.0.0.1/24"))
+    cfg.interfaces.append(Interface(name="ethernet1/6.100", kind="vlan",
+                                    vlan_id=100, parent="ethernet1/6",
+                                    target_name="ethernet1/6.100"))
+    rep = Report()
+    portmap.apply_authoring(cfg, {
+        "aggregates": [{"name": "lag6", "lacp": "passive",
+                        "members": ["port5", "port6"]}],
+        "vlan_parents": {"ethernet1/6.100": "lag6"}}, rep)
+    aggs = [i for i in cfg.interfaces if i.kind == "aggregate"]
+    assert len(aggs) == 1                       # promoted in place, no dup
+    agg = aggs[0]
+    assert agg.name == "ethernet1/6"            # identity kept
+    assert agg.mapped == "lag6"                 # emitted under the LAG name
+    assert agg.members == ["port5", "port6"]
+    assert agg.lacp_mode == "passive"
+    assert agg.ip == "10.0.0.1/24"              # the parent's L3 rides the LAG
+    vlan = next(i for i in cfg.interfaces if i.kind == "vlan")
+    assert vlan.parent == "lag6"               # VLAN re-nested onto the LAG
+    assert any("promoted from physical" in f.message for f in rep.findings)
+
+
+def test_authoring_promote_pipeline_emit():
+    # end-to-end: a physical port with a nested VLAN, flipped to an
+    # aggregate, emits 'set type aggregate' + members and its VLAN rides the
+    # LAG — emitted in dependency order (LAG before the VLAN that needs it).
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        PHYSCFG, "paloalto", "phys.xml",
+        {"ethernet1/6": "lag6", "ethernet1/6.100": "ethernet1/6.100",
+         "ethernet1/7": "x7", "ethernet1/8": "x8"},
+        target="7.4",
+        authoring={"aggregates": [{"name": "lag6", "lacp": "active",
+                                   "members": ["x7", "x8"]}],
+                   "vlan_parents": {"ethernet1/6.100": "lag6"}})
+    conf = res.out_text
+    assert 'edit "lag6"' in conf and "set type aggregate" in conf
+    assert 'set member "x7" "x8"' in conf
+    assert 'set interface "lag6"' in conf       # VLAN rides the promoted LAG
+    assert "set vlanid 100" in conf
+    assert conf.index('edit "lag6"\n') < conf.index('edit "ethernet1/6.100"')
+    assert any("promoted from physical" in f.message for f in res.report.findings)
 
 
 def test_aggregate_lacp_mode_parsed():

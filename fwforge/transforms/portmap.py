@@ -159,6 +159,7 @@ def apply_authoring(cfg, authoring: dict | None, report) -> None:
             claimed.setdefault(i.target_name, i.name)
 
     built = 0
+    promoted = 0
     for spec in aggregates:
         name = (spec.get("name") or "").strip()
         if not name:
@@ -169,6 +170,18 @@ def apply_authoring(cfg, authoring: dict | None, report) -> None:
             lacp = "active"
         agg = next((i for i in cfg.interfaces
                     if i.kind == "aggregate" and i.mapped == name), None)
+        promoted_here = False
+        if agg is None:
+            # the GUI flipped a source PHYSICAL interface to an aggregate in
+            # place (its IP / description / VLAN children ride the LAG):
+            # same interface, kind becomes aggregate, chosen target ports
+            # become members. Identified by the physical whose mapped target
+            # IS this LAG name (the GUI sets a promoted row's map_dst to the
+            # LAG name). A separately-named new LAG that merely bonds a port
+            # has name != that port's mapped target, so it is NOT promotion.
+            agg = next((i for i in cfg.interfaces
+                        if i.kind == "physical" and i.mapped == name), None)
+            promoted_here = agg is not None
         if agg is None:                       # a LAG the source didn't have
             agg = Interface(name=name, kind="aggregate", target_name=name)
             cfg.interfaces.append(agg)
@@ -177,6 +190,14 @@ def apply_authoring(cfg, authoring: dict | None, report) -> None:
         agg.members = members
         agg.lacp_mode = lacp
         built += 1
+        if promoted_here:
+            promoted += 1
+            report.add(
+                "info", "interfaces",
+                f"interface '{agg.name}' promoted from physical to an "
+                f"802.3ad aggregate (LACP {lacp}) with member port(s) "
+                f"{', '.join(members) if members else '(none chosen yet)'}; "
+                "its VLAN subinterfaces ride the LAG")
         src_members = [i.name for i in cfg.interfaces
                        if i.kind == "aggregate-member" and i.parent == agg.name]
         if src_members:
@@ -242,8 +263,10 @@ def apply_authoring(cfg, authoring: dict | None, report) -> None:
     if built or nested:
         report.add(
             "info", "interfaces",
-            f"GUI interface authoring: {built} aggregate(s) set, "
-            f"{nested} VLAN(s) re-nested onto a chosen parent")
+            f"GUI interface authoring: {built} aggregate(s) set"
+            + (f" ({promoted} promoted from a physical interface)"
+               if promoted else "")
+            + f", {nested} VLAN(s) re-nested onto a chosen parent")
 
 
 # -- tree mode (FortiOS -> FortiOS) -----------------------------------------
