@@ -529,12 +529,18 @@ class PaloParser:
     def _lifetime(node) -> int:
         if not isinstance(node, dict):
             return 0
-        if node.get("seconds", "").isdigit():
-            return int(node["seconds"])
-        if node.get("hours", "").isdigit():
-            return int(node["hours"]) * 3600
-        if node.get("days", "").isdigit():
-            return int(node["days"]) * 86400
+        # a value may be a dict (e.g. an empty <seconds/> element) rather than
+        # a string -- guard isinstance before .isdigit() so a malformed crypto
+        # lifetime doesn't crash the whole conversion with AttributeError.
+        sec = node.get("seconds", "")
+        if isinstance(sec, str) and sec.isdigit():
+            return int(sec)
+        hrs = node.get("hours", "")
+        if isinstance(hrs, str) and hrs.isdigit():
+            return int(hrs) * 3600
+        days = node.get("days", "")
+        if isinstance(days, str) and days.isdigit():
+            return int(days) * 86400
         return 0
 
     def _psk(self, key: str, peer: str, ref: SourceRef) -> str:
@@ -1012,14 +1018,17 @@ class PaloParser:
     def _app_port_specs(self, app: str,
                         seen: set | None = None
                         ) -> list[tuple[str, str]] | None:
-        """Default-port specs for one app: the file's own custom
-        definitions win, then groups expand, then the curated table."""
+        """Default-port specs for one app: application-groups expand first
+        (consistent with _expand_app_groups), then the file's own custom
+        definitions, then the curated table."""
         seen = seen or set()
         if app in seen:
             return None
         seen.add(app)
-        if app in self._custom_apps:
-            return self._custom_apps[app]
+        # groups take precedence over custom apps so this resolver agrees with
+        # _expand_app_groups (the app-control path) when a name is in both --
+        # otherwise a rule's SERVICE and its app-control profile would be built
+        # from different member sets.
         if app in self._app_groups:
             merged: list[tuple[str, str]] = []
             for m in self._app_groups[app]:
@@ -1028,6 +1037,8 @@ class PaloParser:
                     return None
                 merged += specs
             return merged or None
+        if app in self._custom_apps:
+            return self._custom_apps[app]
         if app in self._app_filters:
             return None  # criteria-based; membership needs the app DB
         return pan_appid.default_ports(app)

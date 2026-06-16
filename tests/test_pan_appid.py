@@ -306,8 +306,12 @@ def test_service_any_apps_become_port_group():
     assert "ALL" not in rule.services
     assert len(rule.services) == 1 and rule.services[0].startswith("appsvc-grp-")
     grp = next(g for g in cfg.svc_groups if g.name == rule.services[0])
-    # ssh/dns/snmp -> FortiOS built-in service names (no custom objects)
-    assert set(grp.members) == {"SSH", "DNS", "SNMP"}
+    # ssh/dns -> FortiOS built-in service names; snmp -> an EXACT custom
+    # service (appdef-udp-161), NOT the built-in SNMP (tcp+udp 161-162) which
+    # would broaden the rule beyond PAN snmp (udp/161)
+    assert set(grp.members) == {"SSH", "DNS", "appdef-udp-161"}
+    snmp_svc = next(s for s in cfg.services if s.name == "appdef-udp-161")
+    assert (snmp_svc.protocol, snmp_svc.dst_ports) == ("udp", "161")
     assert rule.app_list                      # app-control kept (both)
     msgs = [m for _, _, m, _ in cfg.meta["findings"]]
     assert any("service=any" in m and "port-based service" in m

@@ -92,6 +92,19 @@ def test_xml_zones_and_objects():
     assert (https.protocol, https.dst_ports) == ("tcp", "443")
 
 
+def test_snmp_app_default_not_broadened():
+    # snmp/snmp-trap must NOT map to the FortiOS built-in SNMP (tcp+udp
+    # 161-162) -- that is wider than PAN snmp (udp/161) / snmp-trap (udp/162),
+    # a silent rule-broadening. They fall through to an exact synthesized
+    # service from DEFAULT_PORTS. Built-ins that are equal-or-narrower stay.
+    from fwforge.parsers import pan_appid
+    assert pan_appid.builtin_services("snmp") is None
+    assert pan_appid.builtin_services("snmp-trap") is None
+    assert pan_appid.default_ports("snmp") == [("udp", "161")]
+    assert pan_appid.default_ports("snmp-trap") == [("udp", "162")]
+    assert pan_appid.builtin_services("dns") == ["DNS"]  # canonical kept
+
+
 def test_xml_rules():
     cfg = parse_xml()
     assert len(cfg.policies) == 4

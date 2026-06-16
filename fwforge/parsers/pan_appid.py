@@ -274,7 +274,13 @@ APP_TO_BUILTIN: dict[str, list[str]] = {
     "ssl": ["HTTPS"], "dns": ["DNS"],
     "ssh": ["SSH"], "telnet": ["TELNET"], "ftp": ["FTP"],
     "smtp": ["SMTP"], "pop3": ["POP3"], "imap": ["IMAP"],
-    "ntp": ["NTP"], "snmp": ["SNMP"], "snmp-trap": ["SNMP"],
+    "ntp": ["NTP"],
+    # snmp / snmp-trap are deliberately NOT mapped to the built-in: FortiOS
+    # SNMP is tcp+udp 161-162, WIDER than PAN snmp (udp/161) and snmp-trap
+    # (udp/162). Mapping them would silently broaden the rule (a never-broaden
+    # invariant violation), so they synthesize an exact custom service from
+    # DEFAULT_PORTS instead. (Built-ins that are equal-or-narrower are kept --
+    # using the canonical FortiOS service is intentional.)
     "tftp": ["TFTP"], "syslog": ["SYSLOG"], "dhcp": ["DHCP"],
     "kerberos": ["KERBEROS"], "ldap": ["LDAP"],
     "ms-ds-smb": ["SMB", "SAMBA"], "smb": ["SMB", "SAMBA"],
