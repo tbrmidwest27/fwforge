@@ -325,10 +325,19 @@ class FirewallConfig:
     meta: dict = field(default_factory=dict)
 
     def interface_by_name(self, name: str) -> Interface | None:
-        for itf in self.interfaces:
-            if itf.name == name:
-                return itf
-        return None
+        # Cached name->interface index, rebuilt only when the interface count
+        # changes. Interface .name is stable (renames go to .target_name /
+        # .mapped, never .name), so this is safe — and it turns the repeated
+        # per-policy/zone/route lookups in the emitter from O(interfaces) into
+        # O(1). setdefault preserves the original first-match semantics.
+        idx = getattr(self, "_ifc_index", None)
+        if idx is None or idx[0] != len(self.interfaces):
+            d: dict[str, Interface] = {}
+            for itf in self.interfaces:
+                d.setdefault(itf.name, itf)
+            idx = (len(self.interfaces), d)
+            self._ifc_index = idx
+        return idx[1].get(name)
 
     def address_by_name(self, name: str) -> Address | None:
         for a in self.addresses:

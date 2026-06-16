@@ -325,6 +325,9 @@ class Emitter:
 
     def _family_map(self) -> dict[str, int]:
         """addr/group name -> 4 or 6."""
+        cached = getattr(self, "_fam_cache", None)
+        if cached is not None:
+            return cached   # emit is read-only; compute once, reuse
         fam: dict[str, int] = {}
         for a in self.cfg.addresses:
             fam[a.name] = 6 if _is_v6(a.value) else 4
@@ -336,6 +339,7 @@ class Emitter:
                 if m in fam:
                     fam[g.name] = fam[m]
                     break
+        self._fam_cache = fam
         return fam
 
     def addresses(self):
