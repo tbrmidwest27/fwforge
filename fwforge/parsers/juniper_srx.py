@@ -575,7 +575,13 @@ class JunosParser:
             # an application-set can nest other application-sets
             self._app_sets[key[1]] = (
                 [t[0] for t in aset.leaf_all("application") if t]
-                + [t[0] for t in aset.leaf_all("application-set") if t])
+                + [t[0] for t in aset.leaf_all("application-set") if t]
+                # set-format stores a nested application-set as a CONTAINER
+                # (application-set is a _NAMED keyword), not a leaf -- gather
+                # those too, else the nested set's members are silently lost
+                # and a policy referencing this set is quietly narrowed.
+                + [k[1] for k, _ in aset.find("application-set")
+                   if len(k) > 1])
 
     def _app_to_specs(self, app: JNode) -> list[tuple[str, str]] | None:
         # an application can be a single term or a set of `term` blocks

@@ -684,6 +684,45 @@ def test_inactive_leaf_curly():
     assert zones["trust"] == ["ge-0/0/0.0"]  # inactive member excluded
 
 
+_NESTED_SETS = """security {
+    policies { from-zone trust to-zone untrust {
+        policy p { match { source-address any; destination-address any;
+            application outer; } then { permit; } }
+    } }
+    zones { security-zone trust { } security-zone untrust { } }
+}
+applications {
+    application app-a { protocol tcp; destination-port 1111; }
+    application app-b { protocol tcp; destination-port 2222; }
+    application-set inner { application app-b; }
+    application-set outer { application app-a; application-set inner; }
+}"""
+
+
+def _policy_ports(cfg, polname):
+    pol = _pol(cfg, polname)
+    names = set(pol.services)
+    for g in cfg.svc_groups:
+        if g.name in names:
+            names |= set(g.members)
+    return " ".join(s.dst_ports for s in cfg.services if s.name in names)
+
+
+def test_nested_application_set_resolves_in_both_formats():
+    # a nested application-set must resolve in BOTH curly and set format.
+    # Regression: set format stores the nested set as a container, so
+    # leaf_all('application-set') missed it and the inner set's members were
+    # silently lost -- narrowing the policy's service.
+    curly = juniper_srx.parse(_NESTED_SETS, "nested.conf")
+    setc = juniper_srx.parse(
+        "\n".join(_to_set(juniper_srx._tree_from_curly(_NESTED_SETS), []))
+        + "\n", "nested.set")
+    for cfg in (curly, setc):
+        ports = _policy_ports(cfg, "p")
+        assert "1111" in ports      # outer's direct application
+        assert "2222" in ports      # inner (nested) set's application
+
+
 def test_setformat_vpn_crypto_and_selectors():
     # set-format `proposals` (leaf) and `proxy-identity` (container) must
     # parse the same as curly — regression for two set-only crypto bugs
