@@ -736,6 +736,30 @@ class PaloParser:
                         sub.description = ucomment
                 self.cfg.interfaces.append(sub)
 
+    @staticmethod
+    def _lacp_mode(node) -> str | None:
+        """FortiOS lacp-mode for a PAN aggregate-ethernet entry: the
+        configured mode when LACP is enabled, 'static' when an LACP block
+        is present but disabled, or None when there is no LACP config at
+        all (the emitter then defaults to active and flags it)."""
+        if not isinstance(node, dict):
+            return None
+        lacp = node.get("lacp")
+        if not isinstance(lacp, dict):   # some templates nest it under L2/L3
+            for wrap in ("layer3", "layer2"):
+                w = node.get(wrap)
+                if isinstance(w, dict) and isinstance(w.get("lacp"), dict):
+                    lacp = w["lacp"]
+                    break
+        if not isinstance(lacp, dict):
+            return None
+        enabled = str(lacp.get("enable", "")).strip().lower() \
+            in ("yes", "true", "1")
+        if not enabled:
+            return "static"
+        mode = str(lacp.get("mode", "")).strip().lower()
+        return mode if mode in ("active", "passive") else "active"
+
     def _one_interface(self, name: str, node: dict, is_agg: bool = False):
         ref = self.ref(node, f"interface {name}")
         layer3 = node.get("layer3") if isinstance(node, dict) else None
@@ -761,6 +785,8 @@ class PaloParser:
         itf = Interface(name=name,
                         kind="aggregate" if is_agg else "physical",
                         source=ref)
+        if is_agg:
+            itf.lacp_mode = self._lacp_mode(node)
         if isinstance(node, dict):
             comment = node.get("comment")
             if isinstance(comment, str):

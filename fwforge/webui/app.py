@@ -144,7 +144,8 @@ def _analyze(text: str, name: str) -> dict:
                         "vlanid": str(i.vlan_id) if i.vlan_id else "",
                         "parent": i.parent or "", "role": "", "status": "",
                         "vdom": "root", "zone": "", "sdwan": False,
-                        "policy_refs": 0, "kind": i.kind}
+                        "policy_refs": 0, "kind": i.kind,
+                        "lacp": i.lacp_mode or ""}
             counts["zones"] += len(vcfg.zones)
             counts["addresses"] += len(vcfg.addresses)
             counts["services"] += len(vcfg.services)
@@ -278,6 +279,31 @@ def _plan_from_form(form) -> MigrationPlan:
                             "zone name and members")
     plan.translate_members()
     return plan
+
+
+def _authoring_from_form(form):
+    """Parse the interface-authoring panel into the run_cross 'authoring'
+    payload: target LAG definitions + per-VLAN parent choices. Returns
+    None when nothing was authored (preserves the base mapping behaviour)."""
+    aggregates = []
+    for i in range(64):
+        name = form.get(f"agg_name_{i}")
+        if name and name.strip():
+            aggregates.append({
+                "name": name.strip(),
+                "lacp": form.get(f"agg_lacp_{i}", "active"),
+                "members": [m.strip() for m in
+                            form.get(f"agg_members_{i}", "").split(",")
+                            if m.strip()],
+            })
+    vlan_parents = {}
+    for src, parent in zip(form.getlist("vparent_src"),
+                           form.getlist("vparent_dst")):
+        if src.strip() and parent.strip():
+            vlan_parents[src.strip()] = parent.strip()
+    if not aggregates and not vlan_parents:
+        return None
+    return {"aggregates": aggregates, "vlan_parents": vlan_parents}
 
 
 def _tuning_from_form(form, meta) -> TuningOptions:
@@ -510,7 +536,8 @@ def create_app() -> Flask:
                     target=target or "7.4",
                     tuning=_tuning_from_form(request.form, meta),
                     nat_mode=request.form.get("nat_mode", "policy"),
-                    parser_opts=parser_opts or None)
+                    parser_opts=parser_opts or None,
+                    authoring=_authoring_from_form(request.form))
         except PlanError as e:
             return redirect(url_for("job", jid=jid, error=str(e)))
         except PanoramaChoiceNeeded as e:

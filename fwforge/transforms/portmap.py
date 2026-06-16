@@ -139,6 +139,113 @@ def apply_ir(cfg: FirewallConfig, mapping: dict[str, str], report) -> list[str]:
     return sorted(unmapped)
 
 
+def apply_authoring(cfg, authoring: dict | None, report) -> None:
+    """GUI 'aggregate authoring' overlay, applied after apply_ir: create or
+    update target LAGs (name + member target-ports + LACP) and re-nest
+    VLANs onto a chosen parent. Specs are already in TARGET terms — the
+    emitter passes a name through unchanged when no source interface owns
+    it, so target port / LAG names resolve correctly."""
+    if not authoring:
+        return
+    from ..model import Interface
+    aggregates = authoring.get("aggregates") or []
+    vlan_parents = authoring.get("vlan_parents") or {}
+
+    # target port -> the source interface already mapped onto it, to warn
+    # when a LAG claims a port that is also a standalone interface's target
+    claimed: dict[str, str] = {}
+    for i in cfg.interfaces:
+        if i.kind in ("physical", "vlan", "loopback") and i.target_name:
+            claimed.setdefault(i.target_name, i.name)
+
+    built = 0
+    for spec in aggregates:
+        name = (spec.get("name") or "").strip()
+        if not name:
+            continue
+        members = [m.strip() for m in (spec.get("members") or []) if m.strip()]
+        lacp = (spec.get("lacp") or "active").strip().lower()
+        if lacp not in ("active", "passive", "static"):
+            lacp = "active"
+        agg = next((i for i in cfg.interfaces
+                    if i.kind == "aggregate" and i.mapped == name), None)
+        if agg is None:                       # a LAG the source didn't have
+            agg = Interface(name=name, kind="aggregate", target_name=name)
+            cfg.interfaces.append(agg)
+        agg.kind = "aggregate"
+        agg.target_name = name
+        agg.members = members
+        agg.lacp_mode = lacp
+        built += 1
+        src_members = [i.name for i in cfg.interfaces
+                       if i.kind == "aggregate-member" and i.parent == agg.name]
+        if src_members:
+            report.add(
+                "info", "interfaces",
+                f"LAG '{name}' absorbs source member port(s) "
+                f"{', '.join(src_members)} as "
+                f"{', '.join(members) if members else '(no ports chosen yet)'}")
+        for m in members:
+            owner = claimed.get(m)
+            if owner and owner != name:
+                report.add(
+                    "warn", "interfaces",
+                    f"LAG '{name}' member '{m}' is also the target port of "
+                    f"interface '{owner}' — a port can be a LAG member or a "
+                    "standalone interface, not both")
+
+    # repoint zone / route / VIP / NAT references from a bonded member port
+    # to its LAG, so nothing dangles when a referenced port is absorbed
+    member_to_lag: dict[str, str] = {}
+    for spec in aggregates:
+        nm = (spec.get("name") or "").strip()
+        for m in (spec.get("members") or []):
+            m = m.strip()
+            if m and m != nm:
+                member_to_lag[m] = nm
+    repointed = 0
+    if member_to_lag:
+        for zone in cfg.zones:
+            new = [member_to_lag.get(m, m) for m in zone.members]
+            repointed += sum(1 for a, b in zip(zone.members, new) if a != b)
+            zone.members = new
+        for rt in cfg.routes:
+            if rt.interface in member_to_lag:
+                rt.interface = member_to_lag[rt.interface]
+                repointed += 1
+        for vip in cfg.vips:
+            if vip.ext_intf in member_to_lag:
+                vip.ext_intf = member_to_lag[vip.ext_intf]
+                repointed += 1
+        for nat in cfg.nats:
+            if nat.real_ifc in member_to_lag:
+                nat.real_ifc = member_to_lag[nat.real_ifc]
+                repointed += 1
+            if nat.mapped_ifc in member_to_lag:
+                nat.mapped_ifc = member_to_lag[nat.mapped_ifc]
+                repointed += 1
+        if repointed:
+            report.add(
+                "info", "interfaces",
+                f"repointed {repointed} reference(s) from a bonded port to "
+                "its LAG")
+
+    by_name = {i.name: i for i in cfg.interfaces}
+    nested = 0
+    for vlan_src, parent in vlan_parents.items():
+        parent = (parent or "").strip()
+        itf = by_name.get(vlan_src)
+        if itf is not None and itf.kind == "vlan" and parent:
+            itf.parent = parent
+            nested += 1
+
+    if built or nested:
+        report.add(
+            "info", "interfaces",
+            f"GUI interface authoring: {built} aggregate(s) set, "
+            f"{nested} VLAN(s) re-nested onto a chosen parent")
+
+
 # -- tree mode (FortiOS -> FortiOS) -----------------------------------------
 
 def apply_tree(tree: CTree, mapping: dict[str, str]) -> dict:

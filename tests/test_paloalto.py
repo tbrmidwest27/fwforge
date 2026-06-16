@@ -335,7 +335,9 @@ AGGCFG = """<config version="11.0.0"><devices>
 <entry name="localhost.localdomain">
   <network><interface>
     <aggregate-ethernet>
-      <entry name="ae1"><layer3><units>
+      <entry name="ae1">
+        <lacp><enable>yes</enable><mode>active</mode></lacp>
+        <layer3><units>
         <entry name="ae1.1"><tag>11</tag>
           <ip><entry name="10.65.4.7/25"/></ip></entry>
       </units></layer3></entry>
@@ -357,6 +359,7 @@ def test_aggregate_captured_in_model():
     ae1 = next(i for i in cfg.interfaces if i.name == "ae1")
     assert ae1.kind == "aggregate"
     assert ae1.members == ["ethernet1/1", "ethernet1/2"]
+    assert ae1.lacp_mode == "active"   # read from the source <lacp>
     members = [i for i in cfg.interfaces if i.kind == "aggregate-member"]
     assert {m.name for m in members} == {"ethernet1/1", "ethernet1/2"}
     assert all(m.parent == "ae1" for m in members)
@@ -380,3 +383,66 @@ def test_aggregate_rebuilt_as_lag(tmp_path):
     assert 'set interface "ae1"' in conf
     assert "set vlanid 11" in conf
     assert "set ip 10.65.4.7 255.255.255.128" in conf
+    # the aggregate MUST be defined before the VLAN that nests on it, or
+    # FortiOS rejects 'set interface "ae1"' on load
+    assert conf.index('edit "ae1"\n') < conf.index('edit "ae1.1"')
+
+
+def test_authoring_pipeline_emit():
+    # GUI authoring: rename the LAG, override LACP, set target members, and
+    # re-nest the VLAN — all flow through run_cross into the emitted config
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        AGGCFG, "paloalto", "agg.xml",
+        {"ethernet1/1": "x5", "ethernet1/2": "x6", "ae1": "bond0"},
+        target="7.4",
+        authoring={
+            "aggregates": [{"name": "bond0", "lacp": "passive",
+                            "members": ["x5", "x6"]}],
+            "vlan_parents": {"ae1.1": "bond0"}})
+    conf = res.out_text
+    assert 'edit "bond0"' in conf and "set type aggregate" in conf
+    assert 'set member "x5" "x6"' in conf
+    assert "set lacp-mode passive" in conf       # GUI override beats source
+    assert 'set interface "bond0"' in conf        # VLAN re-nested onto the LAG
+    # aggregate still emitted before the VLAN that rides it
+    assert conf.index('edit "bond0"\n') < conf.index('edit "ae1.1"')
+    # the absorbed PAN member ports are recorded for traceability
+    assert any("absorbs source member" in f.message for f in res.report.findings)
+
+
+def test_authoring_repoints_bonded_port():
+    # creating a LAG that bonds a port a zone referenced repoints the zone
+    # to the LAG, so nothing dangles
+    from fwforge.model import FirewallConfig, Interface, Zone
+    from fwforge.report import Report
+    from fwforge.transforms import portmap
+    cfg = FirewallConfig(vendor="paloalto")
+    cfg.interfaces.append(Interface(name="eth5", kind="physical",
+                                    target_name="x9"))
+    cfg.zones.append(Zone(name="trust", members=["x9"]))
+    portmap.apply_authoring(cfg, {
+        "aggregates": [{"name": "bond0", "lacp": "active",
+                        "members": ["x9"]}],
+        "vlan_parents": {}}, Report())
+    agg = next(i for i in cfg.interfaces if i.kind == "aggregate")
+    assert agg.mapped == "bond0" and agg.members == ["x9"]
+    assert cfg.zones[0].members == ["bond0"]   # zone follows the bonded port
+
+
+def test_aggregate_lacp_mode_parsed():
+    import re
+    passive = AGGCFG.replace("<mode>active</mode>", "<mode>passive</mode>")
+    ae1 = next(i for i in paloalto.parse(passive, "agg.xml").interfaces
+               if i.name == "ae1")
+    assert ae1.lacp_mode == "passive"
+    # an LACP block present but disabled -> static bond
+    disabled = AGGCFG.replace("<enable>yes</enable>", "<enable>no</enable>")
+    ae1 = next(i for i in paloalto.parse(disabled, "agg.xml").interfaces
+               if i.name == "ae1")
+    assert ae1.lacp_mode == "static"
+    # no LACP config at all -> None (emitter defaults to active + flags)
+    nolacp = re.sub(r"<lacp>.*?</lacp>", "", AGGCFG)
+    ae1 = next(i for i in paloalto.parse(nolacp, "agg.xml").interfaces
+               if i.name == "ae1")
+    assert ae1.lacp_mode is None

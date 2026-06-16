@@ -37,10 +37,11 @@ class ConversionResult:
 
 
 def _cross_one(cfg: FirewallConfig, mapping, target, tuning, nat_mode,
-               report) -> tuple[str, list[str]]:
+               report, authoring=None) -> tuple[str, list[str]]:
     """Transforms + emit for one IR config; returns (text, unmapped)."""
     from dataclasses import replace as _dc_replace
     unmapped = portmap.apply_ir(cfg, mapping, report)
+    portmap.apply_authoring(cfg, authoring, report)
     renames = names_tf.apply(cfg, report)
     routes_tf.infer_dst_zones(cfg, report)
     if tuning and tuning.any():
@@ -63,7 +64,8 @@ def run_cross(text: str, vendor: str, src_name: str,
               mapping: dict[str, str], target: str = "7.4",
               tuning: TuningOptions | None = None,
               nat_mode: str = "policy",
-              parser_opts: dict | None = None) -> ConversionResult:
+              parser_opts: dict | None = None,
+              authoring: dict | None = None) -> ConversionResult:
     report = Report()
     report.meta = {
         "tool": f"fwforge {__version__}",
@@ -85,10 +87,10 @@ def run_cross(text: str, vendor: str, src_name: str,
     vsys_cfgs = cfg.meta.pop("vsys_cfgs", None)
     if vsys_cfgs:
         return _run_cross_multi(vsys_cfgs, cfg, vendor, mapping, target,
-                                tuning, nat_mode, report)
+                                tuning, nat_mode, report, authoring)
 
     out_text, unmapped = _cross_one(cfg, mapping, target, tuning,
-                                    nat_mode, report)
+                                    nat_mode, report, authoring)
     result = ConversionResult(
         mode="cross", vendor=vendor, out_text=out_text, report=report,
         cfg=cfg, unmapped=unmapped)
@@ -122,7 +124,7 @@ def _vdom_names(vsys_cfgs, report) -> list[tuple[str, FirewallConfig]]:
 
 def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
                      target, tuning, nat_mode,
-                     report) -> ConversionResult:
+                     report, authoring=None) -> ConversionResult:
     """Multi-vsys source -> one script with a VDOM block per vsys."""
     bodies: list[tuple[str, str]] = []
     all_unmapped: set[str] = set()
@@ -131,7 +133,7 @@ def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
         if vcfg is not primary:
             report.absorb_parser_findings(vcfg)
         text, unmapped = _cross_one(vcfg, mapping, target, tuning,
-                                    nat_mode, report)
+                                    nat_mode, report, authoring)
         # drop ONLY the emitter's leading #-comment header; a `#` inside a
         # later `set comment` value must survive (don't filter by line)
         lines = text.splitlines()

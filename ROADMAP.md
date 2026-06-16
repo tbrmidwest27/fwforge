@@ -256,6 +256,27 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.47.0 — shipped 2026-06-16 (cross-vendor aggregate authoring + FortiOS-style interface page)
+Big interface-mapping overhaul for cross-vendor (PAN -> FortiGate):
+- emit: aggregates are emitted BEFORE the VLAN subinterfaces that nest on
+  them (`_dependency_order()` in emit/fortios.py) — fixes a load-breaking
+  script where `set interface "ae1"` ran before ae1 existed.
+- LACP mode parsed from the source aggregate (active/passive/static) and
+  emitted, instead of a hardcoded `set lacp-mode active`. PAN parser reads
+  <lacp>; IR gains Interface.lacp_mode.
+- GUI interface page rebuilt to the FortiOS Network>Interfaces layout: a
+  collapsible tree (name / type / members / ip / maps to), parent rows
+  lead their group (aggregates float to top), default-expanded, member
+  ports + VLANs nest beneath. Live membership: a VLAN shows its parent
+  LAG's member ports.
+- Aggregate authoring (transforms/portmap.apply_authoring): create a LAG
+  the source didn't have, set LACP, re-nest VLANs onto any parent. A LAG's
+  members are a FortiGate-port SET picker (chips + "+ port") with an
+  "absorbs ethernet1/13-16" caption — no per-member dropdowns (LAG members
+  are interchangeable). References (zone/route/VIP/NAT) from a bonded port
+  repoint to the LAG; absorbed source ports recorded for traceability.
+- 275 tests.
+
 ### v0.46.1 — shipped 2026-06-15 (cross-vendor source faceplate labeled by vendor)
 Bugfix (Adam caught): the mapping-step source faceplate silkscreened
 "FortiGate" for a Palo Alto (or any non-FortiOS) source. source_platform

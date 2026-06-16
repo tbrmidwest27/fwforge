@@ -87,6 +87,33 @@ def _intf(cfg: FirewallConfig, zone: str) -> str:
     return itf.mapped if itf else zone
 
 
+def _dependency_order(rows: list) -> list:
+    """Order interfaces so each is defined after anything it depends on.
+    A VLAN's parent (an aggregate we build, or another VLAN for QinQ) must
+    already exist or FortiOS rejects 'set interface' when the script
+    loads; aggregates/loopbacks carry no such dependency, so they lead.
+    VLANs nested on a physical port need no ordering — the port already
+    exists on the target."""
+    non_vlan = [i for i in rows if i.kind != "vlan"]
+    vlans = [i for i in rows if i.kind == "vlan"]
+    by_name = {i.name: i for i in vlans}   # only VLAN-on-VLAN (QinQ) here
+    ordered: list = []
+    seen: set[str] = set()
+
+    def place(v):
+        if v.name in seen:
+            return
+        seen.add(v.name)
+        parent = by_name.get(v.parent)
+        if parent is not None:
+            place(parent)
+        ordered.append(v)
+
+    for v in vlans:
+        place(v)
+    return non_vlan + ordered
+
+
 class Emitter:
     def __init__(self, cfg: FirewallConfig, report, target: str = "7.4",
                  nat_mode: str = "policy"):
@@ -167,6 +194,7 @@ class Emitter:
                 if i.kind in ("aggregate", "vlan", "loopback")]
         if not rows:
             return
+        rows = _dependency_order(rows)
         self.line()
         self.line("config system interface")
         for i in rows:
@@ -178,7 +206,8 @@ class Emitter:
                 if members:
                     self.line("        set member "
                               + " ".join(_q(m) for m in members))
-                self.line("        set lacp-mode active")
+                self.line("        set lacp-mode "
+                          f"{i.lacp_mode or 'active'}")
             elif i.kind == "vlan":
                 self.line("        set type vlan")
                 if i.parent:
@@ -200,14 +229,20 @@ class Emitter:
                           f"{_q(i.description[:255])}")
             self.line("    next")
         self.line("end")
-        aggs = sum(1 for i in rows if i.kind == "aggregate")
+        aggs = [i for i in rows if i.kind == "aggregate"]
         if aggs:
-            self.report.add(
-                "info", "interfaces",
-                f"rebuilt {aggs} aggregate(s) as FortiOS 802.3ad LAGs "
-                "(set type aggregate + member ports + lacp-mode active) — "
-                "verify the member ports map to real target ports and the "
-                "LACP mode (active/passive/static) matches the source")
+            modes = sorted({i.lacp_mode or "active" for i in aggs})
+            defaulted = [i.mapped for i in aggs if not i.lacp_mode]
+            msg = (f"rebuilt {len(aggs)} aggregate(s) as FortiOS 802.3ad "
+                   "LAGs (set type aggregate + member ports), emitted "
+                   "before their VLAN subinterfaces; LACP mode(s): "
+                   f"{', '.join(modes)}. Verify the member ports map to "
+                   "real target ports")
+            if defaulted:
+                msg += ("; no LACP mode found in the source for "
+                        f"{', '.join(defaulted)} — defaulted to 'active', "
+                        "confirm active/passive/static")
+            self.report.add("info", "interfaces", msg)
 
     def zones(self):
         emittable = [z for z in self.cfg.zones if z.members]

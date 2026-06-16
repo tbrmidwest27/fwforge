@@ -314,6 +314,33 @@
     .fport.miss { box-shadow:0 0 7px rgba(255,196,0,.6); }
     .fport:hover { border-color:#9fd1ff;
              box-shadow:0 0 8px rgba(63,169,255,.7); }
+    /* live LAG/parent member ports shown in the membership column */
+    .memports { font-size:.72rem; color:var(--mut);
+             font-family:monospace; }
+    /* aggregate authoring panel */
+    .aggcard { border:0.5px solid var(--mut); border-radius:6px;
+             padding:.4rem .6rem; margin:.35rem 0; }
+    .aggrow { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; }
+    .aggmem { margin-top:.35rem; display:flex; gap:.35rem;
+             flex-wrap:wrap; align-items:center; }
+    .mchip { display:inline-flex; align-items:center; gap:4px;
+             font-family:monospace; font-size:.72rem;
+             border:0.5px solid var(--mut); border-radius:4px;
+             padding:1px 6px; }
+    /* "nests on" column: parent picker + the LAG's member ports */
+    .nestcol { white-space:nowrap; font-size:.78rem; }
+    .nestcol select.vparent { max-width:6.5rem; }
+    .nestcol .memports { margin-left:.3rem; }
+    /* FortiOS-style interface tree: collapsible parent rows */
+    .cbtn { background:none; border:none; cursor:pointer; font:inherit;
+            color:var(--mut); padding:0; margin-right:.35rem;
+            width:1.1rem; text-align:center; line-height:1; }
+    tr.childrow td.indent { padding-left:3.2rem; }
+    select.mdst { min-width:8.5rem; }
+    td.ty { color:var(--mut); font-size:.78rem; }
+    td.memcol { font-size:.78rem; }
+    .cap { font-size:.66rem; color:var(--mut); margin-top:.2rem;
+           font-family:monospace; }
   </style>
   <div class="fpwrap" id="fp-wrap">
     <div class="fprow">
@@ -334,42 +361,40 @@
       <b style="color:#c0392b">red</b> = two sources on one port,
       <b style="color:#e0a300">amber</b> = no home on the destination.</p>
   </div>
+  <div class="card" id="agg-panel-wrap" style="margin:.5rem 0;padding:.6rem .8rem">
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+      <strong style="font-size:.9rem">Create aggregate (LAG)</strong>
+      <button type="button" class="ghost small" onclick="addAgg()">+ Add aggregate</button>
+    </div>
+    <p class="grid-note" style="margin:.15rem 0 .4rem">Build a LAG the source didn't have: name it and pick member ports, then nest VLANs by choosing it as a VLAN's parent in the tree below. (Source LAGs already appear in the tree.)</p>
+    <div id="agg-panel"></div>
+  </div>
+  <div id="auth-fields" hidden></div>
   <p class="grid-note" id="tp-port-hint"></p>
   <datalist id="tp-ports"></datalist>
-  <table style="max-width:{% if det %}980px{% else %}580px{% endif %}">
-    <tr><th>source</th>{% if det %}<th>ip</th><th>alias / description</th><th>membership</th>{% endif %}{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>target</th></tr>
+  <table style="max-width:{% if det %}1200px{% else %}580px{% endif %}">
+    <tr><th>name</th>{% if det %}<th>type</th><th>members</th><th>ip / netmask</th>{% endif %}{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>maps to</th></tr>
     {% for ifc in meta.interfaces %}
     {% set d = det.get(ifc) if det else None %}
     <tr>
       <td><code>{{ ifc }}</code>
         <input type="hidden" name="map_src" value="{{ ifc }}"></td>
       {% if det %}
-      <td class="muted">{{ d.ip if d else "" }}</td>
-      <td class="muted">{{ (d.alias or d.descr) if d else "" }}</td>
-      <td>{% if d and d.zone %}<span class="badge b-zone"
-            title="member of zone {{ d.zone }} — policies reference the
-                   zone, not this interface">zone: {{ d.zone }}</span>{%
-          elif d and d.sdwan %}<span class="badge b-sdwan"
-            title="SD-WAN member — policies reference the SD-WAN zone">
-            SD-WAN</span>{%
-          elif d and d.kind == "aggregate" %}<span class="badge b-info"
-            title="link aggregation (LAG) — rebuilt as a FortiOS aggregate;
-                   its member ports map to target ports">aggregate</span>{%
-          elif d and d.kind == "aggregate-member" %}<span class="badge b-zone"
-            title="bundled into aggregate {{ d.parent }} — maps to a physical
-                   target port that becomes a LAG member">in {{ d.parent }}</span>{%
-          elif d and d.kind == "vlan" %}<span class="badge b-vdom"
-            title="VLAN subinterface on {{ d.parent }} — keeps its name">vlan{% if d.vlanid %} {{ d.vlanid }}{% endif %}</span>{%
-          endif %}</td>
+      <td class="ty">{% if d and d.kind == "aggregate" %}802.3ad aggregate <label class="muted" style="font-size:.72rem">&middot; LACP <select class="agglacp" data-agg="{{ ifc }}" onchange="aggLacpChanged(this)"><option value="active"{% if d.lacp not in ["passive", "static"] %} selected{% endif %}>active</option><option value="passive"{% if d.lacp == "passive" %} selected{% endif %}>passive</option><option value="static"{% if d.lacp == "static" %} selected{% endif %}>static</option></select></label>{%
+          elif d and d.kind == "aggregate-member" %}member of {{ d.parent }}{%
+          elif d and d.kind == "vlan" %}VLAN{% if d.vlanid %} {{ d.vlanid }}{% endif %}{%
+          elif d and d.zone %}<span class="badge b-zone">zone: {{ d.zone }}</span>{%
+          elif d and d.sdwan %}<span class="badge b-sdwan">SD-WAN</span>{%
+          else %}physical interface{% endif %}</td>
+      <td class="memcol" data-mem="{{ ifc }}"></td>
+      <td class="muted mono">{{ d.ip if d else "" }}</td>
       {% endif %}
       {% if meta.multi_vdom %}
       <td><span class="badge b-vdom">{{ meta.vdoms.get(ifc, "root") }}</span></td>
       {% endif %}
-      <td>{% if d and d.type == "physical" %}<select name="map_dst"
-            class="mdst" data-src="{{ ifc }}" style="width:100%">
-            <option value="{{ ifc }}" selected>{{ ifc }}</option>
-          </select>{% else %}<input type="text" name="map_dst"
-            value="{{ ifc }}" list="tp-ports" style="width:100%">{% endif %}</td>
+      <td>{% if d and d.kind == "vlan" %}<input type="hidden" name="map_dst" value="{{ ifc }}"><input type="hidden" name="vparent_src" value="{{ ifc }}"><select name="vparent_dst" class="vparent" data-vsrc="{{ ifc }}" onchange="vparentChanged(this)"></select>{%
+          elif d and d.type == "physical" %}<select name="map_dst" class="mdst" data-src="{{ ifc }}" style="width:100%"><option value="{{ ifc }}" selected>{{ ifc }}</option></select>{%
+          else %}<input type="text" name="map_dst" value="{{ ifc }}" list="tp-ports" style="width:100%">{% endif %}</td>
     </tr>
     {% endfor %}
   </table>
@@ -867,6 +892,270 @@ function fpMapping() {
   });
   return m;
 }
+function memBadge(cls, txt, title) {
+  return `<span class="badge ${cls}" title="${esc(title)}">`
+    + esc(txt) + `</span>`;
+}
+
+// ---- aggregate authoring (live, panel-driven) ----
+// AGGS: target LAGs (source-derived keep `src`; new ones have src:"").
+// VPARENT: per-VLAN parent overrides (else the mapped source parent).
+let AGG_SEQ = 0;
+let AGGS = [];
+let VPARENT = {};
+
+function srcAggMembers(srcName) {
+  // a source LAG's member ports, live from the per-row target dropdowns
+  const mapping = fpMapping();
+  const out = [];
+  DET.forEach(d => {
+    if (d.kind === "aggregate-member" && d.parent === srcName)
+      out.push(mapping[d.name] || d.name);
+  });
+  return out;
+}
+function srcMemberNames(srcName) {
+  return DET.filter(d => d.kind === "aggregate-member" && d.parent === srcName)
+            .map(d => d.name);
+}
+function derivedMembers(srcName) {   // members' mapped targets, valid ports only
+  const dports = destPortList();
+  return srcAggMembers(srcName).filter(p => dports.includes(p));
+}
+function aggMembers(a) {
+  return a.members.slice();   // the LAG's set of target member ports
+}
+function aggByName() { const m = {}; AGGS.forEach(a => { m[a.name] = a; }); return m; }
+function findAgg(id) { return AGGS.find(a => a.id === id); }
+function vlanParent(d) {
+  if (VPARENT[d.name]) return VPARENT[d.name];
+  const mapping = fpMapping();
+  return mapping[d.parent] || d.parent || "";
+}
+function initAuthoring() {
+  AGGS = [];
+  const mapping = fpMapping();
+  DET.forEach(d => {
+    if (d.kind === "aggregate")
+      AGGS.push({id: ++AGG_SEQ, name: mapping[d.name] || d.name,
+                 lacp: d.lacp || "active",
+                 members: derivedMembers(d.name), src: d.name});
+  });
+}
+function addAgg() {
+  AGGS.push({id: ++AGG_SEQ, name: "agg" + (AGGS.length + 1),
+             lacp: "active", members: [], src: ""});
+  renderPanel(); refreshNestOptions(); refreshMembership();
+}
+function removeAgg(id) {
+  AGGS = AGGS.filter(a => a.id !== id);
+  renderPanel(); refreshNestOptions(); refreshMembership();
+}
+function aggSetName(id, v) {
+  const a = findAgg(id); if (!a) return;
+  const old = a.name; a.name = v.trim();
+  for (const k in VPARENT) if (VPARENT[k] === old) VPARENT[k] = a.name;
+  refreshNestOptions(); refreshMembership();   // no re-render: keep focus
+}
+function aggSetLacp(id, v) { const a = findAgg(id); if (a) a.lacp = v; }
+function aggAddMember(id, port) {
+  const a = findAgg(id); if (!a || !port) return;
+  if (!a.members.includes(port)) a.members.push(port);
+  renderPanel(); refreshNestOptions(); refreshMembership();
+}
+function aggDelMember(id, port) {
+  const a = findAgg(id); if (!a) return;
+  a.members = a.members.filter(p => p !== port);
+  renderPanel(); refreshNestOptions(); refreshMembership();
+}
+function usedPorts() {
+  const s = new Set();
+  AGGS.forEach(a => aggMembers(a).forEach(p => s.add(p)));
+  return s;
+}
+function portPicker(a, dports) {
+  const mine = aggMembers(a), used = usedPorts();
+  const opts = dports.filter(p => !mine.includes(p) && !used.has(p));
+  if (!opts.length) return "";
+  return `<select onchange="if(this.value){aggAddMember(${a.id},this.value)}" `
+    + `style="width:5.5rem"><option value="">+ port</option>`
+    + opts.map(p => `<option>${esc(p)}</option>`).join("") + `</select>`;
+}
+function renderPanel() {
+  const el = document.getElementById("agg-panel");
+  if (!el) return;
+  const news = AGGS.filter(a => !a.src);   // source LAGs live in the tree
+  if (!news.length) { el.innerHTML = ""; return; }
+  const dports = destPortList();
+  const counts = {};
+  DET.forEach(d => {
+    if (d.kind === "vlan") {
+      const p = vlanParent(d); if (p) counts[p] = (counts[p] || 0) + 1;
+    }
+  });
+  el.innerHTML = news.map(a => {
+    const mem = aggMembers(a);
+    const chips = mem.map(p => a.src
+      ? `<span class="mchip">${esc(p)}</span>`
+      : `<span class="mchip">${esc(p)} <span onclick="aggDelMember(${a.id},'${esc(p)}')" style="cursor:pointer">&times;</span></span>`).join("");
+    const memArea = a.src
+      ? (mem.length ? chips : '<span class="muted" style="font-size:.72rem">members come from the port dropdowns below</span>')
+      : chips + portPicker(a, dports);
+    const nv = counts[a.name] || 0;
+    const head = a.src
+      ? `<code>${esc(a.name)}</code> <span class="badge b-info" style="font-size:.6rem">source</span>`
+      : `<input type="text" value="${esc(a.name)}" maxlength="15" style="width:7rem" oninput="aggSetName(${a.id},this.value)">`;
+    return `<div class="aggcard"><div class="aggrow">${head}
+      <label class="muted" style="font-size:.72rem">LACP
+        <select onchange="aggSetLacp(${a.id},this.value)">`
+      + ["active", "passive", "static"].map(m =>
+          `<option${m === a.lacp ? " selected" : ""}>${m}</option>`).join("")
+      + `</select></label>
+      <span class="muted" style="font-size:.72rem;margin-left:auto">${nv} VLAN${nv === 1 ? "" : "s"} nested</span>`
+      + (a.src ? "" : `<button type="button" class="ghost small" title="remove LAG" onclick="removeAgg(${a.id})">&times;</button>`)
+      + `</div><div class="aggmem">${memArea}</div></div>`;
+  }).join("");
+}
+function refreshNestOptions() {
+  const dports = destPortList();
+  const lags = AGGS.map(a => a.name).filter(Boolean);
+  document.querySelectorAll("select.vparent").forEach(sel => {
+    const cur = VPARENT[sel.dataset.vsrc] || sel.value || "";
+    let html = "";
+    if (lags.length)
+      html += `<optgroup label="aggregates">` + lags.map(n =>
+        `<option${n === cur ? " selected" : ""}>${esc(n)}</option>`).join("")
+        + `</optgroup>`;
+    html += `<optgroup label="physical ports">` + dports.map(p =>
+      `<option${p === cur ? " selected" : ""}>${esc(p)}</option>`).join("")
+      + `</optgroup>`;
+    sel.innerHTML = html;
+    if (cur) sel.value = cur;
+  });
+}
+function vparentChanged(sel) {
+  VPARENT[sel.dataset.vsrc] = sel.value;
+  renderPanel(); refreshMembership();
+}
+function aggLacpChanged(sel) {
+  const a = AGGS.find(x => x.src === sel.dataset.agg);
+  if (a) a.lacp = sel.value;
+}
+// live "nests on" column: an aggregate lists its member ports; each VLAN
+// row carries a parent picker + the ports the chosen LAG rides on.
+function refreshMembership() {
+  const aggs = aggByName();
+  document.querySelectorAll("[data-mem]").forEach(cell => {
+    const d = DET.find(x => x.name === cell.getAttribute("data-mem"));
+    if (!d) return;
+    if (d.kind === "aggregate") {
+      const a = AGGS.find(x => x.src === d.name);
+      if (!a) { cell.innerHTML = ""; return; }
+      const mem = aggMembers(a), used = usedPorts();
+      const opts = destPortList().filter(p => !mem.includes(p) && !used.has(p));
+      const src = srcMemberNames(d.name);
+      cell.innerHTML =
+        mem.map(p => `<span class="mchip">${esc(p)} <span onclick="aggDelMember(${a.id},'${esc(p)}')" style="cursor:pointer;color:var(--mut)">&times;</span></span>`).join("")
+        + (opts.length ? `<select class="addport" onchange="if(this.value)aggAddMember(${a.id},this.value)"><option value="">+ port</option>${opts.map(p => `<option>${esc(p)}</option>`).join("")}</select>` : "")
+        + (src.length ? `<div class="cap">absorbs ${src.map(esc).join(" &middot; ")}</div>` : "");
+    } else if (d.kind === "vlan") {
+      // a VLAN rides its parent LAG's member ports — replicate them here
+      const a = aggs[vlanParent(d)];
+      const mem = a ? aggMembers(a) : [];
+      cell.innerHTML = mem.length
+        ? mem.map(p => `<span class="mchip">${esc(p)}</span>`).join("")
+        : '<span class="muted">&mdash;</span>';
+    } else {
+      cell.innerHTML = '<span class="muted">&mdash;</span>';
+    }
+  });
+}
+// FortiOS-style interface tree: group each parent's member ports + VLAN
+// subinterfaces directly beneath it, collapsed behind a +/- toggle.
+let TREE_OPEN = {};
+function _toggleKids(pname, open) {
+  document.querySelectorAll('tr.childrow[data-parent="' + pname + '"]')
+    .forEach(r => { r.style.display = open ? "" : "none"; });
+}
+function buildTree() {
+  const rows = {};
+  document.querySelectorAll('input[name="map_src"]').forEach(inp => {
+    rows[inp.value] = inp.closest("tr");
+  });
+  const kids = {};
+  DET.forEach(d => {
+    if (d.kind === "vlan" && d.parent)
+      (kids[d.parent] = kids[d.parent] || []).push(d);
+  });
+  // member ports show as chips in the LAG's members column, not as rows
+  const isChild = {};
+  DET.forEach(d => {
+    if (d.kind === "vlan" || d.kind === "aggregate-member") isChild[d.name] = 1;
+    if (d.kind === "aggregate-member") {
+      const r = rows[d.name]; if (r) r.style.display = "none";
+    }
+  });
+  // top-level rows; aggregates float to the top so a LAG parent always
+  // leads its expanded members + VLANs (never buried under them)
+  const tops = DET.filter(d => !isChild[d.name] && rows[d.name]);
+  tops.sort((a, b) =>
+    (a.kind === "aggregate" ? 0 : 1) - (b.kind === "aggregate" ? 0 : 1));
+  const container = tops.length ? rows[tops[0].name].parentNode : null;
+  if (!container) return;
+  tops.forEach(p => {
+    const prow = rows[p.name];
+    if (kids[p.name] && TREE_OPEN[p.name] === undefined)
+      TREE_OPEN[p.name] = true;                   // default: expanded
+    container.appendChild(prow);                  // parent leads its group
+    const cell = prow.querySelector("td");
+    if (kids[p.name] && !cell.dataset.caret) {
+      cell.dataset.caret = "1";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cbtn";
+      btn.textContent = TREE_OPEN[p.name] ? "−" : "+";
+      btn.title = "expand / collapse nested interfaces";
+      btn.addEventListener("click", () => {
+        TREE_OPEN[p.name] = !TREE_OPEN[p.name];
+        btn.textContent = TREE_OPEN[p.name] ? "−" : "+";
+        _toggleKids(p.name, TREE_OPEN[p.name]);
+      });
+      cell.insertBefore(btn, cell.firstChild);
+    }
+    // member ports first, then VLANs — appended directly below the parent
+    const ordered = (kids[p.name] || []).slice().sort((a, b) =>
+      (a.kind === "aggregate-member" ? 0 : 1)
+      - (b.kind === "aggregate-member" ? 0 : 1));
+    ordered.forEach(d => {
+      const r = rows[d.name];
+      if (!r) return;
+      r.classList.add("childrow");
+      r.dataset.parent = p.name;
+      r.querySelector("td").classList.add("indent");
+      container.appendChild(r);
+      r.style.display = TREE_OPEN[p.name] ? "" : "none";
+    });
+  });
+}
+function serializeAggs() {
+  const box = document.getElementById("auth-fields");
+  if (!box) return;
+  // serialize every LAG; a source LAG's name comes from its own target
+  // field so apply_authoring matches it (no duplicate) and its LACP /
+  // member edits take effect
+  box.innerHTML = AGGS.map((a, i) => {
+    let name = a.name;
+    if (a.src) {
+      const inp = document.querySelector(
+        'input[name="map_src"][value="' + a.src + '"]');
+      const dst = inp && inp.closest("tr").querySelector('[name="map_dst"]');
+      if (dst && dst.value.trim()) name = dst.value.trim();
+    }
+    return `<input type="hidden" name="agg_name_${i}" value="${esc(name)}">`
+      + `<input type="hidden" name="agg_lacp_${i}" value="${esc(a.lacp)}">`
+      + `<input type="hidden" name="agg_members_${i}" value="${esc(aggMembers(a).join(","))}">`;
+  }).join("");
+}
 function refreshFaceplates() {
   const srcEl = document.getElementById("fp-src");
   const dstEl = document.getElementById("fp-dst");
@@ -915,6 +1204,7 @@ function buildFaceplates() {
   fpRender(dstEl, fpSpec(dc, dp), "dst",
            dp.length ? (MODEL_BY_CODE[dc] || dc || "FortiGate") : "", false);
   refreshFaceplates();
+  refreshMembership();
 }
 document.addEventListener("focusin", e => {
   if (e.target && e.target.name === "map_dst") {
@@ -945,7 +1235,11 @@ document.addEventListener("click", e => {
 const tpSel = document.getElementById("tp-select");
 if (tpSel) tpSel.addEventListener("change", () => {
   tpPortsChanged();
+  AGGS.forEach(a => { if (a.src) a.members = derivedMembers(a.src); });
   buildFaceplates();
+  renderPanel();
+  refreshNestOptions();
+  refreshMembership();
 });
 // a single row edited: re-outline + relight, but don't rebuild every
 // dropdown (that would disrupt the one being changed)
@@ -953,10 +1247,20 @@ if (tpSel) tpSel.addEventListener("change", () => {
   if (e.target && e.target.name === "map_dst") {
     outlineTargets(destPortList());
     refreshFaceplates();
+    renderPanel();
+    refreshNestOptions();
+    refreshMembership();
   }
 }));
 tpPortsChanged();    // destination-backup ports apply from page load
+initAuthoring();     // build LAG state from the detected source aggregates
 buildFaceplates();   // draw both panels immediately
+renderPanel();
+refreshNestOptions();
+refreshMembership();
+buildTree();          // group members + VLANs under their parent (collapsed)
+const _authForm = document.querySelector("form");
+if (_authForm) _authForm.addEventListener("submit", serializeAggs);
 {% endif %}
 function filterPolicies() {
   const q = document.getElementById("polsearch").value.toLowerCase();

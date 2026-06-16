@@ -471,6 +471,37 @@ def test_cross_vendor_source_faceplate_labeled_by_vendor(client):
     assert not webui_app.JOBS[jid].get("source_platform")
 
 
+def test_authoring_from_form_parsing():
+    from werkzeug.datastructures import MultiDict
+    form = MultiDict([
+        ("agg_name_0", "bond0"), ("agg_lacp_0", "passive"),
+        ("agg_members_0", "x5,x6,x7"),
+        ("vparent_src", "ae1.1"), ("vparent_dst", "bond0"),
+        ("vparent_src", "v2"), ("vparent_dst", "x1")])
+    a = webui_app._authoring_from_form(form)
+    assert a["aggregates"] == [
+        {"name": "bond0", "lacp": "passive", "members": ["x5", "x6", "x7"]}]
+    assert a["vlan_parents"] == {"ae1.1": "bond0", "v2": "x1"}
+    assert webui_app._authoring_from_form(MultiDict()) is None
+
+
+def test_membership_column_live_wiring(client):
+    # the membership column is tagged per-interface and enriched live by
+    # JS so an aggregate shows its mapped member ports and every nested
+    # VLAN shows the parent LAG + ports it rides, tracking dropdown edits
+    jid = _load(client, "pa_sample.xml")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "<th>members</th>" in page             # FortiOS-style members col
+    assert "data-mem=" in page                    # members cells tagged
+    assert "function buildTree" in page           # FortiOS-style tree grouping
+    assert "function refreshMembership" in page  # live updater shipped
+    assert ".memports" in page                   # member-port styling
+    # the live authoring panel + per-VLAN parent control + serialization
+    assert 'id="agg-panel"' in page
+    assert "function addAgg" in page and "function serializeAggs" in page
+    assert 'name="vparent_src"' in page and 'class="vparent"' in page
+
+
 def test_destination_identity_and_filename(client):
     import io
     src = (FIX / "fortios_refactor.conf").read_bytes()
@@ -518,7 +549,7 @@ def test_mapping_grid_shows_zone_membership(client):
     # mapping grid should surface that so you see the zone structure
     jid = _load(client, "fortios_refactor.conf")
     page = client.get(f"/job/{jid}").data.decode()
-    assert "<th>membership</th>" in page
+    assert "<th>type</th>" in page                # membership now the type col
     assert "b-zone" in page
     assert "zone: legacy-zone" in page
 
