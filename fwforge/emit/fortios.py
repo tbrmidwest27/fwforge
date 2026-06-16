@@ -544,33 +544,62 @@ class Emitter:
                 "profile if you need control over encrypted apps.")
 
     def webfilter(self):
-        """FortiGuard category webfilter profiles (from PAN url-filtering)."""
+        """Webfilter profiles (FortiGuard categories + custom URL lists)."""
         if not self.cfg.webfilters:
             return
+        # urlfilter tables first — the profile references them by numeric id
+        url_table_id: dict[str, int] = {}
+        with_urls = [wf for wf in self.cfg.webfilters if wf.urls]
+        if with_urls:
+            self.line()
+            self.line("config webfilter urlfilter")
+            for n, wf in enumerate(with_urls, start=1):
+                url_table_id[wf.name] = n
+                self.line(f"    edit {n}")
+                self.line(f"        set name {_q(wf.name + '-urls')}")
+                self.line("        config entries")
+                for j, (url, utype, action) in enumerate(wf.urls, start=1):
+                    self.line(f"            edit {j}")
+                    self.line(f"                set url {_q(url)}")
+                    self.line(f"                set type {utype}")
+                    self.line(f"                set action {action}")
+                    self.line("            next")
+                self.line("        end")
+                self.line("    next")
+            self.line("end")
         self.line()
         self.line("config webfilter profile")
         for wf in self.cfg.webfilters:
             self.line(f"    edit {_q(wf.name)}")
             if wf.comment:
                 self.line(f"        set comment {_q(wf.comment[:255])}")
-            self.line("        config ftgd-wf")
-            self.line("            config filters")
-            for i, (cat, action) in enumerate(wf.filters, start=1):
-                self.line(f"                edit {i}")
-                self.line(f"                    set category {cat}")
-                self.line(f"                    set action {action}")
-                self.line("                next")
-            self.line("            end")
-            self.line("        end")
+            if wf.filters:
+                self.line("        config ftgd-wf")
+                self.line("            config filters")
+                for i, (cat, action) in enumerate(wf.filters, start=1):
+                    self.line(f"                edit {i}")
+                    self.line(f"                    set category {cat}")
+                    self.line(f"                    set action {action}")
+                    self.line("                next")
+                self.line("            end")
+                self.line("        end")
+            if wf.name in url_table_id:
+                self.line("        config web")
+                self.line("            set urlfilter-table "
+                          f"{url_table_id[wf.name]}")
+                self.line("        end")
             self.line("    next")
         self.line("end")
-        self.report.add(
-            "info", "policies",
-            f"{len(self.cfg.webfilters)} webfilter profile(s) created from "
-            "PAN url-filtering (FortiGuard category-level). Attached policies "
-            "use the built-in 'certificate-inspection' SSL profile; switch to "
-            "'deep-inspection' (needs the FortiGate CA on clients) for full "
-            "URL-path / HTTPS content filtering.")
+        nurls = sum(len(wf.urls) for wf in self.cfg.webfilters)
+        msg = (f"{len(self.cfg.webfilters)} webfilter profile(s) created from "
+               "PAN url-filtering (FortiGuard category-level")
+        if nurls:
+            msg += (f" + {nurls} explicit URL(s) in {len(with_urls)} urlfilter "
+                    "table(s) — per-URL allow/block carried over")
+        msg += ("). Attached policies use the built-in 'certificate-inspection' "
+                "SSL profile; switch to 'deep-inspection' for full URL-path / "
+                "HTTPS content filtering.")
+        self.report.add("info", "policies", msg)
 
     def file_filter(self):
         """File-filter profiles (from PAN file-blocking)."""

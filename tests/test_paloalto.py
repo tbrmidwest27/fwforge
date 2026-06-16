@@ -532,9 +532,13 @@ PROFCFG = """<config version="11.0.0"><devices>
       <entry name="untrust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
     </zone>
     <profiles>
+      <custom-url-category><entry name="corp-block">
+        <type>URL List</type>
+        <list><member>*.badsite.com</member><member>malware.example.com</member></list>
+      </entry></custom-url-category>
       <url-filtering>
         <entry name="url-strict">
-          <block><member>malware</member><member>phishing</member><member>command-and-control</member></block>
+          <block><member>malware</member><member>phishing</member><member>command-and-control</member><member>corp-block</member></block>
           <alert><member>social-networking</member><member>high-risk</member><member>copyright-infringement</member></alert>
           <continue><member>streaming-media</member></continue>
           <override><member>gambling</member></override>
@@ -595,6 +599,28 @@ def test_url_filtering_to_webfilter():
     assert f[11] == "authenticate"             # gambling (override)
     # both policies reference the one profile
     assert all(p.webfilter == "wf-url-strict" for p in cfg.policies)
+
+
+def test_custom_url_category_to_urlfilter():
+    cfg = paloalto.parse(PROFCFG, "prof.xml")
+    wf = cfg.webfilters[0]
+    # PAN custom-url-category "URL List" -> per-URL urlfilter entries
+    urls = {u: (t, a) for u, t, a in wf.urls}
+    assert urls["*.badsite.com"] == ("wildcard", "block")   # wildcard detected
+    assert urls["malware.example.com"] == ("simple", "block")
+
+
+def test_custom_url_pipeline_emit():
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        PROFCFG, "paloalto", "prof.xml",
+        {"ethernet1/1": "port1", "ethernet1/2": "port2"}, target="8.0")
+    conf = res.out_text
+    assert "config webfilter urlfilter" in conf
+    assert 'set url "*.badsite.com"' in conf and "set type wildcard" in conf
+    assert "set action block" in conf
+    # the profile references the urlfilter table
+    assert "set urlfilter-table 1" in conf
 
 
 def test_url_filtering_flags_risk_and_unmapped():

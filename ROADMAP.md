@@ -256,6 +256,27 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.53.0 — shipped 2026-06-16 (PAN custom URL categories → FortiOS webfilter urlfilter tables)
+Per-URL fidelity to complement the FortiGuard category mapping. Real enterprise
+PAN profiles lean on explicit allow/block URL lists; before this only the
+predefined-category side converted.
+- `parse_profiles` indexes `custom-url-category` (under profiles/ or the vsys),
+  classifying each as a **"URL List"** (explicit URLs) or **"Category Match"**
+  (a bundle of predefined categories).
+- `_webfilter_for` now classifies every member of a url-filtering profile's
+  action lists: predefined category → FortiGuard ftgd-wf filter (as before);
+  custom **URL List** → entries in a FortiOS `webfilter urlfilter` table
+  (`*` → wildcard, else simple; PAN action → urlfilter action block/monitor/
+  allow); custom **Category Match** → expanded to its member categories.
+- emit: `config webfilter urlfilter` tables (numeric id) emitted first; each
+  webfilter profile references its table via `config web / set urlfilter-table
+  <id>`. Profiles can now be category-only, URL-only, or both.
+- model: WebFilterProfile.urls. Verified e2e vs the live 601F (wildcard +
+  simple URL entries, table reference), schema-cert clean (0 unknown
+  tables/attrs). 330 tests (+2).
+- Builds on the other session's code-review fixes (HEAD was 59f68b7 incl. the
+  names.py per-namespace fix); merged clean, all features intact.
+
 ### v0.52.0 — shipped 2026-06-16 (PAN anti-spyware/vulnerability → FortiOS IPS sensors, severity + CVE crosswalk)
 Closes the last PAN security-profile gap — accurately, and stated plainly.
 There is **no PA Threat-ID → FortiGuard-signature crosswalk** (for any tool, FC

@@ -124,6 +124,10 @@ class WebFilterProfile:
 
     name: str
     filters: list = field(default_factory=list)  # list[tuple[int, str]]
+    # explicit URL entries (from PAN custom-url-category "URL List") -> a
+    # FortiOS webfilter urlfilter table: list[(url, type, action)] where type
+    # is simple|wildcard|regex and action is block|allow|monitor|exempt
+    urls: list = field(default_factory=list)
     comment: str | None = None
     source: SourceRef | None = None
 

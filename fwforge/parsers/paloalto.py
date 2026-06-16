@@ -1362,10 +1362,23 @@ class PaloParser:
         the FortiOS profiles are built lazily (and deduped) when a rule
         actually references one. Shared/Panorama profiles already merged in."""
         self._url_profiles: dict = {}    # name -> {pan action: [categories]}
+        self._url_categories: dict = {}  # name -> {"type", "list":[url|cat]}
         self._file_profiles: dict = {}   # name -> [ {name, action, types} ]
         self._virus_profiles: dict = {}  # name -> {pan decoder proto: action}
         self._ips_profiles: dict = {}    # name -> {rules, exceptions, sinkhole}
         self._profile_groups: dict = {}  # group -> {url,file,virus,vuln,spy,...}
+        # custom URL categories live under profiles/ or directly under the vsys
+        for src in (vsys.get("profiles"), vsys):
+            for name, c in _entries(
+                    src.get("custom-url-category") if isinstance(src, dict)
+                    else None):
+                ctype = (str(c.get("type", "")).lower()
+                         if isinstance(c, dict) else "")
+                self._url_categories.setdefault(name, {
+                    "type": "category-match" if "categor" in ctype
+                    else "url-list",
+                    "list": _as_list(c.get("list")) if isinstance(c, dict)
+                    else []})
         profs = vsys.get("profiles")
         if isinstance(profs, dict):
             for name, p in _entries(profs.get("url-filtering")):
@@ -1661,9 +1674,16 @@ class PaloParser:
                   "validate before enforcing.", ref)
         return name
 
+    # PAN url-filtering action -> FortiOS urlfilter action (for custom URL lists)
+    _URLF_ACTION = {"block": "block", "alert": "monitor", "allow": "allow",
+                    "continue": "monitor", "override": "block"}
+
     def _webfilter_for(self, pan_name: str, rule: str, ref: SourceRef) -> str:
         """Build (deduped by source name) a FortiOS webfilter profile from a
-        PAN url-filtering profile. Returns the FortiOS profile name, or ''."""
+        PAN url-filtering profile: predefined categories -> FortiGuard ftgd-wf
+        filters, custom-url-category "URL List" members -> a webfilter urlfilter
+        table (per-URL fidelity), "Category Match" custom categories expanded to
+        their member categories. Returns the FortiOS profile name, or ''."""
         cache = self.cfg.meta.setdefault("_webfilter_cache", {})
         if pan_name in cache:
             return cache[pan_name]
@@ -1674,15 +1694,34 @@ class PaloParser:
                       "referenced but not defined — add web filtering "
                       "manually", ref)
             return ""
-        filters: dict[int, str] = {}   # ftgd id -> action (strictest wins)
+        filters: dict[int, str] = {}     # ftgd id -> action (strictest wins)
+        urls: dict[str, tuple] = {}      # url -> (type, action) first-match
         unmapped: list[str] = []
         risk: list[str] = []
-        for pan_act in ("block", "override", "continue", "alert"):
+        for pan_act in ("block", "override", "continue", "alert", "allow"):
             for cat in acts.get(pan_act, []):
                 cl = cat.strip().lower()
                 if cl in pan_urlcat.RISK_BUCKETS:
                     if cl not in risk:
                         risk.append(cl)
+                    continue
+                custom = (self._url_categories.get(cat)
+                          or self._url_categories.get(cl))
+                if custom:
+                    if custom["type"] == "url-list":
+                        ua = self._URLF_ACTION.get(pan_act, "block")
+                        for u in custom["list"]:
+                            uu = u.strip()
+                            if uu and uu not in urls:
+                                urls[uu] = ("wildcard" if "*" in uu
+                                            else "simple", ua)
+                    elif pan_act in pan_urlcat.ACTION:   # category-match
+                        for sub in custom["list"]:
+                            for i in pan_urlcat.to_ftgd(sub.strip().lower()):
+                                filters.setdefault(
+                                    i, pan_urlcat.ACTION[pan_act])
+                    continue
+                if pan_act not in pan_urlcat.ACTION:     # 'allow' -> no entry
                     continue
                 ids = pan_urlcat.to_ftgd(cl)
                 if not ids:
@@ -1691,7 +1730,7 @@ class PaloParser:
                     continue
                 for i in ids:
                     filters.setdefault(i, pan_urlcat.ACTION[pan_act])
-        if not filters:
+        if not filters and not urls:
             if unmapped or risk:
                 self.note("warn", "policies",
                           f"rule '{rule}': url-filtering '{pan_name}' has no "
@@ -1702,11 +1741,15 @@ class PaloParser:
         name = self._safe_prof("wf-", pan_name)
         self.cfg.webfilters.append(WebFilterProfile(
             name=name, filters=sorted(filters.items()),
+            urls=[(u, t, a) for u, (t, a) in urls.items()],
             comment=f"from PAN url-filtering '{pan_name}'", source=ref))
         cache[pan_name] = name
         plural = "y" if len(filters) == 1 else "ies"
+        bits = [f"{len(filters)} FortiGuard categor{plural}"]
+        if urls:
+            bits.append(f"{len(urls)} explicit URL(s) -> urlfilter table")
         msg = (f"rule '{rule}': url-filtering '{pan_name}' -> webfilter "
-               f"'{name}' ({len(filters)} FortiGuard categor{plural})")
+               f"'{name}' ({', '.join(bits)})")
         if risk:
             msg += (f"; PAN risk-level categor(ies) {', '.join(risk)} have no "
                     "FortiGuard equivalent — set manually")
