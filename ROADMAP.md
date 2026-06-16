@@ -256,6 +256,20 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.47.1 — shipped 2026-06-16 (created LAGs as tree rows + description restored + faceplate lights LAG members)
+- Created aggregates now render as first-class rows in the interface tree
+  (buildTree: renderNewAggRows + effective-parent grouping), not a separate
+  panel — "+ Add aggregate" adds an 802.3ad aggregate row with a name
+  field, LACP, and a member-port chip picker; nesting a VLAN onto it (its
+  parent dropdown) moves the VLAN under it.
+- Restored the interface description (dropped in v0.47.0's column
+  restructure) as a muted sub-line under the interface name.
+- Faceplate fix: a LAG's members come from the chips (AGGS), so
+  refreshFaceplates counts the chip members (skipping the absorbed
+  member-rows' own dropdowns to avoid false collisions) and re-runs on chip
+  edits — the LAG's FortiGate ports (x5-x8) light green as assigned.
+- 275 tests. (All v0.47.1 changes are in webui/templates/plan.html.)
+
 ### v0.47.0 — shipped 2026-06-16 (cross-vendor aggregate authoring + FortiOS-style interface page)
 Big interface-mapping overhaul for cross-vendor (PAN -> FortiGate):
 - emit: aggregates are emitted BEFORE the VLAN subinterfaces that nest on
