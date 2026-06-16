@@ -90,6 +90,22 @@ def test_acl_to_policies():
     assert svc.protocol == "icmp" and svc.icmp_type == 0  # echo-reply
 
 
+def test_port_operator_unbounded_fails_closed():
+    # 'gt 65535' / 'lt 1' / 'lt 0' match no ports and FortiOS cannot express
+    # them. They must fail closed (ok=False -> policy emitted disabled for
+    # review), never an inverted range like '65536-65535' / '1-0' left enabled
+    # (which would also break the service table on load). Regression for the
+    # silent rule-broadening invariant.
+    p = cisco_asa.AsaParser("")
+    # normal operators still produce valid ranges
+    assert p.parse_port_spec(["gt", "33433"], None) == ("33434-65535", True)
+    assert p.parse_port_spec(["lt", "1024"], None) == ("1-1023", True)
+    # boundaries that match nothing -> fail closed
+    assert p.parse_port_spec(["gt", "65535"], None) == ("", False)
+    assert p.parse_port_spec(["lt", "1"], None) == ("", False)
+    assert p.parse_port_spec(["lt", "0"], None) == ("", False)
+
+
 def test_nat():
     cfg, _ = parse()
     assert len(cfg.nats) == 1

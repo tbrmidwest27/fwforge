@@ -235,13 +235,31 @@ class AsaParser:
             p = self._resolve_port(toks.pop(0), ref)
             if p is None:
                 return "", False
-            return f"{int(p) + 1}-65535", True
+            lo = int(p) + 1
+            if lo > 65535:
+                # 'gt 65535' (or higher) matches no ports and FortiOS can't
+                # express it. Fail closed like 'neq' -> the policy is emitted
+                # disabled for review, instead of an inverted range such as
+                # '65536-65535' left enabled (which also breaks the service
+                # table on load).
+                self.note("warn", "services",
+                          f"port operator 'gt {p}' matches no ports; "
+                          "rule disabled for review", ref)
+                return "", False
+            return f"{lo}-65535", True
         if op == "lt" and len(toks) >= 2:
             toks.pop(0)
             p = self._resolve_port(toks.pop(0), ref)
             if p is None:
                 return "", False
-            return f"1-{int(p) - 1}", True
+            hi = int(p) - 1
+            if hi < 1:
+                # 'lt 1'/'lt 0' matches no ports; see the 'gt' note above.
+                self.note("warn", "services",
+                          f"port operator 'lt {p}' matches no ports; "
+                          "rule disabled for review", ref)
+                return "", False
+            return f"1-{hi}", True
         if op == "neq":
             # converting 'not-equal' would silently broaden the rule
             return "", False
