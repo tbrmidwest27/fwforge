@@ -112,6 +112,31 @@ class AppList:
 
 
 @dataclass
+class WebFilterProfile:
+    """FortiOS webfilter profile (from PAN URL-filtering conversion).
+
+    filters = (FortiGuard category id, action) pairs; action is a FortiOS
+    ftgd-wf action (block | warning | authenticate | monitor)."""
+
+    name: str
+    filters: list = field(default_factory=list)  # list[tuple[int, str]]
+    comment: str | None = None
+    source: SourceRef | None = None
+
+
+@dataclass
+class FileFilterProfile:
+    """FortiOS file-filter profile (from PAN file-blocking conversion).
+
+    rules = dicts {name, action ('block'|'log'), file_types: list[str]}."""
+
+    name: str
+    rules: list = field(default_factory=list)
+    comment: str | None = None
+    source: SourceRef | None = None
+
+
+@dataclass
 class Policy:
     name: str = ""
     src_zones: list[str] = field(default_factory=list)  # interface/zone names
@@ -128,6 +153,8 @@ class Policy:
     comment: str | None = None
     dst_inferred: bool = False  # dstintf derived from routing, not the source
     app_list: str = ""  # FortiOS application-list profile name (App-ID)
+    webfilter: str = ""  # FortiOS webfilter profile name (PAN URL-filtering)
+    file_filter: str = ""  # FortiOS file-filter profile (PAN file-blocking)
     family: int = 0  # 0 = derive from addresses, 4, or 6
     source: SourceRef | None = None
 
@@ -246,6 +273,8 @@ class FirewallConfig:
     services: list[Service] = field(default_factory=list)
     svc_groups: list[ServiceGroup] = field(default_factory=list)
     app_lists: list[AppList] = field(default_factory=list)
+    webfilters: list[WebFilterProfile] = field(default_factory=list)
+    file_filters: list[FileFilterProfile] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
     vips: list[Vip] = field(default_factory=list)
     nats: list[NatRule] = field(default_factory=list)

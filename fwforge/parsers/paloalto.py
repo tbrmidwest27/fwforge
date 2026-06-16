@@ -27,6 +27,7 @@ from ..model import (
     Address,
     AddressGroup,
     AppList,
+    FileFilterProfile,
     FirewallConfig,
     Interface,
     NatRule,
@@ -35,10 +36,13 @@ from ..model import (
     ServiceGroup,
     SourceRef,
     Vip,
+    WebFilterProfile,
     Zone,
 )
 from . import _vpn_common as vpn
 from . import pan_appid
+from . import pan_filetype
+from . import pan_urlcat
 
 LINE = "__line__"
 
@@ -493,6 +497,7 @@ class PaloParser:
         self.parse_services(vsys.get("service"))
         self.parse_svc_groups(vsys.get("service-group"))
         self.parse_applications(vsys)
+        self.parse_profiles(vsys)
         rulebase = vsys.get("rulebase", {})
         local_rules: list = []
         nat_rules = None
@@ -1193,10 +1198,8 @@ class PaloParser:
                     f"rule '{name}' uses service=application-default with "
                     "application=any — converted as ALL, tighten manually",
                     ref)
-            if "profile-setting" in r:
-                self.note("info", "policies",
-                          f"rule '{name}': security profiles not converted "
-                          "— attach FortiOS UTM profiles manually", ref)
+            webfilter, file_filter = self._resolve_profile_setting(
+                r, name, ref)
 
             pol = Policy(
                 name=name,
@@ -1214,6 +1217,8 @@ class PaloParser:
                 src_negate=str(r.get("negate-source", "no")) == "yes",
                 dst_negate=str(r.get("negate-destination", "no")) == "yes",
                 app_list=app_list,
+                webfilter=webfilter,
+                file_filter=file_filter,
                 source=ref,
             )
             if action not in ("allow", "deny", "drop"):
@@ -1282,6 +1287,197 @@ class PaloParser:
         self.note("warn", "policies", msg
                   + ". Category-level control approximates PAN's per-app "
                   "match; verify and tighten.", ref)
+        return name
+
+    # ---- security profiles: PAN url-filtering / file-blocking -> FortiOS ----
+
+    def parse_profiles(self, vsys: dict) -> None:
+        """Index PAN security-profile definitions and profile-groups so a
+        rule's profile-setting can resolve them. Definitions are read here;
+        the FortiOS profiles are built lazily (and deduped) when a rule
+        actually references one. Shared/Panorama profiles already merged in."""
+        self._url_profiles: dict = {}    # name -> {pan action: [categories]}
+        self._file_profiles: dict = {}   # name -> [ {name, action, types} ]
+        self._profile_groups: dict = {}  # group -> {url, file, other}
+        profs = vsys.get("profiles")
+        if isinstance(profs, dict):
+            for name, p in _entries(profs.get("url-filtering")):
+                self._url_profiles[name] = {
+                    a: _as_list(p.get(a)) for a in
+                    ("block", "override", "continue", "alert", "allow")}
+            for name, p in _entries(profs.get("file-blocking")):
+                rules = []
+                for rname, r in _entries(p.get("rules")):
+                    rules.append({
+                        "name": rname,
+                        "action": str(r.get("action", "alert")).strip().lower(),
+                        "types": _as_list(r.get("file-type"))})
+                self._file_profiles[name] = rules
+        for gname, g in _entries(vsys.get("profile-group")):
+            url = _as_list(g.get("url-filtering"))
+            fb = _as_list(g.get("file-blocking"))
+            self._profile_groups[gname] = {
+                "url": url[0] if url else "",
+                "file": fb[0] if fb else "",
+                "other": [t for t in ("virus", "spyware", "vulnerability",
+                                      "wildfire-analysis", "data-filtering")
+                          if g.get(t)]}
+
+    def _resolve_profile_setting(self, r: dict, rule: str,
+                                 ref: SourceRef) -> tuple[str, str]:
+        """A rule's profile-setting -> (webfilter name, file-filter name).
+        Resolves a profile-group or direct refs; converts url-filtering +
+        file-blocking; flags the profiles fwforge does NOT convert (AV /
+        anti-spyware / vulnerability / WildFire / data-filtering)."""
+        ps = r.get("profile-setting")
+        if not isinstance(ps, dict):
+            return "", ""
+        url_name = file_name = ""
+        other: list[str] = []
+        grp = _as_list(ps.get("group"))
+        if grp:
+            g = self._profile_groups.get(grp[0], {})
+            url_name, file_name = g.get("url", ""), g.get("file", "")
+            other = list(g.get("other", []))
+        prof = ps.get("profiles")
+        if isinstance(prof, dict):
+            u = _as_list(prof.get("url-filtering"))
+            f = _as_list(prof.get("file-blocking"))
+            if u:
+                url_name = u[0]
+            if f:
+                file_name = f[0]
+            other += [t for t in ("virus", "spyware", "vulnerability",
+                                  "wildfire-analysis", "data-filtering")
+                      if prof.get(t)]
+        wf = self._webfilter_for(url_name, rule, ref) if url_name else ""
+        ff = self._filefilter_for(file_name, rule, ref) if file_name else ""
+        if other:
+            self.note("info", "policies",
+                      f"rule '{rule}': PAN {', '.join(sorted(set(other)))} "
+                      "profile(s) not converted (signature/AV-level) — attach "
+                      "FortiOS antivirus/IPS profiles manually", ref)
+        return wf, ff
+
+    @staticmethod
+    def _safe_prof(prefix: str, name: str) -> str:
+        clean = re.sub(r"[^A-Za-z0-9_.-]", "_", name or "").strip("_") or "x"
+        return f"{prefix}{clean}"[:47]
+
+    def _webfilter_for(self, pan_name: str, rule: str, ref: SourceRef) -> str:
+        """Build (deduped by source name) a FortiOS webfilter profile from a
+        PAN url-filtering profile. Returns the FortiOS profile name, or ''."""
+        cache = self.cfg.meta.setdefault("_webfilter_cache", {})
+        if pan_name in cache:
+            return cache[pan_name]
+        acts = self._url_profiles.get(pan_name)
+        if acts is None:
+            self.note("warn", "policies",
+                      f"rule '{rule}': url-filtering profile '{pan_name}' "
+                      "referenced but not defined — add web filtering "
+                      "manually", ref)
+            return ""
+        filters: dict[int, str] = {}   # ftgd id -> action (strictest wins)
+        unmapped: list[str] = []
+        risk: list[str] = []
+        for pan_act in ("block", "override", "continue", "alert"):
+            for cat in acts.get(pan_act, []):
+                cl = cat.strip().lower()
+                if cl in pan_urlcat.RISK_BUCKETS:
+                    if cl not in risk:
+                        risk.append(cl)
+                    continue
+                ids = pan_urlcat.to_ftgd(cl)
+                if not ids:
+                    if cl not in unmapped:
+                        unmapped.append(cl)
+                    continue
+                for i in ids:
+                    filters.setdefault(i, pan_urlcat.ACTION[pan_act])
+        if not filters:
+            if unmapped or risk:
+                self.note("warn", "policies",
+                          f"rule '{rule}': url-filtering '{pan_name}' has no "
+                          "mappable FortiGuard categories "
+                          f"({', '.join(unmapped + risk)}) — add web filtering "
+                          "manually", ref)
+            return ""
+        name = self._safe_prof("wf-", pan_name)
+        self.cfg.webfilters.append(WebFilterProfile(
+            name=name, filters=sorted(filters.items()),
+            comment=f"from PAN url-filtering '{pan_name}'", source=ref))
+        cache[pan_name] = name
+        plural = "y" if len(filters) == 1 else "ies"
+        msg = (f"rule '{rule}': url-filtering '{pan_name}' -> webfilter "
+               f"'{name}' ({len(filters)} FortiGuard categor{plural})")
+        if risk:
+            msg += (f"; PAN risk-level categor(ies) {', '.join(risk)} have no "
+                    "FortiGuard equivalent — set manually")
+        if unmapped:
+            msg += f"; UNMAPPED (add manually): {', '.join(unmapped)}"
+        self.note("warn", "policies", msg + ". Category-level filtering "
+                  "approximates PAN; verify and tighten.", ref)
+        return name
+
+    def _filefilter_for(self, pan_name: str, rule: str, ref: SourceRef) -> str:
+        """Build (deduped) a FortiOS file-filter profile from a PAN file-
+        blocking profile. Returns the FortiOS profile name, or ''."""
+        cache = self.cfg.meta.setdefault("_filefilter_cache", {})
+        if pan_name in cache:
+            return cache[pan_name]
+        rules = self._file_profiles.get(pan_name)
+        if rules is None:
+            self.note("warn", "policies",
+                      f"rule '{rule}': file-blocking profile '{pan_name}' "
+                      "referenced but not defined — add file filtering "
+                      "manually", ref)
+            return ""
+        out_rules = []
+        unmapped: list[str] = []
+        catch_all = False
+        for idx, r in enumerate(rules, start=1):
+            ftypes: list[str] = []
+            for t in r["types"]:
+                tl = t.strip().lower()
+                if tl in pan_filetype.CATCH_ALL:
+                    catch_all = True
+                    continue
+                mapped = pan_filetype.to_forti(tl)
+                if not mapped:
+                    if tl not in unmapped:
+                        unmapped.append(tl)
+                    continue
+                for m in mapped:
+                    if m not in ftypes:
+                        ftypes.append(m)
+            if not ftypes:
+                continue
+            out_rules.append({
+                "name": self._safe_prof("", r["name"]) or f"r{idx}",
+                "action": pan_filetype.ACTION.get(r["action"], "block"),
+                "file_types": ftypes})
+        if not out_rules:
+            if catch_all or unmapped:
+                self.note("warn", "policies",
+                          f"rule '{rule}': file-blocking '{pan_name}' has no "
+                          "mappable file types"
+                          + (f" ({', '.join(unmapped)})" if unmapped else "")
+                          + (" (PAN 'any')" if catch_all else "")
+                          + " — add file filtering manually", ref)
+            return ""
+        name = self._safe_prof("ff-", pan_name)
+        self.cfg.file_filters.append(FileFilterProfile(
+            name=name, rules=out_rules,
+            comment=f"from PAN file-blocking '{pan_name}'", source=ref))
+        cache[pan_name] = name
+        msg = (f"rule '{rule}': file-blocking '{pan_name}' -> file-filter "
+               f"'{name}' ({len(out_rules)} rule(s))")
+        if catch_all:
+            msg += ("; PAN 'any' file-type can't be a finite FortiOS list — "
+                    "verify coverage")
+        if unmapped:
+            msg += f"; UNMAPPED file-type(s): {', '.join(unmapped)}"
+        self.note("warn", "policies", msg, ref)
         return name
 
     def _zone_single_member(self, zone_name: str) -> str:
@@ -1726,6 +1922,9 @@ class PaloParser:
                          "service-group", "rulebase", "import",
                          "application", "application-group",
                          "application-filter",
+                         # profiles: url-filtering + file-blocking ARE read
+                         # (other profile types flagged per-rule)
+                         "profiles", "profile-group",
                          # device-group / Panorama mode: these ARE read
                          "pre-rulebase", "post-rulebase", "parent-dg",
                          LINE}

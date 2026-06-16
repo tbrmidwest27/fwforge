@@ -505,6 +505,137 @@ def test_authoring_promote_pipeline_emit():
     assert any("promoted from physical" in f.message for f in res.report.findings)
 
 
+# a PAN config with url-filtering + file-blocking profiles, a profile-group,
+# and rules referencing them directly and via the group
+PROFCFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip><entry name="10.0.0.1/24"/></ip></layer3></entry>
+    <entry name="ethernet1/2"><layer3><ip><entry name="10.0.1.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone>
+      <entry name="trust"><network><layer3><member>ethernet1/1</member></layer3></network></entry>
+      <entry name="untrust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+    </zone>
+    <profiles>
+      <url-filtering>
+        <entry name="url-strict">
+          <block><member>malware</member><member>phishing</member><member>command-and-control</member></block>
+          <alert><member>social-networking</member><member>high-risk</member><member>copyright-infringement</member></alert>
+          <continue><member>streaming-media</member></continue>
+          <override><member>gambling</member></override>
+        </entry>
+      </url-filtering>
+      <file-blocking>
+        <entry name="block-exe">
+          <rules><entry name="r1">
+            <action>block</action>
+            <file-type><member>exe</member><member>msoffice</member></file-type>
+            <direction>both</direction>
+          </entry></rules>
+        </entry>
+      </file-blocking>
+    </profiles>
+    <profile-group><entry name="pg1">
+      <url-filtering><member>url-strict</member></url-filtering>
+      <file-blocking><member>block-exe</member></file-blocking>
+      <virus><member>av-default</member></virus>
+    </entry></profile-group>
+    <rulebase><security><rules>
+      <entry name="r-direct">
+        <from><member>trust</member></from><to><member>untrust</member></to>
+        <source><member>any</member></source><destination><member>any</member></destination>
+        <service><member>any</member></service><application><member>any</member></application>
+        <action>allow</action>
+        <profile-setting><profiles>
+          <url-filtering><member>url-strict</member></url-filtering>
+          <file-blocking><member>block-exe</member></file-blocking>
+          <virus><member>av-default</member></virus>
+        </profiles></profile-setting>
+      </entry>
+      <entry name="r-group">
+        <from><member>trust</member></from><to><member>untrust</member></to>
+        <source><member>any</member></source><destination><member>any</member></destination>
+        <service><member>any</member></service><application><member>any</member></application>
+        <action>allow</action>
+        <profile-setting><group><member>pg1</member></group></profile-setting>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_url_filtering_to_webfilter():
+    cfg = paloalto.parse(PROFCFG, "prof.xml")
+    wfs = cfg.webfilters
+    assert len(wfs) == 1                       # deduped across both rules
+    wf = wfs[0]
+    assert wf.name == "wf-url-strict"
+    f = dict(wf.filters)                        # ftgd id -> action
+    assert f[26] == "block"                    # malware / command-and-control
+    assert f[61] == "block"                    # phishing
+    assert f[37] == "monitor"                  # social-networking (alert)
+    assert f[25] == "warning"                  # streaming-media (continue)
+    assert f[11] == "authenticate"             # gambling (override)
+    # both policies reference the one profile
+    assert all(p.webfilter == "wf-url-strict" for p in cfg.policies)
+
+
+def test_url_filtering_flags_risk_and_unmapped():
+    cfg = paloalto.parse(PROFCFG, "prof.xml")
+    msgs = " ".join(m for _, _, m, _ in findings(cfg))
+    assert "high-risk" in msgs                 # PAN risk bucket flagged
+    assert "copyright-infringement" in msgs    # unmapped category flagged
+
+
+def test_file_blocking_to_file_filter():
+    cfg = paloalto.parse(PROFCFG, "prof.xml")
+    ffs = cfg.file_filters
+    assert len(ffs) == 1                        # deduped
+    ff = ffs[0]
+    assert ff.name == "ff-block-exe"
+    assert ff.rules[0]["action"] == "block"
+    # PAN "msoffice" covers legacy + OOXML -> both FortiOS types
+    assert ff.rules[0]["file_types"] == ["exe", "msoffice", "msofficex"]
+    assert all(p.file_filter == "ff-block-exe" for p in cfg.policies)
+
+
+def test_unconverted_profiles_still_flagged():
+    cfg = paloalto.parse(PROFCFG, "prof.xml")
+    msgs = " ".join(m for _, _, m, _ in findings(cfg))
+    # AV / signature-level profiles are NOT converted, but ARE flagged
+    assert "not converted" in msgs and "virus" in msgs
+
+
+def test_profiles_pipeline_emit():
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        PROFCFG, "paloalto", "prof.xml",
+        {"ethernet1/1": "port1", "ethernet1/2": "port2"}, target="7.4")
+    conf = res.out_text
+    assert "config webfilter profile" in conf and 'edit "wf-url-strict"' in conf
+    assert "config ftgd-wf" in conf and "set category 26" in conf
+    assert "set action authenticate" in conf       # override -> authenticate
+    assert "config file-filter profile" in conf
+    assert 'set file-type "exe" "msoffice"' in conf
+    # policies attach the profiles + an SSL-inspection profile
+    assert 'set webfilter-profile "wf-url-strict"' in conf
+    assert 'set file-filter-profile "ff-block-exe"' in conf
+    assert 'set ssl-ssh-profile "certificate-inspection"' in conf
+    # one profile def, referenced by both policies
+    assert conf.count('edit "wf-url-strict"') == 1
+    assert conf.count('set webfilter-profile "wf-url-strict"') == 2
+
+
+def test_pan_urlcat_mapping():
+    from fwforge.parsers import pan_urlcat
+    assert pan_urlcat.to_ftgd("malware") == [26]
+    assert pan_urlcat.to_ftgd("alcohol-and-tobacco") == [64, 65]  # expands
+    assert pan_urlcat.to_ftgd("no-such-category") == []
+    assert "high-risk" in pan_urlcat.RISK_BUCKETS
+
+
 def test_aggregate_lacp_mode_parsed():
     import re
     passive = AGGCFG.replace("<mode>active</mode>", "<mode>passive</mode>")

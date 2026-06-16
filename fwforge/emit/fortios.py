@@ -146,6 +146,8 @@ class Emitter:
         self.services()
         self.svc_groups()
         self.app_lists()
+        self.webfilter()
+        self.file_filter()
         self.vpn()
         self.vips()
         if self.nat_mode == "central":
@@ -465,6 +467,65 @@ class Emitter:
             "from PAN App-ID (category-level). Policies using them get "
             "'set application-list'; attach a deep-inspection ssl-ssh "
             "profile if you need control over encrypted apps.")
+
+    def webfilter(self):
+        """FortiGuard category webfilter profiles (from PAN url-filtering)."""
+        if not self.cfg.webfilters:
+            return
+        self.line()
+        self.line("config webfilter profile")
+        for wf in self.cfg.webfilters:
+            self.line(f"    edit {_q(wf.name)}")
+            if wf.comment:
+                self.line(f"        set comment {_q(wf.comment[:255])}")
+            self.line("        config ftgd-wf")
+            self.line("            config filters")
+            for i, (cat, action) in enumerate(wf.filters, start=1):
+                self.line(f"                edit {i}")
+                self.line(f"                    set category {cat}")
+                self.line(f"                    set action {action}")
+                self.line("                next")
+            self.line("            end")
+            self.line("        end")
+            self.line("    next")
+        self.line("end")
+        self.report.add(
+            "info", "policies",
+            f"{len(self.cfg.webfilters)} webfilter profile(s) created from "
+            "PAN url-filtering (FortiGuard category-level). Attached policies "
+            "use the built-in 'certificate-inspection' SSL profile; switch to "
+            "'deep-inspection' (needs the FortiGate CA on clients) for full "
+            "URL-path / HTTPS content filtering.")
+
+    def file_filter(self):
+        """File-filter profiles (from PAN file-blocking)."""
+        if not self.cfg.file_filters:
+            return
+        self.line()
+        self.line("config file-filter profile")
+        for ff in self.cfg.file_filters:
+            self.line(f"    edit {_q(ff.name)}")
+            if ff.comment:
+                self.line(f"        set comment {_q(ff.comment[:255])}")
+            self.line("        config rules")
+            for r in ff.rules:
+                self.line(f"            edit {_q(r['name'])}")
+                self.line(f"                set action {r['action']}")
+                self.line("                set direction any")
+                self.line("                set protocol http ftp smtp imap "
+                          "pop3 mapi cifs ssh")
+                self.line("                set file-type "
+                          + " ".join(_q(t) for t in r["file_types"]))
+                self.line("            next")
+            self.line("        end")
+            self.line("    next")
+        self.line("end")
+        self.report.add(
+            "info", "policies",
+            f"{len(self.cfg.file_filters)} file-filter profile(s) created from "
+            "PAN file-blocking. Inspects HTTP/FTP/SMTP/IMAP/POP3/MAPI/CIFS/SSH; "
+            "encrypted-archive detection is an antivirus feature, not "
+            "file-filter — review if the source blocked encrypted files.")
 
     def vpn(self):
         cfg = self.cfg
@@ -807,9 +868,22 @@ class Emitter:
                       + " ".join(_q(s) for s in (p.services or ["ALL"])))
             self.line("        set logtraffic "
                       + ("all" if p.log else "disable"))
-            if p.app_list:
+            if p.app_list or p.webfilter or p.file_filter:
                 self.line("        set utm-status enable")
-                self.line(f"        set application-list {_q(p.app_list)}")
+                # category webfilter / file-filter need an SSL-inspection
+                # profile; the built-in certificate-inspection (SNI-based)
+                # needs no CA rollout. app-control alone keeps prior behavior.
+                if p.webfilter or p.file_filter:
+                    self.line('        set ssl-ssh-profile '
+                              '"certificate-inspection"')
+                if p.app_list:
+                    self.line(f"        set application-list {_q(p.app_list)}")
+                if p.webfilter:
+                    self.line("        set webfilter-profile "
+                              f"{_q(p.webfilter)}")
+                if p.file_filter:
+                    self.line("        set file-filter-profile "
+                              f"{_q(p.file_filter)}")
             nat_hit = any(
                 (sz, dz) in nat_pairs or ("*", dz) in nat_pairs
                 for sz in (p.src_zones or [])

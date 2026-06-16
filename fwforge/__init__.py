@@ -1,3 +1,3 @@
 """fwforge — open firewall config converter targeting FortiOS."""
 
-__version__ = "0.48.1"
+__version__ = "0.49.0"

@@ -256,6 +256,37 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.49.0 — shipped 2026-06-16 (PAN security profiles: URL filtering → webfilter, file blocking → file-filter)
+Converts the two PAN security-profile types that are category/type-level
+(clean-room-safe). Before this, only App-ID → application-control was generated;
+everything else under `profile-setting` was flagged "attach manually".
+- **URL filtering → FortiOS webfilter (FortiGuard category) profile.** New
+  clean-room map `parsers/pan_urlcat.py` (PAN category → FortiGuard category
+  id). The ~93 FortiGuard category IDs were **VERIFIED live** against the 601F
+  (FortiOS 8.0.0 b0167) via `GET /api/v2/monitor/webfilter/fortiguard-categories`.
+  PAN per-category action → ftgd-wf action (block→block, alert→monitor,
+  continue→warning, override→authenticate; allow dropped). One PAN category can
+  expand to several FortiGuard ones (alcohol-and-tobacco → Alcohol + Tobacco).
+  PAN risk-level buckets (high/medium/low-risk, real-time-detection) and any
+  unmapped category are FLAGGED, never guessed.
+- **File blocking → FortiOS file-filter profile.** New map
+  `parsers/pan_filetype.py` (PAN file-type → FortiOS file-type; valid FortiOS
+  types verified live via `/cmdb/antivirus/filetype`). PAN action →
+  file-filter action (block / log-only / warning). "any" + unmapped types flagged.
+- **Parser**: `parse_profiles` reads `profiles/url-filtering` + `file-blocking`
+  + `profile-group`; a rule's `profile-setting` (direct or via group) resolves
+  to a webfilter + file-filter profile, built lazily and deduped by source
+  name. Shared/Panorama profiles already merge into the vsys scope. AV /
+  anti-spyware / vulnerability / WildFire / data-filtering stay UNCONVERTED
+  (signature-level, clean-room-blocked) but are flagged per rule.
+- **Emit**: `config webfilter profile` (ftgd-wf filters) + `config file-filter
+  profile`; policies get `set utm-status enable` + `set ssl-ssh-profile
+  "certificate-inspection"` (SNI-based, no CA rollout) + `set webfilter-profile`
+  / `set file-filter-profile`. The whole emitted shape is **SCHEMA-CERTIFIED
+  clean** (0 unknown tables/attrs) against the live 601F 8.0 schema.
+- model: `WebFilterProfile`, `FileFilterProfile` + `cfg.webfilters` /
+  `.file_filters` + `Policy.webfilter` / `.file_filter`. 284 tests (+6).
+
 ### v0.48.1 — shipped 2026-06-16 ("do not map" option + faceplate/LAG fixes)
 Review feedback off a live PAN→701G run.
 - **"— do not map —" dropdown option** on every physical-port row: leaves
