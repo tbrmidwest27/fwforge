@@ -154,6 +154,7 @@ class AvProfile:
 
     name: str
     protocols: dict = field(default_factory=dict)
+    sandbox: bool = False  # PAN WildFire -> analytics-db + per-proto fortisandbox
     comment: str | None = None
     source: SourceRef | None = None
 

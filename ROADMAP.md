@@ -256,6 +256,25 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.52.2 — shipped 2026-06-16 (PAN WildFire → FortiOS FortiSandbox, folded into the AV profile)
+FortiOS submits files to FortiSandbox from *inside* the antivirus profile, so
+WildFire conversion couples to AV (verified on the 601F).
+- A rule's `wildfire-analysis` reference (direct or via profile-group) enables
+  FortiSandbox on that rule's antivirus profile: profile-level
+  `set analytics-db enable` + per-protocol `set fortisandbox block`.
+- AV + WildFire on one rule → one `av-<virus>-wf` profile; WildFire with no
+  antivirus → a derived `av-wildfire-wf` (AV-scan + sandbox on the common
+  protocols). Deduped by (virus, wildfire) so a virus profile used with and
+  without WildFire yields distinct, correctly-named profiles.
+- Loudly flagged: FortiSandbox **requires** a device-level
+  `config system fortisandbox` (appliance or FortiSandbox Cloud), which is not
+  part of the converted policy package — PAN public-cloud ≈ FortiSandbox Cloud,
+  private-cloud ≈ a FortiSandbox appliance.
+- Only **Data Filtering → DLP** now remains unconverted among PAN profile types.
+- model: AvProfile.sandbox. Verified e2e vs the live 601F (AV+WildFire and
+  WildFire-only profiles), schema-cert clean (0 unknown tables/attrs).
+  332 tests (+2).
+
 ### v0.52.1 — shipped 2026-06-16 (PAN custom URL categories → FortiOS webfilter urlfilter tables)
 Per-URL fidelity to complement the FortiGuard category mapping. Real enterprise
 PAN profiles lean on explicit allow/block URL lists; before this only the

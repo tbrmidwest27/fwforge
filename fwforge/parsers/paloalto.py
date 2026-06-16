@@ -1427,20 +1427,20 @@ class PaloParser:
                 "virus": (_as_list(g.get("virus")) or [""])[0],
                 "vulnerability": (_as_list(g.get("vulnerability")) or [""])[0],
                 "spyware": (_as_list(g.get("spyware")) or [""])[0],
-                "other": [t for t in ("wildfire-analysis", "data-filtering")
-                          if g.get(t)]}
+                "wildfire": (_as_list(g.get("wildfire-analysis")) or [""])[0],
+                "other": [t for t in ("data-filtering",) if g.get(t)]}
 
     def _resolve_profile_setting(self, r: dict, rule: str,
                                  ref: SourceRef) -> tuple[str, str, str, str]:
         """A rule's profile-setting -> (webfilter, file-filter, antivirus,
         ips-sensor) FortiOS profile names. Resolves a profile-group or direct
-        refs; converts url-filtering + file-blocking + antivirus +
-        anti-spyware/vulnerability (-> IPS). Only WildFire (-> FortiSandbox)
-        and Data Filtering (-> DLP) are left for manual config."""
+        refs; converts url-filtering + file-blocking + antivirus (+ WildFire ->
+        FortiSandbox folded into the AV profile) + anti-spyware/vulnerability
+        (-> IPS). Only Data Filtering (-> DLP) is left for manual config."""
         ps = r.get("profile-setting")
         if not isinstance(ps, dict):
             return "", "", "", ""
-        url_name = file_name = virus_name = vuln_name = spy_name = ""
+        url_name = file_name = virus_name = vuln_name = spy_name = wf_name = ""
         other: list[str] = []
         grp = _as_list(ps.get("group"))
         if grp:
@@ -1449,6 +1449,7 @@ class PaloParser:
             virus_name = g.get("virus", "")
             vuln_name = g.get("vulnerability", "")
             spy_name = g.get("spyware", "")
+            wf_name = g.get("wildfire", "")
             other = list(g.get("other", []))
         prof = ps.get("profiles")
         if isinstance(prof, dict):
@@ -1457,6 +1458,7 @@ class PaloParser:
             v = _as_list(prof.get("virus"))
             vu = _as_list(prof.get("vulnerability"))
             sp = _as_list(prof.get("spyware"))
+            wfa = _as_list(prof.get("wildfire-analysis"))
             if u:
                 url_name = u[0]
             if f:
@@ -1467,19 +1469,21 @@ class PaloParser:
                 vuln_name = vu[0]
             if sp:
                 spy_name = sp[0]
-            other += [t for t in ("wildfire-analysis", "data-filtering")
-                      if prof.get(t)]
+            if wfa:
+                wf_name = wfa[0]
+            other += [t for t in ("data-filtering",) if prof.get(t)]
         wf = self._webfilter_for(url_name, rule, ref) if url_name else ""
         ff = self._filefilter_for(file_name, rule, ref) if file_name else ""
-        av = self._antivirus_for(virus_name, rule, ref) if virus_name else ""
+        av = (self._antivirus_for(virus_name, rule, ref,
+                                  wildfire=bool(wf_name))
+              if virus_name or wf_name else "")
         ips = (self._ips_sensor_for(vuln_name, spy_name, rule, ref)
                if vuln_name or spy_name else "")
         if other:
             self.note("info", "policies",
                       f"rule '{rule}': PAN {', '.join(sorted(set(other)))} "
-                      "profile(s) not converted — WildFire maps to "
-                      "FortiSandbox / inline-AV and Data Filtering to DLP; "
-                      "configure manually", ref)
+                      "profile(s) not converted — Data Filtering maps to "
+                      "FortiOS DLP; configure manually", ref)
         return wf, ff, av, ips
 
     @staticmethod
@@ -1508,17 +1512,20 @@ class PaloParser:
                   "drop": "block", "reset-both": "block",
                   "reset-client": "block", "reset-server": "block"}
 
-    def _antivirus_for(self, pan_name: str, rule: str, ref: SourceRef) -> str:
-        """Build (deduped) a FortiOS antivirus profile from a PAN virus
-        profile. The FortiGuard engine + signatures do the scanning; only the
-        per-protocol scan intent is carried. Returns the profile name, or ''."""
+    def _antivirus_for(self, pan_name: str, rule: str, ref: SourceRef,
+                       wildfire: bool = False) -> str:
+        """Build (deduped) a FortiOS antivirus profile from a PAN virus profile
+        (+ WildFire -> FortiSandbox submission folded in when `wildfire`). The
+        FortiGuard engine + signatures do the scanning; only the per-protocol
+        scan intent is carried. Returns the profile name, or ''."""
         cache = self.cfg.meta.setdefault("_av_cache", {})
-        if pan_name in cache:
-            return cache[pan_name]
+        ckey = (pan_name, wildfire)
+        if ckey in cache:
+            return cache[ckey]
         decoders = self._virus_profiles.get(pan_name)
         derived = decoders is None
         if derived:
-            # PAN built-in 'default'/'strict' (or referenced-but-undefined):
+            # PAN built-in 'default'/'strict', undefined, or WildFire-only:
             # emit a sensible AV profile scanning the common protocols
             decoders = {p: "default" for p in
                         ("http", "smtp", "imap", "pop3", "ftp")}
@@ -1529,15 +1536,22 @@ class PaloParser:
                 protocols[fproto] = self._AV_ACTION.get(action, "block")
         if not protocols:
             return ""
-        name = self._safe_prof("av-", pan_name)
+        base = pan_name or "wildfire"
+        name = self._safe_prof("av-", base + ("-wf" if wildfire else ""))
         self.cfg.av_profiles.append(AvProfile(
-            name=name, protocols=protocols,
-            comment=f"from PAN antivirus '{pan_name}'", source=ref))
-        cache[pan_name] = name
+            name=name, protocols=protocols, sandbox=wildfire,
+            comment=(f"from PAN antivirus '{pan_name}'" if pan_name
+                     else "from PAN WildFire analysis"), source=ref))
+        cache[ckey] = name
         scanned = [p for p, a in protocols.items() if a != "disable"]
-        msg = (f"rule '{rule}': antivirus '{pan_name}' -> av-profile '{name}' "
+        label = pan_name or "WildFire-only"
+        msg = (f"rule '{rule}': antivirus '{label}' -> av-profile '{name}' "
                f"(scanning {', '.join(scanned) or '(none)'})")
-        if derived:
+        if wildfire:
+            msg += ("; WildFire -> FortiSandbox (analytics-db + per-protocol "
+                    "fortisandbox) — REQUIRES a FortiSandbox appliance/Cloud "
+                    "via 'config system fortisandbox'")
+        if derived and pan_name:
             msg += ("; PAN built-in/undefined AV profile — defaulted to block "
                     "on common protocols, verify")
         msg += (". FortiGuard AV engine/signatures apply; scanning HTTPS needs "

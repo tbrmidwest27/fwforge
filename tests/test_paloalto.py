@@ -570,7 +570,7 @@ PROFCFG = """<config version="11.0.0"><devices>
           <file-blocking><member>block-exe</member></file-blocking>
           <virus><member>av-default</member></virus>
           <spyware><member>strict</member></spyware>
-          <wildfire-analysis><member>default</member></wildfire-analysis>
+          <data-filtering><member>default</member></data-filtering>
         </profiles></profile-setting>
       </entry>
       <entry name="r-group">
@@ -645,9 +645,9 @@ def test_file_blocking_to_file_filter():
 def test_unconverted_profiles_still_flagged():
     cfg = paloalto.parse(PROFCFG, "prof.xml")
     msgs = " ".join(m for _, _, m, _ in findings(cfg))
-    # only WildFire / Data Filtering remain unconverted now (AV + IPS convert);
-    # they're flagged, never dropped silently
-    assert "not converted" in msgs and "wildfire" in msgs.lower()
+    # only Data Filtering remains unconverted now (AV + IPS + WildFire convert);
+    # it's flagged, never dropped silently
+    assert "not converted" in msgs and "data" in msgs.lower()
     # the PAN built-in 'strict' anti-spyware maps to a FortiGuard stock sensor
     assert any(p.ips_sensor == "high_security" for p in cfg.policies)
 
@@ -711,6 +711,75 @@ def test_antivirus_decoder_action_mapping():
     assert av.protocols["smtp"] == "monitor"    # alert -> monitor
     assert av.protocols["ftp"] == "disable"     # allow -> disable
     assert av.protocols["cifs"] == "block"      # smb -> cifs; default -> block
+
+
+# antivirus + WildFire on one rule, and a WildFire-only rule
+WFCFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip><entry name="10.0.0.1/24"/></ip></layer3></entry>
+    <entry name="ethernet1/2"><layer3><ip><entry name="10.0.1.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone>
+      <entry name="trust"><network><layer3><member>ethernet1/1</member></layer3></network></entry>
+      <entry name="untrust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+    </zone>
+    <profiles>
+      <virus><entry name="av1"><decoder>
+        <entry name="http"><action>reset-both</action></entry>
+      </decoder></entry></virus>
+    </profiles>
+    <rulebase><security><rules>
+      <entry name="av-and-wf">
+        <from><member>trust</member></from><to><member>untrust</member></to>
+        <source><member>any</member></source><destination><member>any</member></destination>
+        <service><member>any</member></service><application><member>any</member></application>
+        <action>allow</action>
+        <profile-setting><profiles>
+          <virus><member>av1</member></virus>
+          <wildfire-analysis><member>default</member></wildfire-analysis>
+        </profiles></profile-setting>
+      </entry>
+      <entry name="wf-only">
+        <from><member>trust</member></from><to><member>untrust</member></to>
+        <source><member>any</member></source><destination><member>any</member></destination>
+        <service><member>any</member></service><application><member>any</member></application>
+        <action>allow</action>
+        <profile-setting><profiles>
+          <wildfire-analysis><member>default</member></wildfire-analysis>
+        </profiles></profile-setting>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_wildfire_to_fortisandbox():
+    cfg = paloalto.parse(WFCFG, "wf.xml")
+    # av1 + WildFire -> av-av1-wf with sandbox; WildFire-only -> av-wildfire-wf
+    byname = {a.name: a for a in cfg.av_profiles}
+    assert "av-av1-wf" in byname and byname["av-av1-wf"].sandbox is True
+    assert byname["av-av1-wf"].protocols["http"] == "block"
+    wfonly = byname.get("av-wildfire-wf")
+    assert wfonly is not None and wfonly.sandbox is True
+    pols = {p.name: p for p in cfg.policies}
+    assert pols["av-and-wf"].antivirus == "av-av1-wf"
+    assert pols["wf-only"].antivirus == "av-wildfire-wf"
+
+
+def test_wildfire_pipeline_emit():
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        WFCFG, "paloalto", "wf.xml",
+        {"ethernet1/1": "port1", "ethernet1/2": "port2"}, target="8.0")
+    conf = res.out_text
+    assert "set analytics-db enable" in conf
+    assert "set fortisandbox block" in conf
+    assert 'set av-profile "av-av1-wf"' in conf
+    # WildFire dependency surfaced in the report
+    assert any("fortisandbox" in f.message.lower()
+               for f in res.report.findings)
 
 
 IPSCFG = """<config version="11.0.0"><devices>

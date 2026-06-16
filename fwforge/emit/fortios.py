@@ -637,23 +637,34 @@ class Emitter:
             return
         self.line()
         self.line("config antivirus profile")
+        sandboxed = 0
         for av in self.cfg.av_profiles:
             self.line(f"    edit {_q(av.name)}")
             if av.comment:
                 self.line(f"        set comment {_q(av.comment[:255])}")
+            if av.sandbox:               # PAN WildFire -> FortiSandbox
+                sandboxed += 1
+                self.line("        set analytics-db enable")
             for proto, action in av.protocols.items():
                 self.line(f"        config {proto}")
                 self.line(f"            set av-scan {action}")
+                if av.sandbox:
+                    self.line("            set fortisandbox block")
                 self.line("        end")
             self.line("    next")
         self.line("end")
-        self.report.add(
-            "info", "policies",
-            f"{len(self.cfg.av_profiles)} antivirus profile(s) created from "
-            "PAN antivirus (per-protocol scan intent). The FortiGuard AV "
-            "engine and signatures do the scanning; scanning HTTPS needs a "
-            "deep-inspection ssl-ssh profile (policies attach the built-in "
-            "certificate-inspection by default).")
+        msg = (f"{len(self.cfg.av_profiles)} antivirus profile(s) created from "
+               "PAN antivirus (per-protocol scan intent). The FortiGuard AV "
+               "engine and signatures do the scanning; scanning HTTPS needs a "
+               "deep-inspection ssl-ssh profile (policies attach the built-in "
+               "certificate-inspection by default).")
+        if sandboxed:
+            msg += (f" {sandboxed} carry PAN WildFire as FortiSandbox "
+                    "submission (analytics-db + fortisandbox) — REQUIRES a "
+                    "FortiSandbox appliance or FortiSandbox Cloud configured "
+                    "via 'config system fortisandbox' (device-level, not in "
+                    "this package).")
+        self.report.add("info", "policies", msg)
 
     def ips(self):
         """IPS sensors (from PAN anti-spyware / vulnerability)."""
