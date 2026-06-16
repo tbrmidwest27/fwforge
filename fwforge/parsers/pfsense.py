@@ -261,7 +261,13 @@ class PfSenseParser:
             self.cfg.interfaces.append(itf)
 
     def parse_aliases(self):
-        for a in _items(self.tree.get("aliases", {}), "alias"):
+        aliases = list(_items(self.tree.get("aliases", {}), "alias"))
+        # first pass: collect every alias NAME so a multi-entry member can be
+        # classified reference-vs-literal by membership in this set, not by a
+        # fragile '.'/':' test — a bare single-label hostname (e.g. 'intranet')
+        # has neither and would otherwise become a phantom group member.
+        alias_names = {_s(a, "name") for a in aliases if _s(a, "name")}
+        for a in aliases:
             name = _s(a, "name")
             atype = _s(a, "type")
             entries = _s(a, "address").split()
@@ -280,12 +286,14 @@ class PfSenseParser:
             members: list[str] = []
             literals: list[str] = []
             for entry in entries:
-                # an IP/CIDR literal contains '.' or ':'; anything else is a
-                # nested alias reference
-                if "." in entry or ":" in entry:
-                    literals.append(entry)
-                else:
+                # a member that names another alias is a nested-alias
+                # reference; everything else (IP, CIDR, or a bare hostname) is
+                # a literal — the literals loop below turns a non-IP literal
+                # into an fq-<host> FQDN object
+                if entry in alias_names:
                     members.append(entry)
+                else:
+                    literals.append(entry)
             if len(entries) == 1 and literals and not members:
                 value = literals[0]
                 try:
@@ -559,11 +567,18 @@ class PfSenseParser:
                     kind="dynamic-interface", real_ifc="*",
                     mapped_ifc=wan,
                     source=self.ref(outbound, "outbound nat")))
-            self.note("info", "nat",
-                      f"outbound NAT mode '{mode}': NAT enabled on "
-                      "policies egressing "
-                      f"{', '.join(self._wan_ifcs) or 'WAN'} "
-                      "(matching pfSense's automatic source NAT)")
+            if self._wan_ifcs:
+                self.note("info", "nat",
+                          f"outbound NAT mode '{mode}': NAT enabled on "
+                          "policies egressing "
+                          f"{', '.join(self._wan_ifcs)} "
+                          "(matching pfSense's automatic source NAT)")
+            else:
+                self.note("warn", "nat",
+                          f"outbound NAT mode '{mode}' but no WAN/egress "
+                          "interface (none has a <gateway>) — NO source-NAT "
+                          "rules generated; set interface NAT manually",
+                          self.ref(outbound, "outbound nat"))
         manual_rules = _items(outbound, "rule")
         if mode in ("hybrid", "manual") and manual_rules:
             self.note("warn", "nat",
@@ -637,6 +652,16 @@ class PfSenseParser:
             internal = _s(r, "source", "")
             if isinstance(r.get("source"), dict):
                 internal = _s(r["source"], "address")
+            dest = r.get("destination")
+            if isinstance(dest, dict) and "any" not in dest:
+                dst_desc = (_s(dest, "address") or _s(dest, "network")
+                            or "(restricted)")
+                self.note("warn", "nat",
+                          f"1:1 NAT {i}: source mapping is limited to "
+                          f"destination '{dst_desc}' in pfSense, but the "
+                          "FortiOS VIP applies to ALL destinations — the "
+                          "converted VIP is broader; add a policy dstaddr "
+                          "match to restore the restriction", ref)
             if ext and internal and "/" not in internal:
                 self.cfg.vips.append(Vip(
                     name=f"vip-1to1-{i}", ext_ip=ext, mapped_ip=internal,
@@ -664,7 +689,20 @@ class PfSenseParser:
         addr = _s(node, "address")
         if addr:
             nm = _s(node, "netmask")
-            return f"{addr}/{nm}" if nm else f"{addr}/32"
+            if not nm:
+                return f"{addr}/32"
+            if nm.isdigit():
+                return f"{addr}/{nm}"          # already a prefix length
+            # dotted-quad mask (255.255.255.0) -> prefix length, else the
+            # CIDR would be invalid (10.0.0.0/255.255.255.0)
+            try:
+                plen = ipaddress.IPv4Network(f"0.0.0.0/{nm}").prefixlen
+            except ValueError:
+                self.note("warn", "vpn",
+                          f"phase2 selector netmask '{nm}' unparseable — "
+                          "selector skipped, set it manually", ref)
+                return None
+            return f"{addr}/{plen}"
         itf = self.cfg.interface_by_name(t)
         if itf and itf.ip:
             return str(ipaddress.IPv4Interface(itf.ip).network)
@@ -816,11 +854,21 @@ class PfSenseParser:
 
     def report_unconverted(self):
         for key, node in self.tree.items():
-            if key in CONSUMED or not isinstance(node, dict):
+            if key in CONSUMED:
                 continue
-            self.note("info", "coverage",
-                      f"pfSense section '{key}' not converted",
-                      self.ref(node, key))
+            if isinstance(node, list):
+                # a repeated top-level section (e.g. multiple <cert>/<ca>)
+                # becomes a list — don't let it vanish from coverage
+                anchor = next((n for n in node if isinstance(n, dict)), {})
+                self.note("info", "coverage",
+                          f"pfSense section '{key}' (x{len(node)}) not "
+                          "converted", self.ref(anchor, key))
+            else:
+                # dict or scalar (string) section
+                anchor = node if isinstance(node, dict) else {}
+                self.note("info", "coverage",
+                          f"pfSense section '{key}' not converted",
+                          self.ref(anchor, key))
 
 
 def parse(text: str, filename: str = "") -> FirewallConfig:

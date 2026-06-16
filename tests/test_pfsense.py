@@ -178,3 +178,81 @@ def test_central_nat_on_asa(tmp_path):
     assert 'set orig-addr "LAN"' in snat  # ASA object NAT carried over
     pol_section = conf[conf.index("config firewall policy"):]
     assert "set nat enable" not in pol_section
+
+
+def test_alias_bare_hostname_member_is_fqdn_not_phantom():
+    # a bare single-label hostname in a MULTI-entry host alias must become a
+    # real FQDN object, not a dangling group member (old code keyed
+    # reference-vs-literal off '.'/':' and dropped 'intranet' into the group).
+    xml = ('<?xml version="1.0"?><pfsense><version>23.3</version>'
+           '<aliases><alias><name>Hosts</name><type>host</type>'
+           '<address>10.0.0.5 intranet</address></alias></aliases></pfsense>')
+    cfg = pfsense.parse(xml, "t.xml")
+    grp = next(g for g in cfg.addr_groups if g.name == "Hosts")
+    assert "fq-intranet" in grp.members          # materialized to an FQDN obj
+    assert "intranet" not in grp.members         # not a bare phantom member
+    obj = cfg.address_by_name("fq-intranet")
+    assert obj is not None and (obj.type, obj.value) == ("fqdn", "intranet")
+    names = {a.name for a in cfg.addresses} | {g.name for g in cfg.addr_groups}
+    assert all(m in names for m in grp.members)  # nothing dangling
+
+
+def test_alias_nested_reference_still_classified_as_member():
+    xml = ('<?xml version="1.0"?><pfsense><version>23.3</version><aliases>'
+           '<alias><name>Inner</name><type>host</type>'
+           '<address>10.0.0.9</address></alias>'
+           '<alias><name>Outer</name><type>host</type>'
+           '<address>10.0.0.10 Inner</address></alias></aliases></pfsense>')
+    cfg = pfsense.parse(xml, "t.xml")
+    outer = next(g for g in cfg.addr_groups if g.name == "Outer")
+    assert "Inner" in outer.members              # nested-alias reference kept
+
+
+def test_pf_selector_dotted_quad_netmask():
+    # a dotted-quad netmask must normalize to a CIDR, not 10.0.0.0/255.255...
+    p = pfsense.PfSenseParser("<pfsense></pfsense>", "t.xml")
+    assert p._pf_selector(
+        {"address": "10.0.0.0", "netmask": "255.255.255.0"}, None) \
+        == "10.0.0.0/24"
+    assert p._pf_selector({"address": "10.0.0.0", "netmask": "24"}, None) \
+        == "10.0.0.0/24"
+    assert p._pf_selector({"address": "10.0.0.0"}, None) == "10.0.0.0/32"
+
+
+def test_outbound_nat_no_wan_warns_no_snat():
+    # automatic outbound NAT with no gateway'd interface must WARN that no
+    # SNAT was generated, not silently report success behind 'or WAN'.
+    xml = ('<?xml version="1.0"?><pfsense><version>23.3</version>'
+           '<interfaces><lan><enable></enable><if>em1</if>'
+           '<ipaddr>10.0.0.1</ipaddr><subnet>16</subnet></lan></interfaces>'
+           '<nat><outbound><mode>automatic</mode></outbound></nat></pfsense>')
+    cfg = pfsense.parse(xml, "t.xml")
+    assert not cfg.nats
+    assert any("NO source-NAT" in m for m in msgs(cfg))
+
+
+def test_report_unconverted_list_and_string_sections():
+    # repeated (list) and string-valued top-level sections must still appear
+    # in the coverage report (old guard dropped non-dicts).
+    xml = ('<?xml version="1.0"?><pfsense><version>23.3</version>'
+           '<cert>AAAA</cert><cert>BBBB</cert>'
+           '<revision>note</revision></pfsense>')
+    cfg = pfsense.parse(xml, "t.xml")
+    ms = msgs(cfg)
+    assert any("'cert'" in m and "(x2)" in m for m in ms)  # list, count noted
+    assert any("'revision'" in m for m in ms)              # string section
+
+
+def test_one_to_one_nat_destination_restriction_flagged():
+    # a <destination> restriction on a 1:1 mapping must be flagged (old code
+    # silently emitted an unconditional, broader VIP).
+    xml = ('<?xml version="1.0"?><pfsense><version>23.3</version><nat>'
+           '<onetoone><external>203.0.113.4</external>'
+           '<interface>wan</interface>'
+           '<source><address>10.0.1.11</address></source>'
+           '<destination><address>198.51.100.50</address></destination>'
+           '</onetoone></nat></pfsense>')
+    cfg = pfsense.parse(xml, "t.xml")
+    vip = next(v for v in cfg.vips if v.name == "vip-1to1-1")
+    assert (vip.ext_ip, vip.mapped_ip) == ("203.0.113.4", "10.0.1.11")
+    assert any("1:1 NAT 1" in m and "broader" in m for m in msgs(cfg))
