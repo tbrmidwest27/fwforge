@@ -80,6 +80,21 @@ def test_filter_exclude_and_only():
     assert any("does not exist" in f.message for f in rep.findings)
 
 
+def test_filter_only_and_exclude_together():
+    # both --only and --exclude: neither is silently dropped -> kept is the
+    # --only set minus --exclude, with a warn that both were supplied.
+    # (Old behaviour: --only won and --exclude was silently ignored.)
+    cfg = FirewallConfig()
+    cfg.policies = [Policy(name=f"r{i}") for i in range(4)]  # r0..r3
+    rep = Report()
+    tuning.filter_policies(cfg, exclude=["r2"], only=["r1", "r2", "r3"],
+                           report=rep)
+    assert [p.name for p in cfg.policies] == ["r1", "r3"]  # only minus exclude
+    assert any("both --only and --exclude" in f.message for f in rep.findings)
+    # r2 is a real policy removed via the combination -> NOT flagged missing
+    assert not any("does not exist" in f.message for f in rep.findings)
+
+
 def test_split_interface_pairs():
     cfg = FirewallConfig()
     cfg.policies = [

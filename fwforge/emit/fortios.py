@@ -271,7 +271,10 @@ class Emitter:
                     self.line(f"        set ip {addr} {_mask(int(prefix))}")
                     self.line("        set allowaccess ping")
                 except ValueError:
-                    pass
+                    self.report.add(
+                        "error", "interfaces",
+                        f"interface '{i.name}': invalid ip '{i.ip}' — "
+                        "emitted without an address", i.source)
             if i.description:
                 self.line(f"        set description "
                           f"{_q(i.description[:255])}")
@@ -767,7 +770,7 @@ class Emitter:
         self.line("config firewall vip")
         for v in emittable:
             self.line(f"    edit {_q(v.name)}")
-            self.line(f"        set extip {v.ext_ip}")
+            self.line(f"        set extip {_q(v.ext_ip)}")
             self.line(f"        set mappedip {_q(v.mapped_ip)}")
             ext = _intf(self.cfg, v.ext_intf)
             self.line(f"        set extintf {_q(ext)}")
@@ -897,7 +900,7 @@ class Emitter:
                 self.line("        next")
             self.line("    end")
         for r in b.redistribute:
-            self.line(f'    config redistribute "{r}"')
+            self.line(f"    config redistribute {_q(r)}")
             self.line("        set status enable")
             self.line("    end")
         self.line("end")
@@ -952,7 +955,7 @@ class Emitter:
                         self.line("        next")
                 self.line("    end")
         for r in o.redistribute:
-            self.line(f'    config redistribute "{r}"')
+            self.line(f"    config redistribute {_q(r)}")
             self.line("        set status enable")
             self.line("    end")
         self.line("end")

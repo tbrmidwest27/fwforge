@@ -157,22 +157,64 @@ def _convert_scope(vdom: str, container, report, psk: str,
     seen: set[str] = set()
     groups = [g for g in groups if not (g in seen or seen.add(g))]
 
-    # split-tunnel destinations from the (first) tunnel portal
+    # split-tunnel destinations from the (first) tunnel portal that carries
+    # any; remember which portal won so we can flag what the others held
     split_addrs: list[str] = []
+    split_src = None  # the EditNode the split-include set was taken from
     for p in tunnel_portals:
         if _one(p, "split-tunneling") == "enable":
             split_addrs = _get(p, "split-tunneling-routing-address")
             if split_addrs:
+                split_src = p
                 break
 
     # mode-cfg pool from the tunnel-ip-pools address object
     rng = None
     pool_name = pools[0] if pools else ""
+    pool_src = None  # the EditNode the portal-level ip-pools came from
     if not pool_name and tunnel_portals:
         ipp = _get(tunnel_portals[0], "ip-pools")
         pool_name = ipp[0] if ipp else ""
+        if pool_name:
+            pool_src = tunnel_portals[0]
     if pool_name:
         rng = _address_range(container, pool_name)
+
+    # The scaffold collapses to ONE phase1, but a config can have several
+    # tunnel-mode portals with different split-include sets and ip-pools.
+    # Only one portal's split set and one portal's pool feed the tunnel; the
+    # rest would be silently dropped — enumerate them so the loss is visible.
+    if len(tunnel_portals) > 1:
+        extra_split: list[str] = []
+        extra_pool: list[str] = []
+        for p in tunnel_portals:
+            pname = p.name.value
+            if p is not split_src:
+                if _one(p, "split-tunneling") == "enable":
+                    sa = _get(p, "split-tunneling-routing-address")
+                    if sa:
+                        extra_split.append(f"{pname}: {', '.join(sa)}")
+            if p is not pool_src:
+                ipp = _get(p, "ip-pools")
+                if ipp:
+                    extra_pool.append(f"{pname}: {', '.join(ipp)}")
+        used = (split_src.name.value if split_src is not None
+                else (pool_src.name.value if pool_src is not None
+                      else tunnel_portals[0].name.value))
+        details = []
+        if extra_split:
+            details.append("split-include {" + "; ".join(extra_split) + "}")
+        if extra_pool:
+            details.append("ip-pools {" + "; ".join(extra_pool) + "}")
+        if details:
+            report.add(
+                "warn", "sslvpn",
+                f"[{vdom}] {len(tunnel_portals)} tunnel-mode portals found; "
+                f"the single '{tunnel_name}' tunnel was scaffolded from one "
+                f"portal ('{used}'). NOT carried over — "
+                + "; ".join(details)
+                + ". Add these subnets/pools to the new phase1 (ipv4-split-"
+                "include / mode-cfg) manually, or build separate tunnels.")
 
     p1: list[SetLine] = [
         _sl("type", "dynamic"),

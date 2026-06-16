@@ -130,6 +130,10 @@ def resolve(ref: str, token: str = "") -> tuple[dict, bool]:
             raise ValueError(
                 f"'{ref}' is not a file; fetching live needs an API "
                 "token (--schema-token or FWFORGE_API_TOKEN)")
+        if ref.count(":") > 1:  # an IPv6 literal, not host:port
+            raise ValueError(
+                f"'{ref}' looks like an IPv6 literal — not supported as a "
+                "host:port; pass a cached schema file instead")
         host, _, port = ref.rpartition(":")
         if not host:  # no ':' present — rpartition put it all in `port`
             host, port = port, ""

@@ -313,9 +313,11 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
     mapping: dict[str, str] = {}
     members_added = 0
     routes_converted = 0
+    touched = 0
 
     for vd, vdom_specs in by_vdom.items():
         scope = vdom_scope(tree, vd)
+        vd_mapping: dict[str, str] = {}  # this VDOM's member -> sdwan-zone
         member_ifcs = {m.interface for s in vdom_specs for m in s.members}
         zone_of = {m.interface: s.name
                    for s in vdom_specs for m in s.members}
@@ -368,6 +370,7 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
                 members_node.children.append(edit)
                 members_added += 1
                 mapping[m.interface] = spec.name
+                vd_mapping[m.interface] = spec.name
                 if not gw:
                     report.add(
                         "info", "sdwan",
@@ -500,7 +503,10 @@ def apply_sdwan(tree: CTree, specs: list[SdwanZoneSpec], report) -> dict:
                 + (f" with SLA target on '{hc_name}'"
                    if mode == "sla" else ""))
 
-    touched = rewrite_policy_refs(tree, mapping, report, "sdwan")
+        # rewrite policy srcintf/dstintf within THIS VDOM's scope only, using
+        # only this VDOM's member->zone map -- a same-named interface in
+        # another VDOM must not be rewritten to this VDOM's sdwan-zone.
+        touched += rewrite_policy_refs(scope, vd_mapping, report, "sdwan")
     vdom_note = f" across VDOM(s) {', '.join(sorted(by_vdom))}" \
         if len(by_vdom) > 1 or list(by_vdom) != ["root"] else ""
     report.add(

@@ -73,7 +73,11 @@ def format_token(tok: Token) -> str:
     needs_quote = tok.quoted or v == "" or any(c not in _BARE_SAFE for c in v)
     if not needs_quote:
         return v
-    escaped = v.replace("\\", "\\\\").replace('"', '\\"')
+    # match FortiOS's own in-quote escaping: backslash, double quote, AND
+    # single quote (FortiOS backups write a literal ' as \'), so a
+    # parse->serialize roundtrip is byte-identical. split_line() already
+    # decodes \' back to ' (a backslash before any char is consumed on parse).
+    escaped = v.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
     return f'"{escaped}"'
 
 

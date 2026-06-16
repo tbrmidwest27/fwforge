@@ -39,7 +39,7 @@ def test_convert_asa_end_to_end(tmp_path):
     assert 'edit "udp_33434-65535"' in conf
     # VIP from static object NAT
     assert 'edit "vip-WEBSRV-INT"' in conf
-    assert "set extip 203.0.113.10" in conf
+    assert 'set extip "203.0.113.10"' in conf
     assert "set portforward enable" in conf
     # interface PAT applied to the matching policy
     nat_pol = _policy_block(conf, "INSIDE-OUT-4")

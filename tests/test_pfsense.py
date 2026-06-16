@@ -138,7 +138,7 @@ def test_e2e_policy_nat(tmp_path):
     assert "set dstaddr-negate enable" in nodns
     # port-alias service with multiple ranges
     assert "set tcp-portrange 80 443 8000-8080" in conf
-    assert 'set extip 203.0.113.2' in conf  # wanip resolved
+    assert 'set extip "203.0.113.2"' in conf  # wanip resolved
 
 
 def test_e2e_central_nat(tmp_path):

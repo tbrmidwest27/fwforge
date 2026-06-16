@@ -171,6 +171,13 @@ def test_resolve_host_without_token_errors():
         sc.resolve("10.0.0.1")
 
 
+def test_resolve_ipv6_literal_rejected():
+    # an IPv6 literal must raise, not be mis-split into host:port by
+    # rpartition(":") (e.g. 2001:db8::1 -> host '2001:db8:' / port '1')
+    with pytest.raises(ValueError, match="IPv6"):
+        sc.resolve("2001:db8::1", token="x")
+
+
 def test_e2e_cli_schema_check(tmp_path):
     schema_file = tmp_path / "schema.json"
     schema_file.write_text(json.dumps(MINI), encoding="utf-8")

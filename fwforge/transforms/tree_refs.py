@@ -83,12 +83,18 @@ SDWAN_EXTRA_ALLOWED: frozenset = frozenset({
 from .portmap import GLOBAL_INTF_ATTRS  # noqa: E402
 
 
-def rewrite_policy_refs(tree: CTree, mapping: dict[str, str], report,
+def rewrite_policy_refs(scope, mapping: dict[str, str], report,
                         area: str) -> int:
     """Replace member tokens with zone tokens in zone-capable sections.
-    Returns the number of policy entries touched."""
+    Returns the number of policy entries touched.
+
+    `scope` is the container to rewrite within — the whole CTree for a
+    single-VDOM config, or one VDOM's container for multi-VDOM. It MUST be
+    VDOM-scoped: VLAN/aggregate/loopback/tunnel names are unique only per
+    VDOM, so rewriting tree-wide would rewire a same-named interface in
+    another VDOM to a zone that doesn't exist there (dropped policy on load)."""
     touched = 0
-    for path, node in iter_config_nodes(tree):
+    for path, node in iter_config_nodes(scope):
         if not any(path_endswith(path, p) for p in ZONE_CAPABLE_PATHS):
             continue
         for edit in node.children:

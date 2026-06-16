@@ -147,7 +147,7 @@ _ADDR_PATHS: tuple[tuple, ...] = (
 )
 
 
-def _rebind_associated_addresses(tree: CTree, mapping: dict[str, str],
+def _rebind_associated_addresses(scope, mapping: dict[str, str],
                                  report) -> int:
     """FortiOS restricts an associated-interface-bound address to
     policies on that exact interface — a zone containing the member does
@@ -159,7 +159,7 @@ def _rebind_associated_addresses(tree: CTree, mapping: dict[str, str],
     `interface` field, datasource system.interface.name ONLY, which is
     why ZONE_EXTRA_ALLOWED keeps it on the member.)"""
     rebound = 0
-    for path, node in iter_config_nodes(tree):
+    for path, node in iter_config_nodes(scope):
         if not any(path_endswith(path, p) for p in _ADDR_PATHS):
             continue
         for edit in node.children:
@@ -185,9 +185,9 @@ def _rebind_associated_addresses(tree: CTree, mapping: dict[str, str],
     return rebound
 
 
-def _flag_same_zone_policies(tree: CTree, zone_names: set[str],
+def _flag_same_zone_policies(scope, zone_names: set[str],
                              report) -> None:
-    for path, node in iter_config_nodes(tree):
+    for path, node in iter_config_nodes(scope):
         if not (path_endswith(path, ("firewall", "policy"))
                 or path_endswith(path, ("firewall", "security-policy"))):
             continue
@@ -213,7 +213,8 @@ def apply_zones(tree: CTree, specs: list[ZoneSpec], report) -> dict:
     """Returns stats: zones created, policies rewritten."""
     validate(tree, specs)
     ifc_vdoms = interface_vdoms(tree)
-    mapping: dict[str, str] = {}
+    mapping: dict[str, str] = {}             # combined, returned for callers
+    by_vdom: dict[str, dict[str, str]] = {}  # per-VDOM member -> zone
     for spec in specs:
         vd = resolve_spec_vdom(spec.members, ifc_vdoms, spec.vdom,
                                f"zone {spec.name}")
@@ -223,6 +224,7 @@ def apply_zones(tree: CTree, specs: list[ZoneSpec], report) -> dict:
         _upsert_zone(section, spec, report)
         for m in spec.members:
             mapping[m] = spec.name
+            by_vdom.setdefault(vd, {})[m] = spec.name
         if spec.intrazone == "allow":
             report.add(
                 "warn", "zones",
@@ -230,8 +232,18 @@ def apply_zones(tree: CTree, specs: list[ZoneSpec], report) -> dict:
                 f"{', '.join(spec.members)} will flow without policies, "
                 "logging, or inspection — confirm this is intended",
             )
-    touched = rewrite_policy_refs(tree, mapping, report, "zones")
-    rebound = _rebind_associated_addresses(tree, mapping, report)
-    _flag_same_zone_policies(tree, {s.name for s in specs}, report)
+    # Rewrite references within EACH VDOM's own scope, using only that VDOM's
+    # member->zone map — a same-named interface (vlan30, agg1, ...) in another
+    # VDOM must not be rewritten to a zone that exists only here. For a
+    # single-VDOM config vdom_scope() returns the whole tree, so behavior is
+    # unchanged there.
+    zone_names = {s.name for s in specs}
+    touched = 0
+    rebound = 0
+    for vd, vd_mapping in by_vdom.items():
+        scope = vdom_scope(tree, vd)
+        touched += rewrite_policy_refs(scope, vd_mapping, report, "zones")
+        rebound += _rebind_associated_addresses(scope, vd_mapping, report)
+        _flag_same_zone_policies(scope, zone_names, report)
     return {"zones": len(specs), "policies_rewritten": touched,
             "addresses_rebound": rebound, "mapping": mapping}

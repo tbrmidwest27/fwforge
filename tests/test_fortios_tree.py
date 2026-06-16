@@ -36,6 +36,21 @@ def test_roundtrip_is_lossless():
     assert normalize(tree1) == normalize(tree2)
 
 
+def test_single_quote_escaped_like_fortios():
+    # FortiOS writes a literal single quote inside a double-quoted value as \'
+    # in its own backups; format_token must do the same so a roundtrip is
+    # byte-identical (and it still re-parses to the same value).
+    text = 'config system global\n    set comment "it\'s a test"\nend\n'
+    tree = ft.parse_config(text)
+    out = ft.serialize(tree)
+    assert "\\'" in out                       # serialized to match FortiOS
+    assert normalize(ft.parse_config(out)) == normalize(tree)
+    node = ft.find_config(ft.parse_config(out), "system", "global")
+    val = next(c.values[0].value for c in node.children
+               if isinstance(c, ft.SetLine) and c.attr == "comment")
+    assert val == "it's a test"               # decodes back cleanly
+
+
 def test_multiline_quoted_value_preserved():
     tree = ft.parse_config(load())
     node = ft.find_config(tree, "vpn", "certificate", "local")

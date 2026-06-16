@@ -98,13 +98,22 @@ def filter_policies(cfg: FirewallConfig, exclude: list[str],
         return 0
     excl = set(exclude)
     keep_only = set(only)
+    # When BOTH flags are supplied, neither is silently dropped: restrict to
+    # the --only set first, then remove --exclude names from that set. (Old
+    # behaviour let --only win and silently ignored --exclude.)
+    both = bool(keep_only and excl)
+    if both:
+        report.add("warn", "tuning",
+                   "both --only and --exclude supplied; applying --only "
+                   "first then --exclude (kept = only minus exclude)")
     kept, dropped = [], []
     for pol in cfg.policies:
         name = pol.name or ""
         if keep_only:
-            (kept if name in keep_only else dropped).append(pol)
+            drop = name not in keep_only or name in excl
         else:
-            (dropped if name in excl else kept).append(pol)
+            drop = name in excl
+        (dropped if drop else kept).append(pol)
     cfg.policies[:] = kept
     if dropped:
         names = ", ".join(p.name for p in dropped[:12])
@@ -117,8 +126,13 @@ def filter_policies(cfg: FirewallConfig, exclude: list[str],
         for m in sorted(missing):
             report.add("warn", "tuning",
                        f"--only named policy '{m}' which does not exist")
-    elif excl:
-        for m in sorted(excl - {p.name or "" for p in dropped}):
+    if excl:
+        # an --exclude name "exists" only if it was present in the config at
+        # all (either dropped here, or — when --only also filtered it out —
+        # already gone); flag names that matched no policy whatsoever
+        present = {p.name or "" for p in cfg.policies} | \
+            {p.name or "" for p in dropped}
+        for m in sorted(excl - present):
             report.add("warn", "tuning",
                        f"--exclude named policy '{m}' which does not exist")
     return len(dropped)
