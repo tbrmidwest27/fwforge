@@ -256,7 +256,7 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
-### v0.53.0 — shipped 2026-06-16 (PAN custom URL categories → FortiOS webfilter urlfilter tables)
+### v0.52.1 — shipped 2026-06-16 (PAN custom URL categories → FortiOS webfilter urlfilter tables)
 Per-URL fidelity to complement the FortiGuard category mapping. Real enterprise
 PAN profiles lean on explicit allow/block URL lists; before this only the
 predefined-category side converted.
