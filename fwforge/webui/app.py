@@ -14,6 +14,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
@@ -340,8 +341,34 @@ def _tuning_from_form(form, meta) -> TuningOptions:
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    # cap uploads: /load reads whole config files into memory, so an unbounded
+    # body is a trivial memory-exhaustion DoS. 25 MiB is far above any real
+    # firewall backup; Flask returns 413 for anything larger.
+    app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     _load_jobs()
+
+    # local tool bound to 127.0.0.1: reject cross-origin state-changing
+    # requests so a web page the user happens to have open cannot silently
+    # drive /load (which can read an arbitrary local file path), /convert, or
+    # /delete. Same-origin form posts from our own templates carry a matching
+    # Origin/Referer and pass; scripted local use (no Origin AND no Referer,
+    # e.g. curl) is allowed.
+    @app.before_request
+    def _csrf_guard():
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        origin = request.headers.get("Origin")
+        if origin:
+            src_host = urlsplit(origin).netloc
+        else:
+            referer = request.headers.get("Referer")
+            if not referer:
+                return None
+            src_host = urlsplit(referer).netloc
+        if src_host != request.host:
+            abort(403)
+        return None
 
     @app.context_processor
     def inject():

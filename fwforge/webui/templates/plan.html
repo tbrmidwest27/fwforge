@@ -595,8 +595,14 @@ const DET = IFDET.length ? IFDET : IFACES.map(n => ({
   role: "", status: "", vdom: "", zone: "", sdwan: false, policy_refs: ""}));
 let zi = 0, si = 0;
 function esc(s) {
+  // escape & < > " AND the single quote: interface/port names are read
+  // verbatim from an uploaded config and interpolated into single-quoted
+  // inline handlers (e.g. aggDelMember(${a.id},'${esc(p)}')); without the
+  // ' escape a name like  x');alert(...)//  breaks out and executes.
+  // &#39; is safe in both HTML-attribute and inline-handler contexts.
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
-                  .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+                  .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+                  .replace(/'/g, "&#39;");
 }
 function memberTable(kind, idx) {
   const sdwan = kind === "sdwan";

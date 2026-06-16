@@ -619,3 +619,33 @@ end
     # the fixture's port1..port4 guess onto the destination's lan1..lan4
     assert gb.get("port1") == "lan1"
     assert gb.get("port4") == "lan4"
+
+
+def test_cross_origin_post_rejected(client):
+    # CSRF: a state-changing POST from another origin must be refused; a
+    # same-origin POST (matching the test client's host) still works.
+    resp = client.post("/load",
+                       data={"path": str(FIX / "fortios_refactor.conf")},
+                       headers={"Origin": "http://evil.example"},
+                       follow_redirects=False)
+    assert resp.status_code == 403
+    resp = client.post("/load",
+                       data={"path": str(FIX / "fortios_refactor.conf")},
+                       headers={"Origin": "http://localhost"},
+                       follow_redirects=False)
+    assert resp.status_code == 302   # same-origin allowed
+
+
+def test_esc_escapes_single_quote(client):
+    # DOM-XSS guard: the client-side esc() must escape the single quote, since
+    # interface/port names (read verbatim from an uploaded config) are
+    # interpolated into single-quoted inline handlers. Assert the fix ships in
+    # the template (runtime behavior needs a JS engine, out of scope here).
+    jid = _load(client, "fortios_refactor.conf")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "/'/g" in page and "&#39;" in page
+
+
+def test_upload_size_capped(client):
+    # unbounded uploads are a memory-exhaustion DoS; a cap must be set
+    assert webui_app.create_app().config["MAX_CONTENT_LENGTH"] == 25 * 1024 * 1024
