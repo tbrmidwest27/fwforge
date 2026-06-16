@@ -141,9 +141,10 @@ def convert_member_routes(scope, member_ifcs: set[str],
     their gateways) and create the replacement sdwan-zone route.
     Specific-prefix member routes are removed and returned for pinning."""
     gateways: dict[str, str] = {}
-    distances: set[str] = set()
-    priorities: set[str] = set()
-    zones_hit: list[str] = []
+    # per-zone metrics: each SD-WAN zone that loses a default route gets its
+    # OWN replacement sdwan-zone route. Collapsing several zones into one
+    # shared route would steer to all of them and merge their distances.
+    zone_metrics: dict[str, dict[str, set]] = {}
     specifics: list[dict] = []
     converted = 0
 
@@ -183,13 +184,13 @@ def convert_member_routes(scope, member_ifcs: set[str],
                 gw = attrs.get("gateway")
                 if gw:
                     gateways.setdefault(dev, gw[0].value)
-                if "distance" in attrs:
-                    distances.add(attrs["distance"][0].value)
-                if "priority" in attrs:
-                    priorities.add(attrs["priority"][0].value)
                 zone = zone_of[dev]
-                if zone not in zones_hit:
-                    zones_hit.append(zone)
+                zm = zone_metrics.setdefault(
+                    zone, {"distances": set(), "priorities": set()})
+                if "distance" in attrs:
+                    zm["distances"].add(attrs["distance"][0].value)
+                if "priority" in attrs:
+                    zm["priorities"].add(attrs["priority"][0].value)
                 converted += 1
                 report.add(
                     "info", "sdwan",
@@ -209,29 +210,32 @@ def convert_member_routes(scope, member_ifcs: set[str],
             keep.append(child)
         node.children = keep
 
-        if converted and zones_hit:
+        # one replacement route PER zone that lost a default route (sorted for
+        # deterministic output)
+        for zone in sorted(zone_metrics):
+            zm = zone_metrics[zone]
             new_id = _next_edit_id(node)
             route = EditNode(Token(str(new_id), False))
-            route.children.append(
-                SetLine("sdwan-zone", [Token(z, True) for z in zones_hit]))
-            if len(distances) == 1:
+            route.children.append(SetLine("sdwan-zone", [Token(zone, True)]))
+            dists = zm["distances"]
+            if len(dists) == 1:
                 route.children.append(
-                    SetLine("distance", [Token(distances.pop(), False)]))
-            elif len(distances) > 1:
+                    SetLine("distance", [Token(next(iter(dists)), False)]))
+            elif len(dists) > 1:
                 report.add(
                     "warn", "sdwan",
-                    "replaced default routes had different distances "
-                    f"({', '.join(sorted(distances))}) — the sdwan-zone "
+                    f"zone '{zone}': replaced default routes had different "
+                    f"distances ({', '.join(sorted(dists))}) — the sdwan-zone "
                     "route uses the default; set it manually if needed")
-            if len(priorities) == 1:
+            prios = zm["priorities"]
+            if len(prios) == 1:
                 route.children.append(
-                    SetLine("priority", [Token(priorities.pop(), False)]))
+                    SetLine("priority", [Token(next(iter(prios)), False)]))
             node.children.append(route)
             report.add(
                 "info", "sdwan",
-                f"created static route {new_id}: set sdwan-zone "
-                f"{' '.join(zones_hit)} (replaces {converted} member "
-                "default route(s))")
+                f"created static route {new_id}: set sdwan-zone {zone} "
+                "(replaces this zone's member default route(s))")
 
     if not converted:
         report.add(

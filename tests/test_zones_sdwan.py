@@ -549,3 +549,33 @@ end
     assert 'set interface "port2"' in out
     msgs = " | ".join(f.message for f in report.findings)
     assert "extended existing zone" in msgs
+
+
+def test_two_sdwan_zones_in_one_vdom_get_separate_routes():
+    # two SD-WAN zones in one VDOM, each member losing a default route, must
+    # produce ONE replacement sdwan-zone route PER zone -- not a single route
+    # steering to both (which also merged their distances).
+    src = (
+        "config system interface\n"
+        '    edit "port1"\n        set vdom "root"\n    next\n'
+        '    edit "port2"\n        set vdom "root"\n    next\n'
+        "end\n"
+        "config router static\n"
+        "    edit 1\n        set dst 0.0.0.0 0.0.0.0\n"
+        "        set gateway 10.0.0.1\n        set device \"port1\"\n    next\n"
+        "    edit 2\n        set dst 0.0.0.0 0.0.0.0\n"
+        "        set gateway 10.0.1.1\n        set device \"port2\"\n    next\n"
+        "end\n"
+        "config firewall policy\nend\n")
+    tree = ft.parse_config(src)
+    specs = [
+        SdwanZoneSpec(name="wanA", members=[SdwanMember(interface="port1")],
+                      health_check=("none", "")),
+        SdwanZoneSpec(name="wanB", members=[SdwanMember(interface="port2")],
+                      health_check=("none", "")),
+    ]
+    sdwan.apply_sdwan(tree, specs, Report())
+    out = ft.serialize(tree)
+    assert 'set sdwan-zone "wanA"' in out
+    assert 'set sdwan-zone "wanB"' in out
+    assert 'set sdwan-zone "wanA" "wanB"' not in out   # not collapsed
