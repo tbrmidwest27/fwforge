@@ -114,6 +114,50 @@ def _dependency_order(rows: list) -> list:
     return non_vlan + ordered
 
 
+# A safe, widely-interoperable IKE/IPsec proposal to substitute when the source
+# yielded none — never emit a bare `set proposal` (FortiOS rejects it).
+_DEFAULT_PROPOSAL = "aes256-sha256 aes128-sha256"
+
+
+def _group_dependency_order(groups: list, report=None, area: str = "") -> list:
+    """Order groups so each is emitted after any group it lists as a member.
+    FortiOS rejects `set member <g>` when <g> is not yet defined, so a parent
+    group defined before its child group (common from ASA `group-object` /
+    nested PAN members) would silently drop the member on restore. Members that
+    are not themselves groups in this list don't affect ordering. Cycle-safe:
+    a membership cycle can't recurse forever and every group is emitted exactly
+    once (best-effort order), with one error reported."""
+    by_name = {g.name: g for g in groups}
+    ordered: list = []
+    done: set[str] = set()
+    onstack: set[str] = set()
+    cycles: list[str] = []
+
+    def place(g):
+        if g.name in done:
+            return
+        if g.name in onstack:           # back-edge -> membership cycle
+            cycles.append(g.name)
+            return
+        onstack.add(g.name)
+        for m in g.members:
+            child = by_name.get(m)
+            if child is not None and child is not g:
+                place(child)
+        onstack.discard(g.name)
+        done.add(g.name)
+        ordered.append(g)
+
+    for g in groups:
+        place(g)
+    if cycles and report is not None:
+        report.add("error", area,
+                   "group membership cycle involving "
+                   f"{', '.join(sorted(set(cycles)))} — emitted in best-effort "
+                   "order; FortiOS may reject it", None)
+    return ordered
+
+
 class Emitter:
     def __init__(self, cfg: FirewallConfig, report, target: str = "7.4",
                  nat_mode: str = "policy"):
@@ -359,7 +403,7 @@ class Emitter:
             gfam = 6 if section == "addrgrp6" else 4
             self.line()
             self.line(f"config firewall {section}")
-            for g in groups:
+            for g in _group_dependency_order(groups, self.report, "addresses"):
                 # FortiOS groups are single-family: a member of the other
                 # family doesn't exist in this table and would sink the
                 # whole group on load
@@ -425,7 +469,8 @@ class Emitter:
             return
         self.line()
         self.line("config firewall service group")
-        for g in self.cfg.svc_groups:
+        for g in _group_dependency_order(self.cfg.svc_groups, self.report,
+                                          "services"):
             self.line(f"    edit {_q(g.name)}")
             if g.members:
                 self.line("        set member "
@@ -623,7 +668,18 @@ class Emitter:
             if p1.ike_version == 2:
                 self.line("        set ike-version 2")
             self.line("        set peertype any")
-            self.line("        set proposal " + " ".join(p1.proposals))
+            if p1.proposals:
+                self.line("        set proposal " + " ".join(p1.proposals))
+            else:
+                # never emit a bare 'set proposal' (FortiOS rejects it and can
+                # abort the rest of the edit block) -- substitute a safe default
+                # and flag it for verification.
+                self.line("        set proposal " + _DEFAULT_PROPOSAL)
+                self.report.add(
+                    "warn", "vpn",
+                    f"phase1 '{p1.name}': no IKE proposal parsed from source; "
+                    f"emitted default '{_DEFAULT_PROPOSAL}' -- verify against "
+                    "the peer", p1.source)
             if p1.dhgrp:
                 self.line("        set dhgrp " + " ".join(p1.dhgrp))
             self.line(f"        set remote-gw {p1.remote_gw}")
@@ -642,7 +698,15 @@ class Emitter:
         for p2 in cfg.phase2s:
             self.line(f"    edit {_q(p2.name)}")
             self.line(f"        set phase1name {_q(p2.phase1)}")
-            self.line("        set proposal " + " ".join(p2.proposals))
+            if p2.proposals:
+                self.line("        set proposal " + " ".join(p2.proposals))
+            else:
+                self.line("        set proposal " + _DEFAULT_PROPOSAL)
+                self.report.add(
+                    "warn", "vpn",
+                    f"phase2 '{p2.name}': no IPsec proposal parsed from source; "
+                    f"emitted default '{_DEFAULT_PROPOSAL}' -- verify against "
+                    "the peer", p2.source)
             if p2.pfs_group:
                 self.line(f"        set dhgrp {p2.pfs_group}")
             else:
