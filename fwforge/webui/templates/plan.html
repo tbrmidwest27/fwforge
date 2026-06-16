@@ -763,6 +763,9 @@ function setAllMembers(btn, on) {
 
 // ---- target-model port suggestions (Interface Mapping step) ----
 const PORT_INV = {{ port_inventory|tojson }};
+// sentinel for the "do not map this interface" dropdown choice — left out
+// of the mapping entirely (server skips it), frees the port for a LAG
+const SKIP_PORT = "__none__";
 // ports read from an uploaded destination backup beat the model table
 const TARGET_PORTS = {{ meta.get("target_ports", [])|tojson }};
 const PHYS = new Set(DET.filter(d => d.type === "physical")
@@ -782,17 +785,24 @@ function populateSelects(ports) {
   const guess = currentGuess();
   document.querySelectorAll("select.mdst").forEach(sel => {
     const src = sel.dataset.src;
-    const cur = sel.value || src;
+    const skip = sel.value === SKIP_PORT;       // user chose "do not map"
+    const cur = !skip && sel.value ? sel.value : src;
     sel.innerHTML = "";
-    if (!ports.length) { sel.add(new Option(src, src, true, true)); return; }
+    // a "do not map" option leaves the interface unmapped and frees its
+    // port to be bonded into a LAG (kept selected across model changes)
+    sel.add(new Option("— do not map —", SKIP_PORT, false, skip));
+    if (!ports.length) {
+      if (!skip) sel.add(new Option(src, src, false, true));
+      return;
+    }
     // keep the current pick if valid; else fall to the positional guess
     // (601F port1 -> 701G lan1); else prompt the user to choose
     const want = ports.includes(cur) ? cur
                : (guess[src] && ports.includes(guess[src]) ? guess[src] : "");
-    if (!want) sel.add(new Option(`${cur} — choose a port`, cur, true, true));
+    if (!skip && !want) sel.add(new Option(`${cur} — choose a port`, cur, true, true));
     ports.forEach(p => {
       const o = new Option(p, p);
-      if (p === want) o.selected = true;
+      if (!skip && p === want) o.selected = true;
       sel.add(o);
     });
   });
@@ -807,7 +817,8 @@ function outlineTargets(ports) {
     // don't flag it as a missing port
     const isPhys = src && PHYS.has(src.value) && !PROMOTED.has(src.value);
     const val = (el.value || "").trim();
-    const miss = !!(ports.length && isPhys && val && !ports.includes(val));
+    const miss = !!(ports.length && isPhys && val && val !== SKIP_PORT
+                    && !ports.includes(val));
     if (miss) missing++;
     el.style.outline = miss ? "2px solid #c0392b" : "";
     el.title = miss ? "this port does not exist on the destination" : "";
@@ -892,7 +903,10 @@ function fpMapping() {
   const m = {};
   document.querySelectorAll('[name="map_dst"]').forEach(inp => {
     const src = inp.closest("tr").querySelector('input[name="map_src"]');
-    if (src) m[src.value] = (inp.value || src.value).trim();
+    if (!src) return;
+    const v = (inp.value || src.value).trim();
+    if (v === SKIP_PORT) return;       // "do not map" — leave out of mapping
+    m[src.value] = v;
   });
   return m;
 }
@@ -1257,6 +1271,12 @@ function refreshFaceplates() {
   // member ports (x5-x8) light up as assigned on the destination faceplate
   const memberSrc = new Set(DET.filter(d => d.kind === "aggregate-member")
                                .map(d => d.name));
+  // interfaces the user explicitly set to "do not map" — neither counted
+  // on the destination nor flagged amber ("no home") on the source
+  const skipped = new Set();
+  document.querySelectorAll("select.mdst").forEach(s => {
+    if (s.value === SKIP_PORT) skipped.add(s.dataset.src);
+  });
   Object.entries(mapping).forEach(([s, d]) => {
     // a promoted physical no longer maps 1:1 — its ports light via the LAG
     // chips below, not its (now LAG-named) "maps to" value
@@ -1273,8 +1293,8 @@ function refreshFaceplates() {
   srcEl.querySelectorAll(".fport").forEach(p => {
     const n = p.dataset.port;
     p.classList.toggle("lit", n === activeSrc);
-    p.classList.toggle("miss", PHYS.has(n) && !PROMOTED.has(n) && dports.length
-      && !dports.includes(mapping[n] || n));
+    p.classList.toggle("miss", PHYS.has(n) && !PROMOTED.has(n) && !skipped.has(n)
+      && dports.length && !dports.includes(mapping[n] || n));
   });
   dstEl.querySelectorAll(".fport").forEach(p => {
     const n = p.dataset.port;
@@ -1335,11 +1355,12 @@ document.addEventListener("click", e => {
 const tpSel = document.getElementById("tp-select");
 if (tpSel) tpSel.addEventListener("change", () => {
   tpPortsChanged();
-  // re-derive source-LAG members from the new model; for a promoted
-  // physical (no source members) just drop ports the new model lacks
+  // re-derive source-LAG members from the new model; for created/promoted
+  // LAGs (no source members) drop ports the new model lacks so their chips
+  // stay valid and keep lighting the faceplate
   AGGS.forEach(a => {
-    if (a.promoted) a.members = a.members.filter(p => destPortList().includes(p));
-    else if (a.src) a.members = derivedMembers(a.src);
+    if (a.src && !a.promoted) a.members = derivedMembers(a.src);
+    else a.members = a.members.filter(p => destPortList().includes(p));
   });
   buildFaceplates();
   renderPanel();

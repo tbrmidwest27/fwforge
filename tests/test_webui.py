@@ -485,6 +485,18 @@ def test_authoring_from_form_parsing():
     assert webui_app._authoring_from_form(MultiDict()) is None
 
 
+def test_mapping_from_form_skips_do_not_map():
+    from werkzeug.datastructures import MultiDict
+    form = MultiDict([
+        ("map_src", "ethernet1/1"), ("map_dst", "lan1"),
+        ("map_src", "ethernet1/2"), ("map_dst", "__none__"),  # "do not map"
+        ("map_src", "ethernet1/3"), ("map_dst", ""),          # blank
+        ("map_src", "tunnel.1"), ("map_dst", "tunnel.1")])
+    m = webui_app._mapping_from_form(form)
+    # the skipped + blank interfaces are left out; the rest map through
+    assert m == {"ethernet1/1": "lan1", "tunnel.1": "tunnel.1"}
+
+
 def test_membership_column_live_wiring(client):
     # the membership column is tagged per-interface and enriched live by
     # JS so an aggregate shows its mapped member ports and every nested
@@ -505,6 +517,9 @@ def test_membership_column_live_wiring(client):
     assert 'class="iftype"' in page and "function ifTypeChanged" in page
     assert "function safeIfName" in page
     assert "vlanParent(d)" in page                # refreshNestOptions default
+    # a physical port can be left unmapped ("do not map") which frees it to
+    # be bonded into a LAG
+    assert "— do not map —" in page and 'SKIP_PORT = "__none__"' in page
 
 
 def test_destination_identity_and_filename(client):

@@ -256,6 +256,29 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.48.1 — shipped 2026-06-16 ("do not map" option + faceplate/LAG fixes)
+Review feedback off a live PAN→701G run.
+- **"— do not map —" dropdown option** on every physical-port row: leaves
+  that interface unmapped (excluded server-side via the new
+  `_mapping_from_form`, sentinel `__none__`) and **frees its target port to
+  be bonded into a LAG**. The skipped source port no longer shows amber
+  ("no home") on the faceplate, and its "maps to" isn't flagged red.
+- **Faceplate / new-LAG lighting**: a LAG member that is *also* a mapped
+  physical's target is a genuine collision and correctly lights **red**
+  (not green) — the fix is to set that physical to "do not map", which frees
+  the port and turns the LAG member green. (Root-caused from the report that
+  a created aggregate's ports "didn't light up": they were double-claimed.)
+- **Model-switch staleness fix**: switching the target model now drops
+  invalid member ports from *created* and *promoted* LAGs too (previously
+  only source-derived LAGs re-derived; a created LAG kept stale ports that
+  silently failed to light). Generalizes v0.48.0's promoted-only filter.
+- Note on `tunnel.1` & friends: a source tunnel interface is only emitted
+  when it has an IPsec phase1 (it's built by the VPN section), so an orphan
+  tunnel is already left out of the output regardless of its "maps to".
+- Verified live (collision → "do not map" → green; skip persists across
+  model switch; no console errors). 278 tests (+1). Changes:
+  webui/templates/plan.html, webui/app.py, tests.
+
 ### v0.48.0 — shipped 2026-06-16 (VLAN inheritance + promote physical → aggregate in place)
 Makes the "physical port carrying VLANs" case (PAN `ethernet1/6`) easy,
 replacing the clunky "create a separate aggregate, then re-parent each VLAN

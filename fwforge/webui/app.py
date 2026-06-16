@@ -306,6 +306,19 @@ def _authoring_from_form(form):
     return {"aggregates": aggregates, "vlan_parents": vlan_parents}
 
 
+def _mapping_from_form(form):
+    """Source-interface -> target-port map from the wizard grid. Blank
+    targets and the GUI "do not map" choice (sentinel '__none__') are left
+    out, so those interfaces stay unmapped — they keep their source name and
+    a physical port isn't emitted, while its target port frees up for a LAG."""
+    mapping = {}
+    for src, dst in zip(form.getlist("map_src"), form.getlist("map_dst")):
+        src, dst = src.strip(), dst.strip()
+        if src and dst and dst != "__none__":
+            mapping[src] = dst
+    return mapping
+
+
 def _tuning_from_form(form, meta) -> TuningOptions:
     exclude = [s.strip() for s in form.get("t_exclude", "").split(",")
                if s.strip()]
@@ -519,11 +532,7 @@ def create_app() -> Flask:
                     target_device=tdev, target_identity=tident,
                     want_normalized=True)
             else:
-                mapping = {}
-                for src, dst in zip(request.form.getlist("map_src"),
-                                    request.form.getlist("map_dst")):
-                    if src.strip() and dst.strip():
-                        mapping[src.strip()] = dst.strip()
+                mapping = _mapping_from_form(request.form)
                 parser_opts = {
                     k: v for k, v in {
                         "device_group":
