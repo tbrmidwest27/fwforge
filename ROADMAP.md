@@ -256,6 +256,41 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.52.0 — shipped 2026-06-16 (PAN anti-spyware/vulnerability → FortiOS IPS sensors, severity + CVE crosswalk)
+Closes the last PAN security-profile gap — accurately, and stated plainly.
+There is **no PA Threat-ID → FortiGuard-signature crosswalk** (for any tool, FC
+included), so per-signature conversion is impossible; fwforge maps the **profile
+intent** faithfully and flags what can't be carried — posture parity, never
+guessed.
+- `parse_profiles` reads `profiles/vulnerability` + `profiles/spyware`
+  (severity, cve, host, action per rule + threat-exceptions + botnet-domains
+  sinkhole). A rule's profile-setting (direct or via group) merges the vuln +
+  anti-spyware refs into **one** FortiOS IPS sensor (lazy + deduped).
+- Severity rules → severity-filter entries, **first-match per severity**
+  (order-independent). PAN action → FortiOS (`default` = FortiGuard-recommended,
+  alert → monitor, allow → pass, drop → block, reset-* → reset, block-ip →
+  block + attacker quarantine).
+- **The standout — CVE crosswalk:** CVE-pinned PAN rules → exact FortiOS
+  `set cve` entries (FortiOS IPS supports a `cve` filter — verified). Log4Shell
+  (CVE-2021-44228) etc. map precisely. This is the one real cross-vendor key.
+- Built-in/undefined PAN profiles (default/strict) → FortiGuard stock sensor
+  (`default` / `high_security`).
+- **Not carried (flagged with PAN threat IDs, never guessed):** per-threat
+  exceptions (no crosswalk), DNS sinkhole (→ FortiOS DNS filter), host
+  client/server scoping. WildFire (→ FortiSandbox) and Data Filtering (→ DLP)
+  are now the only unconverted PAN profile types.
+- emit `config ips sensor`; policy += `set ips-sensor` + utm-status +
+  ssl-ssh certificate-inspection. Also fixed AV decoder action parsing to
+  handle the element form (`<action><reset-both/></action>`) via a shared
+  `_pa_action`.
+- model.IpsSensor + cfg.ips_sensors + Policy.ips_sensor. 293 tests (+2).
+  Verified e2e vs the live 601F (severity + CVE entries + policy attach),
+  schema-cert clean (0 unknown tables/attrs).
+
+PAN security-profile coverage is now complete except WildFire / Data-Filtering:
+App-ID (signature-level), URL (webfilter), file-blocking (file-filter),
+antivirus, and IPS.
+
 ### v0.51.0 — shipped 2026-06-16 (PAN antivirus → FortiOS antivirus profiles + app-DB freshness warning)
 - **AV conversion**: PAN antivirus/virus profiles → FortiOS antivirus profiles.
   `parse_profiles` reads `profiles/virus` decoders; a rule's profile-setting

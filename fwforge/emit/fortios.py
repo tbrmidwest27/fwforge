@@ -149,6 +149,7 @@ class Emitter:
         self.webfilter()
         self.file_filter()
         self.antivirus()
+        self.ips()
         self.vpn()
         self.vips()
         if self.nat_mode == "central":
@@ -573,6 +574,42 @@ class Emitter:
             "deep-inspection ssl-ssh profile (policies attach the built-in "
             "certificate-inspection by default).")
 
+    def ips(self):
+        """IPS sensors (from PAN anti-spyware / vulnerability)."""
+        if not self.cfg.ips_sensors:
+            return
+        self.line()
+        self.line("config ips sensor")
+        for s in self.cfg.ips_sensors:
+            self.line(f"    edit {_q(s.name)}")
+            if s.comment:
+                self.line(f"        set comment {_q(s.comment[:255])}")
+            self.line("        config entries")
+            for i, e in enumerate(s.entries, start=1):
+                self.line(f"            edit {i}")
+                if e.get("severity"):
+                    self.line("                set severity "
+                              + " ".join(e["severity"]))
+                if e.get("cve"):
+                    self.line("                set cve " + " ".join(e["cve"]))
+                self.line(f"                set action {e['action']}")
+                if e.get("quarantine"):
+                    self.line("                set quarantine "
+                              f"{e['quarantine']}")
+                if e.get("log"):
+                    self.line(f"                set log {e['log']}")
+                self.line("            next")
+            self.line("        end")
+            self.line("    next")
+        self.line("end")
+        self.report.add(
+            "info", "policies",
+            f"{len(self.cfg.ips_sensors)} IPS sensor(s) created from PAN "
+            "anti-spyware/vulnerability, mapped at severity + CVE level with "
+            "FortiGuard-recommended actions as the baseline. Cross-vendor IPS "
+            "is posture parity, NOT signature-for-signature — validate and "
+            "tune before enforcing.")
+
     def vpn(self):
         cfg = self.cfg
         if not cfg.phase1s:
@@ -914,19 +951,22 @@ class Emitter:
                       + " ".join(_q(s) for s in (p.services or ["ALL"])))
             self.line("        set logtraffic "
                       + ("all" if p.log else "disable"))
-            if p.app_list or p.webfilter or p.file_filter or p.antivirus:
+            if (p.app_list or p.webfilter or p.file_filter or p.antivirus
+                    or p.ips_sensor):
                 self.line("        set utm-status enable")
-                # webfilter / file-filter / antivirus on HTTPS need an SSL-
-                # inspection profile; the built-in certificate-inspection
+                # webfilter / file-filter / antivirus / IPS on HTTPS need an
+                # SSL-inspection profile; the built-in certificate-inspection
                 # (SNI-based) needs no CA rollout. app-control alone keeps
                 # prior behavior (no ssl-ssh-profile line).
-                if p.webfilter or p.file_filter or p.antivirus:
+                if p.webfilter or p.file_filter or p.antivirus or p.ips_sensor:
                     self.line('        set ssl-ssh-profile '
                               '"certificate-inspection"')
                 if p.app_list:
                     self.line(f"        set application-list {_q(p.app_list)}")
                 if p.antivirus:
                     self.line(f"        set av-profile {_q(p.antivirus)}")
+                if p.ips_sensor:
+                    self.line(f"        set ips-sensor {_q(p.ips_sensor)}")
                 if p.webfilter:
                     self.line("        set webfilter-profile "
                               f"{_q(p.webfilter)}")

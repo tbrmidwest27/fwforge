@@ -155,6 +155,22 @@ class AvProfile:
 
 
 @dataclass
+class IpsSensor:
+    """FortiOS IPS sensor (from PAN anti-spyware / vulnerability conversion).
+
+    Cross-vendor IPS is posture parity, not signature parity — there is no PA
+    Threat-ID -> FortiGuard-signature crosswalk. entries are filter-based:
+    each is {severity: [..]} or {cve: [..]} with a FortiOS action
+    ('default'=FortiGuard-recommended | 'block' | 'reset' | 'pass'), optional
+    log / quarantine. CVE entries are the one exact cross-vendor key."""
+
+    name: str
+    entries: list = field(default_factory=list)
+    comment: str | None = None
+    source: SourceRef | None = None
+
+
+@dataclass
 class Policy:
     name: str = ""
     src_zones: list[str] = field(default_factory=list)  # interface/zone names
@@ -174,6 +190,7 @@ class Policy:
     webfilter: str = ""  # FortiOS webfilter profile name (PAN URL-filtering)
     file_filter: str = ""  # FortiOS file-filter profile (PAN file-blocking)
     antivirus: str = ""  # FortiOS antivirus profile (PAN virus/antivirus)
+    ips_sensor: str = ""  # FortiOS IPS sensor (PAN anti-spyware/vulnerability)
     family: int = 0  # 0 = derive from addresses, 4, or 6
     source: SourceRef | None = None
 
@@ -295,6 +312,7 @@ class FirewallConfig:
     webfilters: list[WebFilterProfile] = field(default_factory=list)
     file_filters: list[FileFilterProfile] = field(default_factory=list)
     av_profiles: list[AvProfile] = field(default_factory=list)
+    ips_sensors: list[IpsSensor] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
     vips: list[Vip] = field(default_factory=list)
     nats: list[NatRule] = field(default_factory=list)

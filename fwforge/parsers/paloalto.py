@@ -29,6 +29,7 @@ from ..model import (
     AppList,
     AvProfile,
     FileFilterProfile,
+    IpsSensor,
     FirewallConfig,
     Interface,
     NatRule,
@@ -1203,8 +1204,8 @@ class PaloParser:
                     f"rule '{name}' uses service=application-default with "
                     "application=any — converted as ALL, tighten manually",
                     ref)
-            webfilter, file_filter, antivirus = self._resolve_profile_setting(
-                r, name, ref)
+            webfilter, file_filter, antivirus, ips_sensor = \
+                self._resolve_profile_setting(r, name, ref)
 
             pol = Policy(
                 name=name,
@@ -1225,6 +1226,7 @@ class PaloParser:
                 webfilter=webfilter,
                 file_filter=file_filter,
                 antivirus=antivirus,
+                ips_sensor=ips_sensor,
                 source=ref,
             )
             if action not in ("allow", "deny", "drop"):
@@ -1351,7 +1353,8 @@ class PaloParser:
         self._url_profiles: dict = {}    # name -> {pan action: [categories]}
         self._file_profiles: dict = {}   # name -> [ {name, action, types} ]
         self._virus_profiles: dict = {}  # name -> {pan decoder proto: action}
-        self._profile_groups: dict = {}  # group -> {url, file, virus, other}
+        self._ips_profiles: dict = {}    # name -> {rules, exceptions, sinkhole}
+        self._profile_groups: dict = {}  # group -> {url,file,virus,vuln,spy,...}
         profs = vsys.get("profiles")
         if isinstance(profs, dict):
             for name, p in _entries(profs.get("url-filtering")):
@@ -1370,63 +1373,103 @@ class PaloParser:
                 decoders = {}
                 dec = p.get("decoder") if isinstance(p, dict) else None
                 for dname, d in _entries(dec):
-                    act = str(d.get("action", "default")).strip().lower() \
-                        if isinstance(d, dict) else "default"
-                    decoders[dname.strip().lower()] = act
+                    decoders[dname.strip().lower()] = self._pa_action(
+                        d.get("action") if isinstance(d, dict) else None)
                 self._virus_profiles[name] = decoders
+            # anti-spyware + vulnerability protection -> FortiOS IPS sensors
+            for kind in ("vulnerability", "spyware"):
+                for name, p in _entries(profs.get(kind)):
+                    rules = []
+                    for rname, r in _entries(
+                            p.get("rules") if isinstance(p, dict) else None):
+                        host = r.get("host")
+                        rules.append({
+                            "action": self._pa_action(r.get("action")),
+                            "severity": [s.strip().lower()
+                                         for s in _as_list(r.get("severity"))],
+                            "cve": [c.strip() for c in _as_list(r.get("cve"))],
+                            "host": host.strip().lower()
+                            if isinstance(host, str) else "any"})
+                    exc = [t for t, _ in _entries(p.get("threat-exception"))] \
+                        if isinstance(p, dict) else []
+                    self._ips_profiles[name] = {
+                        "rules": rules, "exceptions": exc,
+                        "sinkhole": bool(isinstance(p, dict)
+                                         and p.get("botnet-domains"))}
         for gname, g in _entries(vsys.get("profile-group")):
-            url = _as_list(g.get("url-filtering"))
-            fb = _as_list(g.get("file-blocking"))
-            vir = _as_list(g.get("virus"))
             self._profile_groups[gname] = {
-                "url": url[0] if url else "",
-                "file": fb[0] if fb else "",
-                "virus": vir[0] if vir else "",
-                "other": [t for t in ("spyware", "vulnerability",
-                                      "wildfire-analysis", "data-filtering")
+                "url": (_as_list(g.get("url-filtering")) or [""])[0],
+                "file": (_as_list(g.get("file-blocking")) or [""])[0],
+                "virus": (_as_list(g.get("virus")) or [""])[0],
+                "vulnerability": (_as_list(g.get("vulnerability")) or [""])[0],
+                "spyware": (_as_list(g.get("spyware")) or [""])[0],
+                "other": [t for t in ("wildfire-analysis", "data-filtering")
                           if g.get(t)]}
 
     def _resolve_profile_setting(self, r: dict, rule: str,
-                                 ref: SourceRef) -> tuple[str, str, str]:
-        """A rule's profile-setting -> (webfilter, file-filter, antivirus)
-        FortiOS profile names. Resolves a profile-group or direct refs;
-        converts url-filtering + file-blocking + antivirus; flags the
-        profiles fwforge does NOT convert (anti-spyware / vulnerability /
-        WildFire / data-filtering — signature/engine-level)."""
+                                 ref: SourceRef) -> tuple[str, str, str, str]:
+        """A rule's profile-setting -> (webfilter, file-filter, antivirus,
+        ips-sensor) FortiOS profile names. Resolves a profile-group or direct
+        refs; converts url-filtering + file-blocking + antivirus +
+        anti-spyware/vulnerability (-> IPS). Only WildFire (-> FortiSandbox)
+        and Data Filtering (-> DLP) are left for manual config."""
         ps = r.get("profile-setting")
         if not isinstance(ps, dict):
-            return "", "", ""
-        url_name = file_name = virus_name = ""
+            return "", "", "", ""
+        url_name = file_name = virus_name = vuln_name = spy_name = ""
         other: list[str] = []
         grp = _as_list(ps.get("group"))
         if grp:
             g = self._profile_groups.get(grp[0], {})
             url_name, file_name = g.get("url", ""), g.get("file", "")
             virus_name = g.get("virus", "")
+            vuln_name = g.get("vulnerability", "")
+            spy_name = g.get("spyware", "")
             other = list(g.get("other", []))
         prof = ps.get("profiles")
         if isinstance(prof, dict):
             u = _as_list(prof.get("url-filtering"))
             f = _as_list(prof.get("file-blocking"))
             v = _as_list(prof.get("virus"))
+            vu = _as_list(prof.get("vulnerability"))
+            sp = _as_list(prof.get("spyware"))
             if u:
                 url_name = u[0]
             if f:
                 file_name = f[0]
             if v:
                 virus_name = v[0]
-            other += [t for t in ("spyware", "vulnerability",
-                                  "wildfire-analysis", "data-filtering")
+            if vu:
+                vuln_name = vu[0]
+            if sp:
+                spy_name = sp[0]
+            other += [t for t in ("wildfire-analysis", "data-filtering")
                       if prof.get(t)]
         wf = self._webfilter_for(url_name, rule, ref) if url_name else ""
         ff = self._filefilter_for(file_name, rule, ref) if file_name else ""
         av = self._antivirus_for(virus_name, rule, ref) if virus_name else ""
+        ips = (self._ips_sensor_for(vuln_name, spy_name, rule, ref)
+               if vuln_name or spy_name else "")
         if other:
             self.note("info", "policies",
                       f"rule '{rule}': PAN {', '.join(sorted(set(other)))} "
-                      "profile(s) not converted (IPS/signature-level) — attach "
-                      "FortiOS IPS profiles manually", ref)
-        return wf, ff, av
+                      "profile(s) not converted — WildFire maps to "
+                      "FortiSandbox / inline-AV and Data Filtering to DLP; "
+                      "configure manually", ref)
+        return wf, ff, av, ips
+
+    @staticmethod
+    def _pa_action(node) -> str:
+        """PAN <action> -> token. Handles both the element form
+        (<action><reset-both/></action> -> 'reset-both') and the text form
+        (<action>reset-both</action>)."""
+        if isinstance(node, str):
+            return node.strip().lower() or "default"
+        if isinstance(node, dict):
+            for k in node:
+                if k != LINE:
+                    return str(k).strip().lower()
+        return "default"
 
     @staticmethod
     def _safe_prof(prefix: str, name: str) -> str:
@@ -1476,6 +1519,135 @@ class PaloParser:
         msg += (". FortiGuard AV engine/signatures apply; scanning HTTPS needs "
                 "a deep-inspection SSL profile.")
         self.note("warn" if derived else "info", "policies", msg, ref)
+        return name
+
+    # PAN anti-spyware/vulnerability action -> (FortiOS action, log, quarantine)
+    # 'default' -> FortiGuard-recommended action per signature; the rest are
+    # explicit. block-ip adds attacker quarantine.
+    _IPS_ACTION = {
+        "default": ("default", None, None),
+        "allow": ("pass", "disable", None),
+        "alert": ("pass", "enable", None),
+        "drop": ("block", None, None),
+        "block": ("block", None, None),
+        "reset-both": ("reset", None, None),
+        "reset-client": ("reset", None, None),
+        "reset-server": ("reset", None, None),
+        "reset": ("reset", None, None),
+        "block-ip": ("block", None, "attacker"),
+    }
+    _IPS_SEV = {"critical": "critical", "high": "high", "medium": "medium",
+                "low": "low", "informational": "info", "info": "info"}
+    _SEV_ORDER = ["critical", "high", "medium", "low", "info"]
+
+    def _ips_sensor_for(self, vuln: str, spy: str, rule: str,
+                        ref: SourceRef) -> str:
+        """PAN vulnerability + anti-spyware profiles -> ONE FortiOS IPS sensor.
+        Severity rules become severity-filter entries (first-match per
+        severity, order-independent); CVE-pinned rules become exact CVE-filter
+        entries (the one real cross-vendor key); 'default' rides FortiGuard's
+        recommended action. Built-in/undefined PAN profiles map to a stock
+        FortiGuard sensor. Per-threat exceptions and DNS sinkhole have no
+        crosswalk and are flagged, not guessed."""
+        names = [n for n in (vuln, spy) if n]
+        if not names:
+            return ""
+        key = tuple(names)
+        cache = self.cfg.meta.setdefault("_ips_cache", {})
+        if key in cache:
+            return cache[key]
+        allrules: list = []
+        undefined: list = []
+        exceptions: list = []
+        sinkhole = False
+        for n in names:
+            prof = self._ips_profiles.get(n)
+            if prof is None:
+                undefined.append(n)
+            else:
+                allrules += prof["rules"]
+                exceptions += prof.get("exceptions", [])
+                sinkhole = sinkhole or prof.get("sinkhole", False)
+        if not allrules:
+            # both built-in / undefined -> a curated FortiGuard stock sensor
+            stock = ("high_security"
+                     if any("strict" in n.lower() for n in names) else "default")
+            cache[key] = stock
+            self.note("info", "policies",
+                      f"rule '{rule}': PAN IPS profile(s) {', '.join(names)} "
+                      f"are built-in/undefined -> FortiGuard '{stock}' IPS "
+                      "sensor (verify it exists on the target and matches "
+                      "intent).", ref)
+            return stock
+        sev_action: dict = {}       # severity -> (action, log, quarantine)
+        cve_entries: list = []      # (cve_tuple, (action, log, quarantine))
+        located: set = set()
+        for r in allrules:
+            act = self._IPS_ACTION.get(r["action"], ("default", None, None))
+            if r.get("host") and r["host"] != "any":
+                located.add(r["host"])
+            cves = [c for c in r.get("cve", []) if c and c.lower() != "any"]
+            if cves:
+                cve_entries.append((tuple(cves), act))
+            sevs = [self._IPS_SEV[s] for s in r.get("severity", [])
+                    if s in self._IPS_SEV]
+            if not sevs and not cves:
+                sevs = list(self._SEV_ORDER)   # a rule with no filter = all
+            for s in sevs:
+                sev_action.setdefault(s, act)   # first PAN rule wins
+        if undefined:
+            for s in ("critical", "high", "medium"):
+                sev_action.setdefault(s, ("default", None, None))
+        groups: dict = {}
+        for s in self._SEV_ORDER:
+            if s in sev_action:
+                groups.setdefault(sev_action[s], []).append(s)
+        entries: list = []
+        for (action, log, quar), sevs in groups.items():
+            e = {"severity": sevs, "action": action}
+            if log:
+                e["log"] = log
+            if quar:
+                e["quarantine"] = quar
+            entries.append(e)
+        for cves, (action, log, quar) in cve_entries:
+            e = {"cve": list(cves), "action": action}
+            if log:
+                e["log"] = log
+            if quar:
+                e["quarantine"] = quar
+            entries.append(e)
+        if not entries:
+            return ""
+        name = self._safe_prof("ips-", "-".join(names))
+        self.cfg.ips_sensors.append(IpsSensor(
+            name=name, entries=entries,
+            comment=f"from PAN IPS {', '.join(names)}", source=ref))
+        cache[key] = name
+        plural = "y" if len(entries) == 1 else "ies"
+        msg = (f"rule '{rule}': PAN IPS {', '.join(names)} -> ips-sensor "
+               f"'{name}' ({len(entries)} entr{plural}, severity + CVE based)")
+        notes = []
+        if undefined:
+            notes.append(f"built-in {', '.join(undefined)} -> FortiGuard-"
+                         "recommended baseline")
+        if located:
+            notes.append(f"PAN host scope ({', '.join(sorted(located))}) not "
+                         "carried — inspects all directions")
+        if exceptions:
+            shown = ", ".join(exceptions[:8]) + (" ..." if len(exceptions) > 8
+                                                 else "")
+            notes.append(f"{len(exceptions)} per-threat exception(s) NOT "
+                         f"carried (PAN threat IDs {shown}) — no cross-vendor "
+                         "signature crosswalk; review manually")
+        if sinkhole:
+            notes.append("anti-spyware DNS sinkhole NOT carried — use a "
+                         "FortiOS DNS filter (botnet C&C)")
+        if notes:
+            msg += "; " + "; ".join(notes)
+        self.note("warn", "policies", msg + ". IPS mapped at severity/CVE "
+                  "level (posture parity, not signature-for-signature); "
+                  "validate before enforcing.", ref)
         return name
 
     def _webfilter_for(self, pan_name: str, rule: str, ref: SourceRef) -> str:

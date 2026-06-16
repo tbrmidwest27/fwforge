@@ -553,6 +553,7 @@ PROFCFG = """<config version="11.0.0"><devices>
           <file-blocking><member>block-exe</member></file-blocking>
           <virus><member>av-default</member></virus>
           <spyware><member>strict</member></spyware>
+          <wildfire-analysis><member>default</member></wildfire-analysis>
         </profiles></profile-setting>
       </entry>
       <entry name="r-group">
@@ -605,9 +606,11 @@ def test_file_blocking_to_file_filter():
 def test_unconverted_profiles_still_flagged():
     cfg = paloalto.parse(PROFCFG, "prof.xml")
     msgs = " ".join(m for _, _, m, _ in findings(cfg))
-    # IPS-level profiles (anti-spyware / vulnerability) stay unconverted but
-    # ARE flagged; antivirus is now converted so it is no longer in this list
-    assert "not converted" in msgs and "spyware" in msgs
+    # only WildFire / Data Filtering remain unconverted now (AV + IPS convert);
+    # they're flagged, never dropped silently
+    assert "not converted" in msgs and "wildfire" in msgs.lower()
+    # the PAN built-in 'strict' anti-spyware maps to a FortiGuard stock sensor
+    assert any(p.ips_sensor == "high_security" for p in cfg.policies)
 
 
 def test_antivirus_to_av_profile():
@@ -669,6 +672,83 @@ def test_antivirus_decoder_action_mapping():
     assert av.protocols["smtp"] == "monitor"    # alert -> monitor
     assert av.protocols["ftp"] == "disable"     # allow -> disable
     assert av.protocols["cifs"] == "block"      # smb -> cifs; default -> block
+
+
+IPSCFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip><entry name="10.0.0.1/24"/></ip></layer3></entry>
+    <entry name="ethernet1/2"><layer3><ip><entry name="10.0.1.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone>
+      <entry name="trust"><network><layer3><member>ethernet1/1</member></layer3></network></entry>
+      <entry name="untrust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+    </zone>
+    <profiles>
+      <vulnerability><entry name="vuln-strict">
+        <rules>
+          <entry name="block-hi"><action><reset-both/></action>
+            <severity><member>critical</member><member>high</member></severity>
+            <cve><member>any</member></cve><host>any</host></entry>
+          <entry name="alert-med"><action><alert/></action>
+            <severity><member>medium</member></severity></entry>
+          <entry name="log4shell"><action><reset-both/></action>
+            <cve><member>CVE-2021-44228</member></cve></entry>
+        </rules>
+        <threat-exception><entry name="91284"><action><allow/></action></entry></threat-exception>
+      </entry></vulnerability>
+      <spyware><entry name="spy-strict">
+        <rules><entry name="block-cc"><action><reset-both/></action>
+          <severity><member>critical</member><member>high</member></severity>
+          <category>command-and-control</category></entry></rules>
+        <botnet-domains><lists/></botnet-domains>
+      </entry></spyware>
+    </profiles>
+    <rulebase><security><rules><entry name="ips-rule">
+      <from><member>trust</member></from><to><member>untrust</member></to>
+      <source><member>any</member></source><destination><member>any</member></destination>
+      <service><member>any</member></service><application><member>any</member></application>
+      <action>allow</action>
+      <profile-setting><profiles>
+        <vulnerability><member>vuln-strict</member></vulnerability>
+        <spyware><member>spy-strict</member></spyware>
+      </profiles></profile-setting>
+    </entry></rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_ips_sensor_construction():
+    cfg = paloalto.parse(IPSCFG, "ips.xml")
+    assert len(cfg.ips_sensors) == 1
+    s = cfg.ips_sensors[0]
+    assert s.name == "ips-vuln-strict-spy-strict"
+    # severity grouping, first-match: critical/high -> reset, medium -> monitor
+    crit = next(e for e in s.entries if "critical" in e.get("severity", []))
+    assert crit["action"] == "reset" and "high" in crit["severity"]
+    med = next(e for e in s.entries if e.get("severity") == ["medium"])
+    assert med["action"] == "pass" and med.get("log") == "enable"
+    # the CVE cross-vendor key: a CVE-pinned PAN rule -> exact FortiOS cve entry
+    cve_e = next(e for e in s.entries if e.get("cve"))
+    assert cve_e["cve"] == ["CVE-2021-44228"] and cve_e["action"] == "reset"
+    assert cfg.policies[0].ips_sensor == "ips-vuln-strict-spy-strict"
+    msgs = " ".join(m for _, _, m, _ in findings(cfg))
+    assert "91284" in msgs                       # per-threat exception flagged
+    assert "sinkhole" in msgs.lower()            # DNS sinkhole flagged
+
+
+def test_ips_pipeline_emit():
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        IPSCFG, "paloalto", "ips.xml",
+        {"ethernet1/1": "port1", "ethernet1/2": "port2"}, target="8.0")
+    conf = res.out_text
+    assert "config ips sensor" in conf
+    assert 'edit "ips-vuln-strict-spy-strict"' in conf
+    assert "set severity critical high" in conf
+    assert "set cve CVE-2021-44228" in conf
+    assert 'set ips-sensor "ips-vuln-strict-spy-strict"' in conf
 
 
 def test_profiles_pipeline_emit():
