@@ -23,6 +23,27 @@ def test_version_parsing():
     assert vd.source_version_from_header(load_tree()) == (7, 4, 4)
 
 
+def test_flip_if_absent_fires_when_section_missing():
+    # allow-traffic-redirect's default flips enable->disable in 8.0. A config
+    # with NO 'config system settings' block relies 100% on the firmware
+    # default -- the exact invisible artifact the rule must catch. Regression:
+    # the presence check lived inside the node loop, so a missing section fired
+    # nothing. Edit-keyed tables (phase1/phase2 dhgrp) must still stay silent
+    # when absent (no entries rely on the default).
+    tree = ft.parse_config(
+        'config firewall address\n'
+        '    edit "a"\n'
+        '        set subnet 10.0.0.0 255.255.255.0\n'
+        '    next\n'
+        'end\n')
+    report = Report()
+    vd.scan(tree, (7, 4), (8, 0), report)
+    msgs = [f.message for f in report.findings]
+    assert any("allow-traffic-redirect" in m for m in msgs)
+    assert not any("phase1 has no explicit" in m for m in msgs)
+    assert not any("phase2 has no explicit" in m for m in msgs)
+
+
 def test_scan_74_to_80_finds_all_artifact_classes():
     tree = load_tree()
     report = Report()
@@ -174,9 +195,17 @@ def test_downgrade_empty_phase_tables_silent():
             "end\n")
     tree = ft.parse_config(text)
     report = Report()
-    stats = vd.scan(tree, (8, 0), (7, 4), report)
-    assert stats["artifacts"] == 0
+    vd.scan(tree, (8, 0), (7, 4), report)
+    # empty edit-keyed phase tables must not fire the dhgrp default-flip
     assert not any("dhgrp" in f.message for f in report.findings)
+    assert not any("phase1 has no explicit" in f.message
+                   or "phase2 has no explicit" in f.message
+                   for f in report.findings)
+    # the singleton allow-traffic-redirect flip DOES fire on a downgrade when
+    # 'config system settings' is absent (the config relies on the firmware
+    # default, which differs below 8.0)
+    assert any("allow-traffic-redirect" in f.message
+               for f in report.findings)
 
 
 def test_e2e_downgrade_scan_cli(tmp_path):

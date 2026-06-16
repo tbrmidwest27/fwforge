@@ -260,9 +260,11 @@ def _scan_up(tree: CTree, source: tuple, target: tuple, report,
                                 line.attr = rule.new
                                 stats["auto_fixed"] += 1
         elif rule.kind == "flip-if-absent":
+            section_seen = False
             for path, node in iter_config_nodes(tree):
                 if not path_endswith(path, rule.path):
                     continue
+                section_seen = True
                 edits = [c for c in node.children if isinstance(c, EditNode)]
                 if edits:
                     for e in edits:
@@ -281,6 +283,12 @@ def _scan_up(tree: CTree, source: tuple, target: tuple, report,
                                and c.attr == rule.attr
                                for c in node.children):
                         hits += 1
+            if not section_seen and not rule.edit_table:
+                # the whole section is absent -> the config relies entirely on
+                # the firmware default, which is exactly the flipped-default
+                # (invisible) artifact this rule exists to catch. (edit-keyed
+                # tables don't apply: no section = no entries relying on it.)
+                hits += 1
 
         if hits:
             stats["rules_hit"] += 1
@@ -342,9 +350,11 @@ def _scan_down(tree: CTree, source: tuple, target: tuple, report,
                        f"{vlabel(rule.since)} — auto-renamed "
                        f"back to 'config {' '.join(rule.path)}'")
         elif rule.kind == "flip-if-absent":
+            section_seen = False
             for path, node in iter_config_nodes(tree):
                 if not path_endswith(path, rule.path):
                     continue
+                section_seen = True
                 edits = [c for c in node.children
                          if isinstance(c, EditNode)]
                 if edits:
@@ -362,6 +372,10 @@ def _scan_down(tree: CTree, source: tuple, target: tuple, report,
                                and c.attr == rule.attr
                                for c in node.children):
                         hits += 1
+            if not section_seen and not rule.edit_table:
+                # absent section -> relies on the firmware default; flag it so
+                # the flipped default is set explicitly and survives downgrade.
+                hits += 1
             message = rule.down_message or (
                 f"the default for '{rule.attr}' differs on either side "
                 f"of {vlabel(rule.since)} — set it explicitly "
