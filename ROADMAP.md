@@ -256,6 +256,38 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.50.0 — shipped 2026-06-16 (per-application App-ID signatures via the FortiGuard app DB)
+Closes the App-ID granularity gap with FortiConverter: PAN App-IDs now map to
+specific FortiOS application-control **signatures**, not just FortiGuard
+categories. Same clean-room model as schema-cert — the signature DB is fetched
+from the user's OWN FortiGate and cached locally, never shipped in the repo.
+- **NEW `fwforge/appdb.py`**: fetch the FortiGuard application signature DB
+  (~3,300 sigs: id / name / category) from a live FortiGate over REST
+  (`GET /api/v2/cmdb/application/name`), cache under `~/.fwforge/appdb/`, never
+  commit. `build_index()` → canon(name) → {id, name, category}.
+- **`pan_appid.map_to_sigs()`**: PAN App-ID → signature ID(s) via (1) a curated
+  PAN→FortiOS name alias table (`PAN_SIG_ALIAS`, verified against the live 601F:
+  web-browsing→HTTP.BROWSER, ms-teams→Microsoft.Teams, ms-office365→
+  Microsoft.365, ms-rdp→RDP, citrix→Citrix.ICA, smb→SMB.v1/2/3, …), then (2)
+  exact normalized-name match (catches Gmail/Facebook/YouTube/Zoom/Slack/
+  Salesforce/… with no alias). Apps with no signature fall back to FortiGuard
+  categories; transport apps (ssl/tls) ignored; nothing convertible dropped
+  silently.
+- **emit**: `config application list` entries now emit `set application <ids>`
+  for matched signatures plus a `set category` entry for the fallback.
+- **Opt-in** like schema-cert: `run_cross(app_db=…)`; CLI `fwforge app-db <host>
+  --token` fetches/caches (+ `--list`), `convert --app-db/--no-app-db`; GUI
+  auto-uses the newest cache. Without a DB it stays category-level (so
+  conversions and tests are deterministic).
+- model.AppList += `applications` / `app_sig_names`. 288 tests (+5).
+- VERIFIED end-to-end against the live 601F: 8 SaaS App-IDs → 8 signature IDs
+  (Facebook 15832, Gmail 15817, YouTube 31077, Microsoft.Teams 43541,
+  Microsoft.365 33182, Salesforce 16920, HTTP.BROWSER 15893, Dropbox 17459),
+  schema-certified clean (0 unknown tables / attrs).
+- FUTURE: the 601F is the reference DB for now; a better long-term source
+  (multi-version bundle / FortiGuard feed / Fortinet-sanctioned mapping) is the
+  next step Adam flagged.
+
 ### v0.49.0 — shipped 2026-06-16 (PAN security profiles: URL filtering → webfilter, file blocking → file-filter)
 Converts the two PAN security-profile types that are category/type-level
 (clean-room-safe). Before this, only App-ID → application-control was generated;

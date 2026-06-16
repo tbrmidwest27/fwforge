@@ -252,13 +252,17 @@ class PaloParser:
     def __init__(self, text: str, filename: str = "",
                  vsys: str | None = None,
                  device_group: str | None = None,
-                 template: str | None = None):
+                 template: str | None = None,
+                 app_index: dict | None = None):
         self.filename = filename
         self.cfg = FirewallConfig(vendor="paloalto")
         self._findings: list[tuple[str, str, str, SourceRef | None]] = []
         self._want_vsys = vsys
         self._dg = device_group
         self._tmpl = template
+        # FortiGuard app-signature index (canon name -> {id,name,category});
+        # empty => App-ID converts to FortiGuard categories (the fallback)
+        self._app_index = app_index or {}
         self._sibling_names: list[str] = []
         self._import_ifcs: set[str] | None = None
         self._import_vrs: set[str] | None = None
@@ -1259,6 +1263,8 @@ class PaloParser:
         # references a custom group (jabil_serv_mysql_smb_app) should map
         # the apps inside it (mysql, smb), not fail on the group name
         apps = self._expand_app_groups(apps)
+        if self._app_index:
+            return self._app_list_sigs(apps, rule, ref)
         cats, ids, transport, unmapped = pan_appid.map_apps(apps)
         if not cats:
             if unmapped:
@@ -1287,6 +1293,50 @@ class PaloParser:
         self.note("warn", "policies", msg
                   + ". Category-level control approximates PAN's per-app "
                   "match; verify and tighten.", ref)
+        return name
+
+    def _app_list_sigs(self, apps: list[str], rule: str,
+                       ref: SourceRef) -> str:
+        """Per-application signature mapping (FortiGuard app DB present).
+        Matched apps -> specific signature IDs; the rest fall back to
+        FortiGuard categories; nothing convertible is dropped silently."""
+        sig_ids, sig_names, matched, unmatched, transport = \
+            pan_appid.map_to_sigs(apps, self._app_index)
+        cats, cat_ids, _t, cat_unmapped = (
+            pan_appid.map_apps(unmatched) if unmatched else ([], [], [], []))
+        if not sig_ids and not cat_ids:
+            leftover = [a for a in (unmatched or apps)
+                        if a not in ("any", "application-default")]
+            if leftover:
+                self.note("warn", "policies",
+                          f"rule '{rule}': App-ID(s) {', '.join(leftover)} have "
+                          "no FortiOS signature or category mapping — add "
+                          "application control manually", ref)
+            return ""
+        key = ("sig", tuple(sorted(sig_ids)), tuple(sorted(cat_ids)))
+        cache = self.cfg.meta.setdefault("_applist_cache", {})
+        if key not in cache:
+            name = f"pan-appctrl-{len(self.cfg.app_lists) + 1}"
+            self.cfg.app_lists.append(AppList(
+                name=name, applications=sig_ids, app_sig_names=sig_names,
+                categories=cat_ids, cat_names=cats,
+                apps=[a for a in apps
+                      if a not in ("any", "application-default")],
+                source=ref))
+            cache[key] = name
+        name = cache[key]
+        msg = (f"rule '{rule}': App-ID -> application-list '{name}' "
+               f"({len(sig_ids)} signature(s)")
+        if cat_ids:
+            msg += f" + category fallback {', '.join(cats)}"
+        msg += ")"
+        if transport:
+            msg += f"; transport app(s) ignored: {', '.join(transport)}"
+        if cat_unmapped:
+            msg += f"; UNMAPPED (add manually): {', '.join(cat_unmapped)}"
+        self.note("warn" if cat_unmapped else "info", "policies",
+                  msg + ". Per-application control mapped from the FortiGuard "
+                  "app DB; verify.", ref)
         return name
 
     # ---- security profiles: PAN url-filtering / file-blocking -> FortiOS ----
@@ -1948,9 +1998,10 @@ class PaloParser:
 def parse(text: str, filename: str = "",
           vsys: str | None = None,
           device_group: str | None = None,
-          template: str | None = None) -> FirewallConfig:
-    p = PaloParser(text, filename, vsys=vsys,
-                   device_group=device_group, template=template)
+          template: str | None = None,
+          app_index: dict | None = None) -> FirewallConfig:
+    p = PaloParser(text, filename, vsys=vsys, device_group=device_group,
+                   template=template, app_index=app_index)
     cfg = p.parse()
     if p._sibling_names and vsys is None:
         # multi-vsys: every additional vsys parses into its own
@@ -1958,7 +2009,8 @@ def parse(text: str, filename: str = "",
         cfgs = [(p._vsys_key, cfg)]
         for n in p._sibling_names:
             sib = PaloParser(text, filename, vsys=n,
-                             device_group=device_group, template=template)
+                             device_group=device_group, template=template,
+                             app_index=app_index)
             cfgs.append((n, sib.parse()))
         cfg.meta["vsys_cfgs"] = cfgs
     return cfg

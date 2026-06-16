@@ -108,6 +108,10 @@ class AppList:
     categories: list[int] = field(default_factory=list)
     cat_names: list[str] = field(default_factory=list)
     apps: list[str] = field(default_factory=list)  # source PAN app names
+    # per-application signature IDs (when a FortiGuard app DB is available);
+    # categories above are the fallback for apps with no signature match
+    applications: list[int] = field(default_factory=list)
+    app_sig_names: list[str] = field(default_factory=list)
     source: SourceRef | None = None
 
 

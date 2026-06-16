@@ -636,6 +636,91 @@ def test_pan_urlcat_mapping():
     assert "high-risk" in pan_urlcat.RISK_BUCKETS
 
 
+# a tiny stand-in FortiGuard app DB so signature tests don't depend on a
+# cache being present on the machine
+FAKE_APPDB = {
+    "version": "8.0.0", "build": 167, "host": "test", "count": 5,
+    "apps": [
+        {"name": "Facebook", "id": 15832, "category": 23, "popularity": 5},
+        {"name": "Gmail", "id": 15817, "category": 21, "popularity": 5},
+        {"name": "HTTP.BROWSER", "id": 40568, "category": 25, "popularity": 5},
+        {"name": "Microsoft.Teams", "id": 45001, "category": 28, "popularity": 5},
+        {"name": "YouTube", "id": 31077, "category": 5, "popularity": 5},
+    ],
+}
+
+APPIDCFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3><ip><entry name="10.0.0.1/24"/></ip></layer3></entry>
+    <entry name="ethernet1/2"><layer3><ip><entry name="10.0.1.1/24"/></ip></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <zone>
+      <entry name="trust"><network><layer3><member>ethernet1/1</member></layer3></network></entry>
+      <entry name="untrust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+    </zone>
+    <rulebase><security><rules><entry name="app-rule">
+      <from><member>trust</member></from><to><member>untrust</member></to>
+      <source><member>any</member></source><destination><member>any</member></destination>
+      <service><member>application-default</member></service>
+      <application><member>facebook</member><member>web-browsing</member><member>salesforce</member></application>
+      <action>allow</action>
+    </entry></rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_appdb_build_index():
+    from fwforge import appdb
+    idx = appdb.build_index(FAKE_APPDB)
+    assert idx[appdb._canon("Microsoft.Teams")]["id"] == 45001
+    assert idx[appdb._canon("Facebook")]["id"] == 15832
+    assert appdb.build_index(None) == {}     # no DB -> empty index
+
+
+def test_appid_signature_mapping():
+    from fwforge import appdb
+    from fwforge.parsers import pan_appid
+    idx = appdb.build_index(FAKE_APPDB)
+    ids, names, matched, unmatched, transport = pan_appid.map_to_sigs(
+        ["facebook", "gmail", "web-browsing", "ms-teams",
+         "salesforce", "ssl"], idx)
+    assert 15832 in ids and 15817 in ids        # facebook, gmail (exact)
+    assert 40568 in ids                          # web-browsing -> HTTP.BROWSER (alias)
+    assert 45001 in ids                          # ms-teams -> Microsoft.Teams (alias)
+    assert "salesforce" in unmatched             # not in this DB -> category fallback
+    assert "ssl" in transport                    # transport, not an app signature
+
+
+def test_appid_sig_pipeline_emit():
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        APPIDCFG, "paloalto", "app.xml",
+        {"ethernet1/1": "port1", "ethernet1/2": "port2"},
+        target="7.4", app_db=FAKE_APPDB)
+    conf = res.out_text
+    assert "config application list" in conf
+    # per-application signatures emitted (facebook + HTTP.BROWSER)
+    assert "set application 15832 40568" in conf
+    # salesforce has no signature in this DB -> FortiGuard category fallback
+    assert "set category 29" in conf             # Business
+    al = res.cfg.app_lists[0]
+    assert 15832 in al.applications and 40568 in al.applications
+    assert 29 in al.categories
+
+
+def test_appid_category_when_no_appdb():
+    # without an app DB it stays category-level (deterministic regardless of
+    # any cache on the machine) — no 'set application' lines
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        APPIDCFG, "paloalto", "app.xml",
+        {"ethernet1/1": "port1", "ethernet1/2": "port2"}, target="7.4")
+    conf = res.out_text
+    assert "set category" in conf and "set application " not in conf
+
+
 def test_aggregate_lacp_mode_parsed():
     import re
     passive = AGGCFG.replace("<mode>active</mode>", "<mode>passive</mode>")

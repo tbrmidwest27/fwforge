@@ -301,6 +301,79 @@ def builtin_services(app: str) -> list[str] | None:
     return APP_TO_BUILTIN.get(app.lower()) or APP_TO_BUILTIN.get(_norm(app))
 
 
+# PAN App-ID -> FortiOS application-signature name(s), for the cases where
+# the names diverge enough that normalized matching misses them. The FortiOS
+# names here were verified against a live FortiGate-601F app DB (8.0.0 b167);
+# one PAN app may expand to several FortiOS signatures (SMB -> v1/v2/v3). Apps
+# whose PAN and FortiOS names already match (Gmail, Facebook, YouTube, Zoom,
+# Slack, Salesforce, ...) need no alias — exact normalized lookup catches them.
+PAN_SIG_ALIAS: dict[str, list[str]] = {
+    "web-browsing": ["HTTP.BROWSER"],
+    "ms-teams": ["Microsoft.Teams"],
+    "ms-office365": ["Microsoft.365"],
+    "office365": ["Microsoft.365"],
+    "ms-rdp": ["RDP"],
+    "rdp": ["RDP"],
+    "citrix": ["Citrix.ICA"],
+    "ica": ["Citrix.ICA"],
+    "ms-ds-smb": ["SMB.v1", "SMB.v2", "SMB.v3"],
+    "smb": ["SMB.v1", "SMB.v2", "SMB.v3"],
+    "ms-ds-smbv2": ["SMB.v2"],
+    "ms-ds-smbv3": ["SMB.v3"],
+    "windows-update": ["Microsoft.Windows.Update"],
+    "ms-update": ["Microsoft.Windows.Update"],
+    "sharepoint": ["Microsoft.SharePoint"],
+    "ms-sharepoint": ["Microsoft.SharePoint"],
+    "ms-sharepoint-online": ["Microsoft.SharePoint"],
+    "outlook-web": ["Microsoft.Outlook.Web.App"],
+    "ms-exchange": ["Microsoft.Outlook"],
+    "skype-for-business": ["Skype.For.Business"],
+    "lync": ["Skype.For.Business"],
+}
+
+
+def map_to_sigs(apps: list[str], index: dict) -> tuple[
+        list[int], list[str], list[str], list[str], list[str]]:
+    """Map PAN App-IDs to FortiOS application-signature IDs using a FortiGuard
+    app index (canon name -> {id,name,category}, from appdb.build_index).
+    Returns (sig_ids, sig_names, matched_apps, unmatched_apps, transport_apps).
+    Tries the curated alias first, then an exact normalized-name match; an app
+    with no signature match is left for the caller's category fallback."""
+    from ..appdb import _canon
+    sig_ids: list[int] = []
+    sig_names: list[str] = []
+    matched: list[str] = []
+    unmatched: list[str] = []
+    transport: list[str] = []
+    seen: set[int] = set()
+    for app in apps:
+        if app in ("any", "application-default"):
+            continue
+        n = _norm(app)
+        low = app.lower()
+        if n in TRANSPORT or low in TRANSPORT:
+            transport.append(app)
+            continue
+        targets = PAN_SIG_ALIAS.get(low) or PAN_SIG_ALIAS.get(n)
+        hits = []
+        if targets:
+            hits = [index[_canon(t)] for t in targets if _canon(t) in index]
+        else:
+            hit = index.get(_canon(low)) or index.get(_canon(n))
+            if hit:
+                hits = [hit]
+        if hits:
+            matched.append(app)
+            for h in hits:
+                if h["id"] not in seen:
+                    seen.add(h["id"])
+                    sig_ids.append(h["id"])
+                    sig_names.append(h["name"])
+        else:
+            unmatched.append(app)
+    return sig_ids, sig_names, matched, unmatched, transport
+
+
 def map_apps(apps: list[str]) -> tuple[list[str], list[int], list[str],
                                        list[str]]:
     """Return (category-names, category-ids, transport-apps, unmapped-apps)

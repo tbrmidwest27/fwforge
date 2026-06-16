@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, pipeline, platforms
+from . import appdb as appdb_mod
 from . import schema as schema_mod
 from .emit import fortimanager, package
 from .parsers import CROSS_PARSERS, detect_vendor
@@ -153,6 +154,49 @@ def cmd_schema(args) -> int:
     return 0
 
 
+def cmd_appdb(args) -> int:
+    if args.list or not args.host:
+        cached = appdb_mod.list_cached()
+        if not cached:
+            print("no cached app DBs — fetch one with: "
+                  "fwforge app-db <host> --token <api-key>")
+            return 0
+        for a in cached:
+            print(f"{a['name']}: FortiOS {a['version']} build{a['build']}, "
+                  f"{a['count']} signatures, fetched {a['fetched']} from "
+                  f"{a['host']}")
+        return 0
+    if not args.token:
+        print("an API token is required (--token or FWFORGE_API_TOKEN)",
+              file=sys.stderr)
+        return 2
+    try:
+        db, _ = appdb_mod.resolve(args.host, args.token)
+    except Exception as e:
+        print(f"app-db fetch failed: {e}", file=sys.stderr)
+        return 2
+    print(f"fetched {db['count']} FortiGuard application signatures "
+          f"(FortiOS {db['version']} build{db['build']}) -> "
+          f"{appdb_mod.save(db)}")
+    return 0
+
+
+def _resolve_app_db(args, vendor: str):
+    """App DB for per-application App-ID control: explicit --app-db, else the
+    newest cache, unless --no-app-db. Non-PAN sources never need it."""
+    if vendor != "paloalto" or getattr(args, "no_app_db", False):
+        return None
+    ref = getattr(args, "app_db", None)
+    try:
+        if ref:
+            db, _ = appdb_mod.resolve(ref, getattr(args, "app_db_token", ""))
+            return db
+        return appdb_mod.newest()
+    except Exception as e:
+        print(f"app-db: {e}; using category-level App-ID", file=sys.stderr)
+        return None
+
+
 def _tuning_from_args(args) -> TuningOptions:
     return TuningOptions(
         prune=getattr(args, "prune", False),
@@ -182,7 +226,8 @@ def _convert_cross(text: str, src_path: str, args, outdir: Path,
             target=args.fortios or "7.4",
             tuning=_tuning_from_args(args),
             nat_mode=getattr(args, "nat_mode", "policy"),
-            parser_opts=parser_opts or None)
+            parser_opts=parser_opts or None,
+            app_db=_resolve_app_db(args, vendor))
     except PanoramaChoiceNeeded as e:
         print("this is a Panorama export — pick a device-group with "
               "--pa-device-group:", file=sys.stderr)
@@ -485,6 +530,18 @@ def main(argv: list[str] | None = None) -> int:
                    default=os.environ.get("FWFORGE_API_TOKEN", ""),
                    help="REST API token for --schema-check live fetch "
                         "(default: FWFORGE_API_TOKEN env var)")
+    p.add_argument("--app-db", metavar="HOST|FILE",
+                   help="FortiGuard app DB for per-application App-ID control: "
+                        "a live FortiGate host[:port] (read-only) or a cached "
+                        "file. Default: newest cache under ~/.fwforge/appdb/. "
+                        "PAN sources only")
+    p.add_argument("--app-db-token",
+                   default=os.environ.get("FWFORGE_API_TOKEN", ""),
+                   help="REST API token for --app-db live fetch "
+                        "(default: FWFORGE_API_TOKEN env var)")
+    p.add_argument("--no-app-db", action="store_true",
+                   help="force category-level App-ID even if an app DB is "
+                        "cached")
     tune = p.add_argument_group("tuning (cross-vendor conversions)")
     tune.add_argument("--prune", action="store_true",
                       help="drop address/service objects nothing references")
@@ -517,6 +574,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--list", action="store_true",
                    help="list cached schemas")
     p.set_defaults(fn=cmd_schema)
+
+    p = sub.add_parser(
+        "app-db",
+        help="fetch / list FortiGuard app DBs for per-application App-ID")
+    p.add_argument("host", nargs="?",
+                   help="FortiGate host[:port] to fetch from (read-only); "
+                        "omit with --list")
+    p.add_argument("--token",
+                   default=os.environ.get("FWFORGE_API_TOKEN", ""),
+                   help="REST API token (default: FWFORGE_API_TOKEN env)")
+    p.add_argument("--list", action="store_true",
+                   help="list cached app DBs")
+    p.set_defaults(fn=cmd_appdb)
 
     p = sub.add_parser("gui", help="run the local web UI")
     p.add_argument("--host", default="127.0.0.1")

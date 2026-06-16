@@ -445,7 +445,9 @@ class Emitter:
             return
         self.line()
         self.line("config application list")
+        sig_total = 0
         for al in self.cfg.app_lists:
+            sig_total += len(al.applications)
             self.line(f"    edit {_q(al.name)}")
             self.line("        set other-application-action block")
             if al.apps:
@@ -453,20 +455,39 @@ class Emitter:
                           + _q(("from PAN App-ID: "
                                 + ", ".join(al.apps))[:255]))
             self.line("        config entries")
-            self.line("            edit 1")
-            self.line("                set category "
-                      + " ".join(str(c) for c in al.categories))
-            self.line("                set action pass")
-            self.line("            next")
+            eid = 1
+            # per-application signatures first, then any category fallback
+            if al.applications:
+                self.line(f"            edit {eid}")
+                self.line("                set application "
+                          + " ".join(str(a) for a in al.applications))
+                self.line("                set action pass")
+                self.line("            next")
+                eid += 1
+            if al.categories:
+                self.line(f"            edit {eid}")
+                self.line("                set category "
+                          + " ".join(str(c) for c in al.categories))
+                self.line("                set action pass")
+                self.line("            next")
             self.line("        end")
             self.line("    next")
         self.line("end")
-        self.report.add(
-            "info", "policies",
-            f"{len(self.cfg.app_lists)} application-list profile(s) created "
-            "from PAN App-ID (category-level). Policies using them get "
-            "'set application-list'; attach a deep-inspection ssl-ssh "
-            "profile if you need control over encrypted apps.")
+        if sig_total:
+            self.report.add(
+                "info", "policies",
+                f"{len(self.cfg.app_lists)} application-list profile(s) from "
+                f"PAN App-ID with {sig_total} per-application signature(s) "
+                "(matched to the FortiGuard app DB) plus category fallbacks. "
+                "Policies get 'set application-list'; attach a deep-inspection "
+                "ssl-ssh profile for control over encrypted apps.")
+        else:
+            self.report.add(
+                "info", "policies",
+                f"{len(self.cfg.app_lists)} application-list profile(s) created "
+                "from PAN App-ID (category-level). Policies using them get "
+                "'set application-list'; attach a deep-inspection ssl-ssh "
+                "profile if you need control over encrypted apps.")
 
     def webfilter(self):
         """FortiGuard category webfilter profiles (from PAN url-filtering)."""

@@ -93,8 +93,10 @@ def test_applist_dedup_same_set(tmp_path):
 
 def test_e2e_emits_application_list(tmp_path):
     (tmp_path / "app.xml").write_text(APPCFG, encoding="utf-8")
+    # pin the category-level path (this test predates per-app signatures);
+    # --no-app-db keeps it deterministic regardless of any cached app DB
     rc = cli.main(["convert", str(tmp_path / "app.xml"), "-o", str(tmp_path),
-                   "--map", str(_write_map(tmp_path))])
+                   "--map", str(_write_map(tmp_path)), "--no-app-db"])
     assert rc == 0
     conf = (tmp_path / "app.config-all.txt").read_text(encoding="utf-8")
     assert "config application list" in conf

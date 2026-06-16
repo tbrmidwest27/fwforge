@@ -65,7 +65,8 @@ def run_cross(text: str, vendor: str, src_name: str,
               tuning: TuningOptions | None = None,
               nat_mode: str = "policy",
               parser_opts: dict | None = None,
-              authoring: dict | None = None) -> ConversionResult:
+              authoring: dict | None = None,
+              app_db: dict | None = None) -> ConversionResult:
     report = Report()
     report.meta = {
         "tool": f"fwforge {__version__}",
@@ -73,11 +74,23 @@ def run_cross(text: str, vendor: str, src_name: str,
         "mode": "cross-vendor",
         "target": f"FortiOS {target}",
     }
-    if parser_opts:
-        cfg: FirewallConfig = CROSS_PARSERS[vendor](text, src_name,
-                                                    **parser_opts)
-    else:
-        cfg = CROSS_PARSERS[vendor](text, src_name)
+    kw = dict(parser_opts or {})
+    # per-application App-ID control needs a FortiGuard app DB. It is opt-in
+    # (the caller passes one, like schema-cert) so conversions stay
+    # deterministic; without it App-ID converts to FortiGuard categories.
+    # Only the PAN parser takes app_index.
+    if vendor == "paloalto" and app_db:
+        from . import appdb as _appdb
+        _idx = _appdb.build_index(app_db)
+        if _idx:
+            kw["app_index"] = _idx
+            report.add(
+                "info", "policies",
+                "App-ID: per-application signatures from the FortiGuard app DB "
+                f"cached off {app_db.get('host', '?')} (FortiOS "
+                f"{app_db.get('version', '?')} b{app_db.get('build', '?')}, "
+                f"{app_db.get('count', '?')} signatures).")
+    cfg: FirewallConfig = CROSS_PARSERS[vendor](text, src_name, **kw)
     report.absorb_parser_findings(cfg)
     report.meta["source_vendor"] = cfg.vendor
     report.meta["source_hostname"] = cfg.hostname

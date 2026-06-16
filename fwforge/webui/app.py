@@ -19,6 +19,7 @@ from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
 
 from .. import __version__, pipeline, platforms
+from .. import appdb as appdb_mod
 from .. import schema as schema_mod
 from ..emit import fortimanager, package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
@@ -546,7 +547,10 @@ def create_app() -> Flask:
                     tuning=_tuning_from_form(request.form, meta),
                     nat_mode=request.form.get("nat_mode", "policy"),
                     parser_opts=parser_opts or None,
-                    authoring=_authoring_from_form(request.form))
+                    authoring=_authoring_from_form(request.form),
+                    # per-application App-ID when a FortiGuard app DB has been
+                    # cached (fwforge app-db <host>); else category-level
+                    app_db=appdb_mod.newest())
         except PlanError as e:
             return redirect(url_for("job", jid=jid, error=str(e)))
         except PanoramaChoiceNeeded as e:
