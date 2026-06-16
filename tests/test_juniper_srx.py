@@ -667,6 +667,23 @@ def test_inactive_marker_curly():
     assert "inactive:" not in by["dead"].src_addrs  # marker stripped clean
 
 
+def test_inactive_leaf_curly():
+    # an `inactive:` marker on a *leaf* (here a zone interface) must disable
+    # that statement, not merely strip the prefix. Regression: the curly leaf
+    # branch computed the inactive flag and threw it away, so a deactivated
+    # interface was added as a live zone member (and a deactivated address /
+    # route / match-line silently became active).
+    text = """security {
+    zones { security-zone trust { interfaces {
+        ge-0/0/0.0;
+        inactive: ge-0/0/1.0;
+    } } }
+}"""
+    cfg = juniper_srx.parse(text, "ial.conf")
+    zones = {z.name: z.members for z in cfg.zones}
+    assert zones["trust"] == ["ge-0/0/0.0"]  # inactive member excluded
+
+
 def test_setformat_vpn_crypto_and_selectors():
     # set-format `proposals` (leaf) and `proxy-identity` (container) must
     # parse the same as curly — regression for two set-only crypto bugs

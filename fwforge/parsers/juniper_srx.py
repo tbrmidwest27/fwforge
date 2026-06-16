@@ -151,9 +151,14 @@ def _tree_from_curly(text: str) -> JNode:
             stack.append(node)
             cur = []
         elif tok == ";":
-            toks, _inact = _strip_inactive(
+            toks, inact = _strip_inactive(
                 _drop_brackets([_clean(t) for t in cur]))
             if toks:
+                if inact:
+                    # honor a leaf-level `inactive:` marker (a deactivated
+                    # single statement) the same way the container branch and
+                    # the set-format path do -- readers detect this sentinel.
+                    toks = ["inactive"] + toks
                 stack[-1].leaves.append(toks)
             cur = []
         elif tok == "}":
