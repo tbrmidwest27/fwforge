@@ -518,6 +518,13 @@ class JunosParser:
             host = sysn.leaf_str("host-name")
             if host:
                 self.cfg.hostname = host
+            ns = sysn.get("name-server")
+            if ns is not None:
+                self.cfg.dns_servers = [t[0] for t in ns.leaves if t]
+            ntpn = sysn.get("ntp")
+            if ntpn is not None:
+                self.cfg.ntp_servers = [
+                    t[0] for t in ntpn.leaf_all("server") if t]
 
     # -- interfaces -----------------------------------------------------
 

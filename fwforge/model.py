@@ -306,6 +306,8 @@ class FirewallConfig:
 
     vendor: str = ""
     hostname: str = ""
+    dns_servers: list[str] = field(default_factory=list)  # device DNS
+    ntp_servers: list[str] = field(default_factory=list)  # device NTP
     version: str = ""  # source OS version if detected
     zones: list[Zone] = field(default_factory=list)
     interfaces: list[Interface] = field(default_factory=list)

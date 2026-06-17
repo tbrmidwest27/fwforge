@@ -158,13 +158,41 @@ def _group_dependency_order(groups: list, report=None, area: str = "") -> list:
     return ordered
 
 
+def device_system_lines(cfg: FirewallConfig) -> list[str]:
+    """Device-level settings carried from the source: hostname, DNS, NTP.
+    Emitted as FortiOS `config system global / dns / ntp` — global-scope, so
+    under a multi-VDOM wrap they classify into `config global`. Returns []
+    when the source had none (no empty blocks)."""
+    out: list[str] = []
+    if cfg.hostname:
+        out += ["", "config system global",
+                f"    set hostname {_q(cfg.hostname[:35])}", "end"]
+    # FortiOS `config system dns` has only primary + secondary slots
+    dns = list(dict.fromkeys(d for d in (cfg.dns_servers or []) if d))[:2]
+    if dns:
+        out += ["", "config system dns", f"    set primary {dns[0]}"]
+        if len(dns) > 1:
+            out.append(f"    set secondary {dns[1]}")
+        out.append("end")
+    ntp = list(dict.fromkeys(n for n in (cfg.ntp_servers or []) if n))
+    if ntp:
+        out += ["", "config system ntp", "    set ntpsync enable",
+                "    set type custom", "    config ntpserver"]
+        for i, srv in enumerate(ntp, start=1):
+            out += [f"        edit {i}", f"            set server {_q(srv)}",
+                    "        next"]
+        out += ["    end", "end"]
+    return out
+
+
 class Emitter:
     def __init__(self, cfg: FirewallConfig, report, target: str = "7.4",
-                 nat_mode: str = "policy"):
+                 nat_mode: str = "policy", device_system: bool = True):
         self.cfg = cfg
         self.report = report
         self.target = target
         self.nat_mode = nat_mode  # "policy" | "central"
+        self.device_system = device_system  # emit hostname/DNS/NTP
         self.out: list[str] = []
 
     def line(self, s: str = ""):
@@ -178,6 +206,8 @@ class Emitter:
         self.line(f"# source hostname: {cfg.hostname or '(unknown)'}"
                   f" | target: FortiOS {self.target}")
         self.line("# review the companion report before applying")
+        if self.device_system:
+            self.system()
         if self.nat_mode == "central":
             self.line()
             self.line("config system settings")
@@ -232,6 +262,25 @@ class Emitter:
             f"central NAT: {len(rules)} central-snat-map rule(s) generated "
             "from the source's NAT intent; firewall policies carry no "
             "per-policy NAT")
+
+    def system(self):
+        """Carry device-level settings (hostname / DNS / NTP) from the
+        source. Emits nothing when the source had none."""
+        lines = device_system_lines(self.cfg)
+        if lines:
+            for ln in lines:
+                self.line(ln)
+            self.report.add(
+                "info", "system",
+                "carried device settings from source: "
+                + ", ".join(
+                    p for p in (
+                        f"hostname '{self.cfg.hostname}'"
+                        if self.cfg.hostname else "",
+                        f"{len(self.cfg.dns_servers)} DNS"
+                        if self.cfg.dns_servers else "",
+                        f"{len(self.cfg.ntp_servers)} NTP"
+                        if self.cfg.ntp_servers else "") if p))
 
     def interfaces(self):
         """Create the logical interfaces that don't exist on a target by
@@ -1160,6 +1209,6 @@ class Emitter:
 
 
 def emit(cfg: FirewallConfig, report, target: str = "7.4",
-         nat_mode: str = "policy") -> str:
+         nat_mode: str = "policy", device_system: bool = True) -> str:
     map_builtin_services(cfg, report)
-    return Emitter(cfg, report, target, nat_mode).emit()
+    return Emitter(cfg, report, target, nat_mode, device_system).emit()

@@ -506,6 +506,24 @@ class PaloParser:
                 if isinstance(hostname.get("system"), dict) else "")
         if not self.cfg.hostname and self._dg:
             self.cfg.hostname = self._dg
+        # device DNS / NTP (deviceconfig/system/{dns-setting,ntp-servers})
+        sysd = device.get("deviceconfig", {})
+        sysd = sysd.get("system", {}) if isinstance(sysd, dict) else {}
+        if isinstance(sysd, dict):
+            srv = sysd.get("dns-setting", {})
+            srv = srv.get("servers", {}) if isinstance(srv, dict) else {}
+            if isinstance(srv, dict):
+                self.cfg.dns_servers = [
+                    s for s in (srv.get("primary"), srv.get("secondary"))
+                    if isinstance(s, str) and s]
+            ntpd = sysd.get("ntp-servers", {})
+            if isinstance(ntpd, dict):
+                for key in ("primary-ntp-server", "secondary-ntp-server"):
+                    n = ntpd.get(key, {})
+                    addr = n.get("ntp-server-address") \
+                        if isinstance(n, dict) else None
+                    if isinstance(addr, str) and addr:
+                        self.cfg.ntp_servers.append(addr)
 
         self.parse_interfaces(device.get("network", {}))
         self.parse_zones(vsys.get("zone"))

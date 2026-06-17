@@ -121,6 +121,15 @@ def _s(node, key, default: str = "") -> str:
     return v if isinstance(v, str) else default
 
 
+def _slist(node, key) -> list[str]:
+    """A repeated XML element (e.g. <dnsserver>) -> list of strings, whether
+    the parser produced a single string or a list."""
+    v = node.get(key) if isinstance(node, dict) else None
+    if isinstance(v, list):
+        return [x for x in v if isinstance(x, str) and x]
+    return [v] if isinstance(v, str) and v else []
+
+
 class PfSenseParser:
     def __init__(self, text: str, filename: str = ""):
         self.filename = filename
@@ -207,6 +216,9 @@ class PfSenseParser:
         system = self.tree.get("system", {})
         self.cfg.hostname = _s(system, "hostname")
         self.cfg.version = _s(self.tree, "version")
+        self.cfg.dns_servers = _slist(system, "dnsserver")
+        # pfSense stores NTP servers space-separated in <system><timeservers>
+        self.cfg.ntp_servers = _s(system, "timeservers").split()
 
         self.parse_interfaces()
         self.parse_aliases()

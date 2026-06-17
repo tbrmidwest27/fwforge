@@ -333,6 +333,16 @@ class AsaParser:
 
             if head == "hostname" and len(toks) > 1:
                 self.cfg.hostname = toks[1]
+            elif head == "ntp" and len(toks) > 2 and toks[1] == "server":
+                self.cfg.ntp_servers.append(toks[2])
+            elif head == "dns" and len(toks) > 1 and toks[1] == "server-group":
+                # dns server-group X / <indented> name-server A B ...
+                while not self.src.eof() and _is_indented(self.src.peek()):
+                    _, raw = self.src.take()
+                    rt = raw.split()
+                    if rt and rt[0] == "name-server":
+                        self.cfg.dns_servers.extend(
+                            x for x in rt[1:] if "." in x or ":" in x)
             elif head == "name" and len(toks) >= 3:
                 self.name_map[toks[2]] = toks[1]
             elif head == "interface":

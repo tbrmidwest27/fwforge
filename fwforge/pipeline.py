@@ -37,8 +37,12 @@ class ConversionResult:
 
 
 def _cross_one(cfg: FirewallConfig, mapping, target, tuning, nat_mode,
-               report, authoring=None) -> tuple[str, list[str]]:
-    """Transforms + emit for one IR config; returns (text, unmapped)."""
+               report, authoring=None,
+               device_system: bool = True) -> tuple[str, list[str]]:
+    """Transforms + emit for one IR config; returns (text, unmapped).
+
+    device_system=False suppresses the hostname/DNS/NTP block — the
+    multi-vsys path emits those once at the device level, not per vsys."""
     from dataclasses import replace as _dc_replace
     unmapped = portmap.apply_ir(cfg, mapping, report)
     portmap.apply_authoring(cfg, authoring, report)
@@ -57,7 +61,8 @@ def _cross_one(cfg: FirewallConfig, mapping, target, tuning, nat_mode,
             f"{k}:{v}" for k, v in stats.items() if v)
     optimize.analyze(cfg, report)
     out_text = fortios_emit.emit(cfg, report, target=target,
-                                 nat_mode=nat_mode)
+                                 nat_mode=nat_mode,
+                                 device_system=device_system)
     return out_text, unmapped
 
 
@@ -215,7 +220,8 @@ def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
         if vcfg is not primary:
             report.absorb_parser_findings(vcfg)
         text, unmapped = _cross_one(vcfg, mapping, target, tuning,
-                                    nat_mode, report, authoring)
+                                    nat_mode, report, authoring,
+                                    device_system=False)
         all_unmapped.update(unmapped)
 
         # round-trip the emitted flat config through the tree so the
@@ -260,8 +266,22 @@ def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
         ft.SetLine("vdom-mode", [ft.Token("multi-vdom", False)]),
         ft.SetLine("management-vdom", [ft.Token(mgmt, True)]),
     ]
+    # device-level settings (hostname/DNS/NTP) from the source — once, at the
+    # device level (suppressed per-vsys above). hostname folds into system
+    # global; DNS/NTP become their own global sections.
+    dsys_extra: list = []
+    ds_tree = fortios_tree.parse_config(
+        "\n".join(fortios_emit.device_system_lines(primary)), "dsys")
+    for sec in ds_tree.children:
+        if not isinstance(sec, fortios_tree.ConfigNode):
+            continue
+        if fortios_tree.path_endswith(tuple(sec.path), ("system", "global")):
+            sysg.children = list(sec.children) + sysg.children
+        else:
+            dsys_extra.append(sec)
     gnode = ft.ConfigNode(["global"])
-    gnode.children = [sysg] + ([iface_node] if iface_node else []) + extra_global
+    gnode.children = ([sysg] + dsys_extra
+                      + ([iface_node] if iface_node else []) + extra_global)
     global_text = ft.serialize(ft.CTree(children=[gnode])).rstrip("\n")
 
     out: list[str] = [
