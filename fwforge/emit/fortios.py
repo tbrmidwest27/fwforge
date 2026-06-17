@@ -37,6 +37,23 @@ BUILTIN_SERVICES = {
     ("ip", "", "", None, 51): "AH",
 }
 
+# FortiOS predefined (built-in) service names. Custom services, service
+# groups, and predefined services share ONE namespace, so a converted object
+# named like a predefined (e.g. a group "VNC") fails to load with -162.
+FORTIOS_PREDEFINED_SERVICES = {
+    "ALL", "ALL_TCP", "ALL_UDP", "ALL_ICMP", "ALL_ICMP6", "AH", "AOL", "BGP",
+    "DHCP", "DHCP6", "DNS", "ESP", "FINGER", "FTP", "FTP_GET", "FTP_PUT",
+    "GOPHER", "GRE", "GTP", "H323", "HTTP", "HTTPS", "IKE", "IMAP", "IMAPS",
+    "Internet-Locator-Service", "IRC", "KERBEROS", "L2TP", "LDAP", "MGCP",
+    "MMS", "MS-SQL", "MYSQL", "NetMeeting", "NFS", "NNTP", "NONE", "NTP",
+    "ONC-RPC", "PC-Anywhere", "PING", "PING6", "POP3", "POP3S", "PPTP",
+    "QUAKE", "RADIUS", "RADIUS-OLD", "RAUDIO", "RDP", "REXEC", "RIP",
+    "RLOGIN", "RSH", "RTSP", "SAMBA", "SCCP", "SIP", "SIP-MSNmessenger",
+    "SMB", "SMTP", "SMTPS", "SNMP", "SOCKS", "SQUID", "SSH", "SYSLOG", "TALK",
+    "TELNET", "TFTP", "TIMESTAMP", "TRACEROUTE", "UUCP", "VDOLIVE", "VNC",
+    "WAIS", "WINFRAME", "WINS", "X-WINDOWS", "webproxy",
+}
+
 
 def _q(value: str) -> str:
     # escape backslash/quote, and fold newlines to literal \n so a value
@@ -78,6 +95,45 @@ def map_builtin_services(cfg: FirewallConfig, report) -> None:
         + ", ".join(f"{k}->{v}" for k, v in sorted(renames.items())[:10])
         + (" …" if len(renames) > 10 else ""),
     )
+
+
+def avoid_predefined_service_collisions(cfg: FirewallConfig, report) -> None:
+    """Rename converted services / groups whose name collides with a FortiOS
+    predefined service (shared namespace -> FortiOS rejects with -162, e.g. a
+    group named "VNC"). Runs AFTER map_builtin_services so services already
+    folded into a built-in don't churn. References are remapped."""
+    used = {s.name for s in cfg.services} | {g.name for g in cfg.svc_groups}
+    renames: dict[str, str] = {}
+
+    def fix(obj, kind: str) -> None:
+        if obj.name not in FORTIOS_PREDEFINED_SERVICES:
+            return
+        cand, k = f"{obj.name}_{kind}", 2
+        while cand in used or cand in FORTIOS_PREDEFINED_SERVICES:
+            cand = f"{obj.name}_{kind}{k}"
+            k += 1
+        renames[obj.name] = cand
+        used.discard(obj.name)
+        used.add(cand)
+        obj.name = cand
+
+    for s in cfg.services:
+        fix(s, "svc")
+    for g in cfg.svc_groups:
+        fix(g, "grp")
+    if not renames:
+        return
+    for pol in cfg.policies:
+        pol.services = [renames.get(x, x) for x in pol.services]
+    for g in cfg.svc_groups:
+        g.members = [renames.get(m, m) for m in g.members]
+    report.add(
+        "warn", "services",
+        f"renamed {len(renames)} service/group(s) that collide with a FortiOS "
+        "predefined service (custom services, groups, and predefined share one "
+        "namespace): "
+        + ", ".join(f"{k}->{v}" for k, v in sorted(renames.items())[:10])
+        + (" …" if len(renames) > 10 else ""))
 
 
 def _intf(cfg: FirewallConfig, zone: str) -> str:
@@ -1249,4 +1305,5 @@ class Emitter:
 def emit(cfg: FirewallConfig, report, target: str = "7.4",
          nat_mode: str = "policy", device_system: bool = True) -> str:
     map_builtin_services(cfg, report)
+    avoid_predefined_service_collisions(cfg, report)
     return Emitter(cfg, report, target, nat_mode, device_system).emit()

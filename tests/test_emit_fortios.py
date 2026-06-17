@@ -1,7 +1,7 @@
 from fwforge.emit import fortios as emit_fortios
 from fwforge.model import (
     Address, AddressGroup, BgpConfig, FirewallConfig, Interface, OspfArea,
-    OspfConfig, Service, ServiceGroup, Vip, VpnPhase1, VpnPhase2,
+    OspfConfig, Policy, Service, ServiceGroup, Vip, VpnPhase1, VpnPhase2,
 )
 from fwforge.report import Report
 
@@ -91,3 +91,24 @@ def test_vip_extip_is_quoted():
     out = emit_fortios.emit(cfg, Report())
     assert 'set extip "203.0.113.10"' in out
     assert 'set mappedip "10.0.0.10"' in out
+
+
+def test_predefined_service_name_collisions_renamed():
+    # services, groups, and FortiOS predefined services share one namespace,
+    # so a converted service/group named like a predefined (e.g. a group
+    # "VNC") fails to load with -162. They must be renamed + references remapped.
+    cfg = FirewallConfig(vendor="test")
+    cfg.services.append(Service(name="VNC", protocol="tcp", dst_ports="5900"))
+    cfg.svc_groups.append(ServiceGroup(name="SMB", members=["VNC"]))   # collides
+    cfg.svc_groups.append(ServiceGroup(name="MyGroup", members=["VNC"]))  # ok
+    cfg.policies.append(Policy(name="p", services=["VNC", "SMB"]))
+    emit_fortios.avoid_predefined_service_collisions(cfg, Report())
+
+    assert {s.name for s in cfg.services} == {"VNC_svc"}        # service renamed
+    grps = {g.name for g in cfg.svc_groups}
+    assert "SMB" not in grps and "SMB_grp" in grps              # group renamed
+    assert "MyGroup" in grps                                    # non-colliding kept
+    # references follow the renames
+    assert cfg.policies[0].services == ["VNC_svc", "SMB_grp"]
+    mg = next(g for g in cfg.svc_groups if g.name == "MyGroup")
+    assert mg.members == ["VNC_svc"]
