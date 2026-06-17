@@ -1,25 +1,35 @@
-"""FortiOS object-name limits — the single source of truth, plus a
-convert-time backstop.
+"""FortiOS object-name limits AND table count limits — single source of truth,
+plus convert-time backstops for both.
 
-Names are clamped at the source (the parsers, transforms/names.py, the
+**Name limits** are clamped at the source (parsers, transforms/names.py, the
 emitter). `validate_name_limits` is the safety net: it re-reads the emitted
-config and warns on any name that still exceeds its FortiOS limit, so a
-future emit path that forgets to clamp surfaces as a convert-time warning
-instead of a silent `-1` / `-162` when the config is loaded on the box.
+config and warns on any name that still exceeds its FortiOS limit.
 
-Schema-verified against a live FortiGate-601F on FortiOS 8.0.0 build0167
-(2026-06-17, per-table `?action=schema` -> mkey `size`). Every value below is
-exact on 8.0 EXCEPT the UTM / IPS profiles: 8.0 allows 47, but they are kept
-at the stricter 35 (older-FortiOS limit) so output loads on 7.x and 8.x alike
-— a real 7.x target rejected a 36-char IPS sensor name. If fwforge ever keys
-limits off the `--fortios` target, the UTM cap can rise to 47 for 8.0+.
+**Table count limits** cannot be clamped — if a source config has 150 zones
+and FortiOS only allows 100, some will be silently rejected on load.
+`validate_table_counts` catches this at convert time so the operator knows
+before deploying.
+
+All values schema-verified against a live FortiGate-601F on FortiOS 8.0.0
+build0167 (2026-06-17) via read-only GET /api/v2/cmdb/<path>?action=schema.
+The `mkey.size` field gives name lengths; `max_table_size_vdom` (or _global
+when vdom=0) gives the per-VDOM object cap.  Error codes for violations:
+  -1 / -61    name too long
+  -162        name collides with a predefined/reserved name
+  -651        list entry rejected (missing object, or table full)
+  count cap   higher-numbered `edit` blocks silently accepted then rejected
+              on commit when the table is already full — always check counts.
 """
 from __future__ import annotations
 
 from ..parsers import fortios_tree as ft
 
-# max name length (chars) keyed by config-section path (the `config global` /
-# `config vdom` wrappers are stripped before lookup)
+# ---------------------------------------------------------------------------
+# Name length limits (max chars for the `edit <name>` key)
+# ---------------------------------------------------------------------------
+# Schema-verified 8.0.0 build0167. UTM/IPS profiles are 47 on 8.0 but capped
+# at 35 here so output loads on 7.x targets too (a real 7.x box rejected a
+# 36-char IPS sensor name). Raise to 47 when --fortios targets 8.0+.
 NAME_LIMITS = {
     ("system", "interface"): 15,          # creates a real interface
     ("system", "switch-interface"): 15,   # software switch — is an interface
@@ -47,6 +57,29 @@ NAME_LIMITS = {
 }
 VDOM_NAME_MAX = 11
 POLICY_NAME_MAX = 35  # firewall policy `set name` (the edit id is numeric)
+
+# ---------------------------------------------------------------------------
+# Table count limits (max `edit` entries per VDOM)
+# ---------------------------------------------------------------------------
+# Schema field: max_table_size_vdom (or max_table_size_global when vdom cap
+# is 0/absent).  0 in the schema means "no limit reported" — omitted here.
+# The zone limit (100) is the most dangerous: large PAN configs routinely
+# exceed it.  srcintf/dstintf per-policy has no reported limit on 601F 8.0;
+# -651 on those lines means a referenced zone/interface does not exist, not
+# a count overflow.
+TABLE_LIMITS = {
+    ("system", "zone"):                 100,    # vdom cap; most likely to hit
+    ("firewall", "service", "custom"):  4096,   # vdom cap
+    ("firewall", "addrgrp"):            4000,   # global+vdom cap
+    ("firewall", "addrgrp6"):           8192,   # global cap
+    ("firewall", "address"):            40000,  # global+vdom cap
+    ("firewall", "address6"):           40000,  # global+vdom cap
+    ("firewall", "vip"):                16384,  # global+vdom cap
+    ("firewall", "vipgrp"):             500,    # vdom cap
+    ("firewall", "policy"):             30000,  # global+vdom cap
+    ("router", "static"):               10000,  # vdom cap
+    ("system", "interface"):            8192,   # global cap
+}
 
 
 def _key(path: tuple) -> tuple:
@@ -85,4 +118,25 @@ def validate_name_limits(out_text: str, report) -> int:
                         f"emitted firewall policy name '{nm.values[0].value}' "
                         f"is {len(nm.values[0].value)} chars > FortiOS max "
                         f"{POLICY_NAME_MAX} (converter gap).")
+    return hits
+
+
+def validate_table_counts(out_text: str, report) -> int:
+    """Re-parse the emitted config and warn on any table whose entry count
+    exceeds FortiOS's per-VDOM cap.  Returns the hit count."""
+    tree = ft.parse_config(out_text, "emit")
+    hits = 0
+    for path, node in ft.iter_config_nodes(tree):
+        key = _key(path)
+        limit = TABLE_LIMITS.get(key)
+        if limit is None:
+            continue
+        count = sum(1 for e in node.children if isinstance(e, ft.EditNode))
+        if count > limit:
+            hits += 1
+            report.add(
+                "warn", "limits",
+                f"emitted {' '.join(key)} has {count} entries > FortiOS "
+                f"per-VDOM max {limit} — entries beyond the cap will be "
+                "rejected on load. Split across VDOMs or reduce the count.")
     return hits

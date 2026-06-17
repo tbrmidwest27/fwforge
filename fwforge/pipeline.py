@@ -170,8 +170,9 @@ def run_cross(text: str, vendor: str, src_name: str,
         if unmapped:
             result.sample_portmap = portmap.sample_map(unmapped)
         result.exit_code = 1 if report.count("error") else 0
-    # backstop: every emitted name must be within FortiOS limits
+    # backstops: names within limits, table entry counts within caps
     limits.validate_name_limits(result.out_text, report)
+    limits.validate_table_counts(result.out_text, report)
     return result
 
 
