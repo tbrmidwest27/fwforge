@@ -81,6 +81,26 @@ def test_pan_zone_with_tunnel_iface_resolves_to_phase1():
                    for f in result.report.findings)
 
 
+def test_zone_drops_unbacked_tunnel_interface():
+    # a zone member that is a tunnel interface with NO converted IPsec tunnel
+    # backing it (orphan tunnel iface / skipped tunnel) is dropped with a
+    # warning, not emitted as a dangling `set interface` (which fails -> -3).
+    xml = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain"><network><interface>
+<ethernet><entry name="ethernet1/1"><layer3><ip>
+<entry name="10.0.0.1/24"/></ip></layer3></entry></ethernet>
+<tunnel><units><entry name="tunnel.1"><ip>
+<entry name="10.9.9.1/30"/></ip></entry></units></tunnel>
+</interface></network>
+<vsys><entry name="vsys1"><zone><entry name="IPSEC_VPN"><network><layer3>
+<member>tunnel.1</member></layer3></network></entry></zone></entry></vsys>
+</entry></devices></config>"""
+    result = pipeline.run_cross(xml, "paloalto", "orphan.xml", {})
+    assert '"tunnel.1"' not in result.out_text     # no dangling reference
+    assert any(f.area == "zones" and "tunnel" in f.message
+               and "dropped" in f.message for f in result.report.findings)
+
+
 # -- pfSense IPsec ----------------------------------------------------------
 
 def test_pfsense_ipsec():

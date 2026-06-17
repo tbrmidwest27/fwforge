@@ -347,30 +347,58 @@ class Emitter:
                         "confirm active/passive/static")
             self.report.add("info", "interfaces", msg)
 
+    def _unbacked_tunnel(self, name: str) -> bool:
+        """A tunnel interface with no phase1 backing it. Referencing it in a
+        zone/route fails to load (set interface/device -> -3): it only exists
+        once its IPsec tunnel is built, and that tunnel did not convert."""
+        itf = self.cfg.interface_by_name(name)
+        return (itf is not None and itf.kind == "tunnel"
+                and not itf.target_name)
+
     def zones(self):
-        emittable = [z for z in self.cfg.zones if z.members]
+        blocks: list[tuple] = []
         for z in self.cfg.zones:
             if not z.members:
                 self.report.add("warn", "zones",
                                 f"zone '{z.name}' has no layer-3 members — "
                                 "not emitted", z.source)
-        if not emittable:
+                continue
+            kept, dropped = [], []
+            for m in z.members:
+                if self._unbacked_tunnel(m):
+                    dropped.append(m)
+                else:
+                    kept.append(_intf(self.cfg, m))
+            if dropped:
+                self.report.add(
+                    "warn", "zones",
+                    f"zone '{z.name}': dropped tunnel interface(s) "
+                    f"{', '.join(dropped)} — no IPsec tunnel converted to back "
+                    "them (see the VPN findings), so FortiOS would reject the "
+                    "zone (set interface -> -3). Re-add once the tunnel is "
+                    "built.", z.source)
+            if kept:
+                blocks.append((z, kept))
+            else:
+                self.report.add("warn", "zones",
+                                f"zone '{z.name}': only unbacked tunnel "
+                                "members — not emitted", z.source)
+        if not blocks:
             return
         self.line()
         self.line("config system zone")
-        for z in emittable:
-            members = [_intf(self.cfg, m) for m in z.members]
+        for z, kept in blocks:
             self.line(f"    edit {_q(z.name)}")
             # PAN-OS allows intrazone traffic by default; mirror that so
             # the migration doesn't break same-zone flows (flagged below)
             self.line("        set intrazone allow")
             self.line("        set interface "
-                      + " ".join(_q(m) for m in members))
+                      + " ".join(_q(m) for m in kept))
             self.line("    next")
         self.line("end")
         self.report.add(
             "warn", "zones",
-            f"{len(emittable)} zone(s) emitted with 'intrazone allow' to "
+            f"{len(blocks)} zone(s) emitted with 'intrazone allow' to "
             "preserve PAN-OS's default same-zone behavior. That traffic "
             "bypasses policies/logging — switch to 'intrazone deny' and add "
             "explicit policies when you want enforcement.")
@@ -886,6 +914,16 @@ class Emitter:
             return
         v4 = [r for r in self.cfg.routes if not _is_v6(r.dest)]
         v6 = [r for r in self.cfg.routes if _is_v6(r.dest)]
+        # a route whose egress is an unbacked tunnel would fail to load (-3)
+        for rt in [r for r in v4 + v6 if self._unbacked_tunnel(r.interface)]:
+            self.report.add(
+                "warn", "routes",
+                f"route to '{rt.dest}' via '{rt.interface}' dropped — that "
+                "tunnel interface has no converted IPsec tunnel to back it "
+                "(set device -> -3); re-add once the tunnel is built.",
+                rt.source)
+        v4 = [r for r in v4 if not self._unbacked_tunnel(r.interface)]
+        v6 = [r for r in v6 if not self._unbacked_tunnel(r.interface)]
         if v4:
             self.line()
             self.line("config router static")
