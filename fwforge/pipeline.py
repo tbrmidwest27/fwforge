@@ -191,50 +191,108 @@ def _vdom_names(vsys_cfgs, report) -> list[tuple[str, FirewallConfig]]:
 def _run_cross_multi(vsys_cfgs, primary: FirewallConfig, vendor, mapping,
                      target, tuning, nat_mode,
                      report, authoring=None) -> ConversionResult:
-    """Multi-vsys source -> one script with a VDOM block per vsys."""
+    """Multi-vsys source -> one valid multi-VDOM script.
+
+    Each vsys becomes a VDOM. The scope split mirrors the FortiOS->FortiOS
+    path (`vdommode`): device-global objects (the logical interfaces the
+    emitter creates — VLANs / aggregates / loopbacks) are hoisted into
+    `config global` and tagged `set vdom <vsys>`, while firewall / router /
+    system-zone stay inside each VDOM body. FortiOS requires one management
+    VDOM and a PAN multi-vsys source has no 'root', so the first vsys is
+    designated (the user can repoint `set management-vdom`)."""
+    ft = fortios_tree
     bodies: list[tuple[str, str]] = []
     all_unmapped: set[str] = set()
     vsys_cfgs = _vdom_names(vsys_cfgs, report)
+    names = [v for v, _ in vsys_cfgs]
+
+    iface_node = None            # one merged `config system interface`
+    seen_ifaces: set[str] = set()
+    extra_global: list = []      # any other global-scope section (rare)
+
     for vname, vcfg in vsys_cfgs:
         if vcfg is not primary:
             report.absorb_parser_findings(vcfg)
         text, unmapped = _cross_one(vcfg, mapping, target, tuning,
                                     nat_mode, report, authoring)
-        # drop ONLY the emitter's leading #-comment header; a `#` inside a
-        # later `set comment` value must survive (don't filter by line)
-        lines = text.splitlines()
-        h = 0
-        while h < len(lines) and lines[h].startswith("#"):
-            h += 1
-        body = "\n".join(lines[h:]).strip("\n")
-        bodies.append((vname, body))
         all_unmapped.update(unmapped)
 
-    names = [v for v, _ in bodies]
+        # round-trip the emitted flat config through the tree so the
+        # global/per-VDOM split is the proven `vdommode` one. parsing also
+        # drops the emitter's leading #-header while a `#` inside a later
+        # `set comment` value survives (it is a SetLine token, not a comment)
+        tree = ft.parse_config(text, vname)
+        vdom_secs: list = []
+        for sec in tree.children:
+            if not isinstance(sec, ft.ConfigNode):
+                continue
+            if vdommode.classify(tuple(sec.path)) != "global":
+                vdom_secs.append(sec)
+            elif ft.path_endswith(tuple(sec.path), ("system", "interface")):
+                vdommode.assign_interfaces_to_vdom(sec, vname)
+                if iface_node is None:
+                    iface_node = ft.ConfigNode(["system", "interface"])
+                for e in sec.children:
+                    if not isinstance(e, ft.EditNode):
+                        continue
+                    if e.name.value in seen_ifaces:
+                        report.add(
+                            "warn", "interfaces",
+                            f"interface '{e.name.value}' is claimed by more "
+                            f"than one vsys; kept the first, dropped the "
+                            f"'{vname}' copy — an interface lives in one VDOM")
+                        continue
+                    seen_ifaces.add(e.name.value)
+                    iface_node.children.append(e)
+            else:
+                extra_global.append(sec)
+
+        bodies.append((vname, ft.serialize(
+            ft.CTree(children=vdom_secs)).rstrip("\n")))
+
+    mgmt = names[0]
+
+    # config global: vdom-mode + management-VDOM designation + the hoisted,
+    # VDOM-tagged interfaces (built as a tree so nesting/indentation is sound)
+    sysg = ft.ConfigNode(["system", "global"])
+    sysg.children = [
+        ft.SetLine("vdom-mode", [ft.Token("multi-vdom", False)]),
+        ft.SetLine("management-vdom", [ft.Token(mgmt, True)]),
+    ]
+    gnode = ft.ConfigNode(["global"])
+    gnode.children = [sysg] + ([iface_node] if iface_node else []) + extra_global
+    global_text = ft.serialize(ft.CTree(children=[gnode])).rstrip("\n")
+
     out: list[str] = [
         f"# fwforge converted config - source vendor: {primary.vendor}",
         f"# source hostname: {primary.hostname or '(unknown)'}"
         f" | target: FortiOS {target}",
         f"# multi-vsys source: one VDOM per vsys ({', '.join(names)})",
+        f"# management VDOM = '{mgmt}' (first vsys) - change "
+        "'set management-vdom' if another vsys owns management traffic",
         "# review the companion report before applying",
-        "",
-        "# enable multi-VDOM on the target first:",
+        "#",
+        "# ordered as a restorable multi-VDOM config: vdom declaration -> "
+        "config global -> per-VDOM bodies.",
+        "# to paste into a LIVE cli instead, enable multi-VDOM before the "
+        "declaration:",
         "#   config system global / set vdom-mode multi-vdom / end",
         "",
         "config vdom",
     ]
     for v in names:
         out += [f"edit {v}", "next"]
-    out += ["end", ""]
+    out += ["end", "", global_text, ""]
     for v, body in bodies:
         out += ["config vdom", f"edit {v}", body, "end", ""]
+
     report.add(
         "info", "vsys",
-        f"{len(names)} vsys converted into VDOM blocks: "
-        f"{', '.join(names)}. Interfaces are device-level — assign each "
-        "to its VDOM (set vdom) per the interface mapping before "
-        "pasting the VDOM blocks")
+        f"{len(names)} vsys converted into VDOMs ({', '.join(names)}); "
+        f"{len(seen_ifaces)} interface(s) hoisted to config global and "
+        f"assigned to their VDOM (set vdom); management VDOM = '{mgmt}'")
     report.meta["vsys_vdoms"] = ", ".join(names)
+    report.meta["management_vdom"] = mgmt
 
     result = ConversionResult(
         mode="cross", vendor=vendor, out_text="\n".join(out) + "\n",

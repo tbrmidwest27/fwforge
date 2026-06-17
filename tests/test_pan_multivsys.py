@@ -3,8 +3,10 @@ from pathlib import Path
 import pytest
 
 from fwforge import cli, pipeline
+from fwforge.parsers import fortios_tree as ft
 from fwforge.parsers import paloalto
 from fwforge.parsers.paloalto import PanoramaChoiceNeeded
+from fwforge.transforms import tree_refs
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -80,6 +82,55 @@ MULTIVSYS = """<config version="11.0.0"><devices>
       <rulebase><security><rules>
         <entry name="v2-allow"><from><member>any</member></from>
           <to><member>v2-out</member></to>
+          <source><member>any</member></source>
+          <destination><member>any</member></destination>
+          <application><member>any</member></application>
+          <service><member>any</member></service>
+          <action>allow</action></entry>
+      </rules></security></rulebase>
+    </entry>
+  </vsys>
+</entry></devices></config>"""
+
+
+# multi-vsys with VLAN subinterfaces — the emitter *creates* logical
+# interfaces (VLANs/aggregates/loopbacks) but not physical ports, so this is
+# what exercises the device-global interface hoist (MULTIVSYS above is all
+# physical and emits no `config system interface`).
+MULTIVSYS_VLAN = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/1"><layer3>
+      <ip><entry name="172.31.0.1/24"/></ip>
+      <units>
+        <entry name="ethernet1/1.30"><tag>30</tag>
+          <ip><entry name="10.30.0.1/24"/></ip></entry>
+        <entry name="ethernet1/1.40"><tag>40</tag>
+          <ip><entry name="10.40.0.1/24"/></ip></entry>
+      </units></layer3></entry>
+  </ethernet></interface></network>
+  <vsys>
+    <entry name="vsys1"><import><network><interface>
+      <member>ethernet1/1.30</member></interface></network></import>
+      <zone><entry name="z1"><network><layer3>
+        <member>ethernet1/1.30</member></layer3></network></entry></zone>
+      <rulebase><security><rules>
+        <entry name="r1"><from><member>z1</member></from>
+          <to><member>z1</member></to>
+          <source><member>any</member></source>
+          <destination><member>any</member></destination>
+          <application><member>any</member></application>
+          <service><member>any</member></service>
+          <action>allow</action></entry>
+      </rules></security></rulebase>
+    </entry>
+    <entry name="vsys2"><import><network><interface>
+      <member>ethernet1/1.40</member></interface></network></import>
+      <zone><entry name="z2"><network><layer3>
+        <member>ethernet1/1.40</member></layer3></network></entry></zone>
+      <rulebase><security><rules>
+        <entry name="r2"><from><member>z2</member></from>
+          <to><member>z2</member></to>
           <source><member>any</member></source>
           <destination><member>any</member></destination>
           <application><member>any</member></application>
@@ -451,3 +502,65 @@ def test_base_interface_not_duplicated_across_vsys():
     # each vsys gets only its own subinterface, NOT the shared base
     assert v1 == {"ethernet1/1.30"}
     assert v2 == {"ethernet1/1.40"}
+
+
+# --- multi-VDOM scope-split guardrails (Feature A) ---------------------
+# A multi-vsys conversion must emit a *valid* multi-VDOM config: interfaces
+# are device-global (config global, tagged `set vdom <vsys>`), firewall /
+# router / zone are per-VDOM, and one VDOM is the management VDOM.
+
+def _multivdom_scopes(out_text):
+    """Re-parse a cross-vendor multi-VDOM script and return (tree, {scope:
+    node}) — the same view the FortiOS loader/migrator sees."""
+    tree = ft.parse_config(out_text, "out")
+    return tree, dict(ft.vdom_scopes(tree))
+
+
+def test_multivsys_output_is_valid_multi_vdom():
+    out = pipeline.run_cross(MULTIVSYS_VLAN, "paloalto", "mv.xml", {}).out_text
+    tree, scopes = _multivdom_scopes(out)
+    assert not tree.warnings                       # balanced config/edit/end
+    assert tree_refs.is_multi_vdom(tree)
+    assert set(scopes) == {"global", "vsys1", "vsys2"}
+
+
+def test_multivsys_interfaces_hoisted_to_global_with_set_vdom():
+    # the confirmed bug: created logical interfaces emitted `set vdom "root"`
+    # buried inside the `edit <vsys>` wrapper. They must instead live in
+    # config global, each tagged with the VDOM that owns it.
+    out = pipeline.run_cross(MULTIVSYS_VLAN, "paloalto", "mv.xml", {}).out_text
+    tree, scopes = _multivdom_scopes(out)
+    # defined once, in the global scope
+    assert ft.find_config_under(scopes["global"], "system", "interface")
+    # NEVER inside a VDOM body (that would not load)
+    for vd in ("vsys1", "vsys2"):
+        assert ft.find_config_under(scopes[vd], "system", "interface") is None
+    # owned by the right VDOM — not the bug's hardcoded 'root'
+    assert tree_refs.interface_vdoms(tree) == {
+        "ethernet1/1.30": "vsys1", "ethernet1/1.40": "vsys2"}
+    assert 'set vdom "root"' not in out
+
+
+def test_multivsys_designates_management_vdom():
+    # FortiOS needs exactly one management VDOM; a PAN multi-vsys source has
+    # no 'root', so the first vsys is designated (in the global scope).
+    result = pipeline.run_cross(MULTIVSYS_VLAN, "paloalto", "mv.xml", {})
+    out = result.out_text
+    assert result.report.meta.get("management_vdom") == "vsys1"
+    _, scopes = _multivdom_scopes(out)
+    assert 'set management-vdom "vsys1"' in ft.serialize(scopes["global"])
+    assert "set vdom-mode multi-vdom" in ft.serialize(scopes["global"])
+    # not leaked into a VDOM body
+    assert "management-vdom" not in ft.serialize(scopes["vsys1"])
+
+
+def test_multivsys_routes_collapse_into_their_vdom():
+    # each vsys' virtual-router collapses into ITS VDOM's routing table —
+    # routes never cross VDOMs and never land in the global scope.
+    out = pipeline.run_cross(MULTIVSYS, "paloalto", "mv.xml", {}).out_text
+    tree, scopes = _multivdom_scopes(out)
+    v1, v2 = ft.serialize(scopes["vsys1"]), ft.serialize(scopes["vsys2"])
+    assert "config router static" in v1 and "203.0.113.1" in v1
+    assert "config router static" in v2 and "198.51.100.1" in v2
+    assert "198.51.100.1" not in v1 and "203.0.113.1" not in v2
+    assert ft.find_config_under(scopes["global"], "router", "static") is None

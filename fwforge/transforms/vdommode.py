@@ -114,6 +114,16 @@ def _set_interface_vdom(iface_node: ConfigNode, vdom: str, add: bool) -> int:
     return changed
 
 
+def assign_interfaces_to_vdom(iface_node: ConfigNode, vdom: str) -> int:
+    """Tag every interface edit in a `config system interface` node with
+    `set vdom <vdom>` (overwriting any existing value). Returns the count.
+
+    Public so the cross-vendor multi-vsys path can reuse the exact scope
+    split the FortiOS->FortiOS wrap uses: interfaces are device-global and
+    each carries the VDOM that owns it."""
+    return _set_interface_vdom(iface_node, vdom, add=True)
+
+
 def _set_vdom_mode(global_sections, enable: bool, report) -> None:
     sysglobal = _find_section(global_sections, "system", "global")
     if sysglobal is None:
