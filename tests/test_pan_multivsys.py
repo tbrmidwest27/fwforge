@@ -643,3 +643,44 @@ def test_short_vlan_name_left_unchanged():
     # ethernet1/1.30 (14 chars) survives as-is
     assert "ethernet1/1.30" in out
     assert "ethernet1/1.40" in out
+
+
+PAN_PHYS_AND_VLAN = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/3"><layer3>
+      <ip><entry name="10.3.0.1/24"/></ip>
+      <units>
+        <entry name="ethernet1/3.50"><tag>50</tag>
+          <ip><entry name="10.50.0.1/24"/></ip></entry>
+      </units></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <import><network><interface>
+      <member>ethernet1/3</member>
+      <member>ethernet1/3.50</member></interface></network></import>
+    <zone><entry name="z"><network><layer3>
+      <member>ethernet1/3</member>
+      <member>ethernet1/3.50</member></layer3></network></entry></zone>
+    <rulebase><security><rules>
+      <entry name="a"><from><member>z</member></from>
+        <to><member>z</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action>allow</action></entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_created_subinterface_not_flagged_unmapped():
+    # an unmapped physical parent still warns "no target port mapped"; the
+    # VLAN subinterface fwforge creates does NOT (it rides its parent and the
+    # name sanitizer finalizes it — flagging it was misleading noise).
+    result = pipeline.run_cross(PAN_PHYS_AND_VLAN, "paloalto", "m.xml", {})
+    warns = [f.message for f in result.report.findings
+             if f.area == "interfaces" and "no target port" in f.message]
+    assert any("'ethernet1/3'" in m for m in warns)        # physical: flagged
+    assert not any("ethernet1/3.50" in m for m in warns)   # VLAN: not flagged

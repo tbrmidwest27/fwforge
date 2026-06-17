@@ -103,13 +103,21 @@ def apply_ir(cfg: FirewallConfig, mapping: dict[str, str], report) -> list[str]:
     # target; they are never source ports to map.
     skip_names = {z.name for z in cfg.zones} \
         | {p.name for p in cfg.phase1s}
+    # interfaces fwforge *creates* on the target (VLAN subinterfaces,
+    # aggregates, loopbacks) are not source ports the user maps — they ride
+    # their mapped parent and the name sanitizer finalizes the name. An
+    # explicit map entry still rewrites them; they're just never flagged as
+    # an unmapped port needing a target.
+    created = {i.name for i in cfg.interfaces
+               if i.kind in ("vlan", "aggregate", "loopback")}
 
     def mapped(name: str) -> str:
         if name in ("any", "all", "") or name in skip_names:
             return name
         if name in mapping:
             return mapping[name]
-        unmapped.add(name)
+        if name not in created:
+            unmapped.add(name)
         return name
 
     for itf in cfg.interfaces:
