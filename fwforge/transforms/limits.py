@@ -7,10 +7,12 @@ config and warns on any name that still exceeds its FortiOS limit, so a
 future emit path that forgets to clamp surfaces as a convert-time warning
 instead of a silent `-1` / `-162` when the config is loaded on the box.
 
-Limits are for FortiOS 7.x/8.x. The values fwforge has hit in the field
-(interface 15, IPS/UTM 35) are confirmed; the rest are the documented CLI
-limits. Verify against a target build's schema (`?action=schema`, the `name`
-field `size`) if in doubt.
+Schema-verified against a live FortiGate-601F on FortiOS 8.0.0 build0167
+(2026-06-17, per-table `?action=schema` -> mkey `size`). Every value below is
+exact on 8.0 EXCEPT the UTM / IPS profiles: 8.0 allows 47, but they are kept
+at the stricter 35 (older-FortiOS limit) so output loads on 7.x and 8.x alike
+— a real 7.x target rejected a 36-char IPS sensor name. If fwforge ever keys
+limits off the `--fortios` target, the UTM cap can rise to 47 for 8.0+.
 """
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ NAME_LIMITS = {
     ("firewall", "service", "group"): 79,
     ("firewall", "schedule", "recurring"): 31,
     ("firewall", "schedule", "onetime"): 31,
+    # UTM/IPS profiles: 8.0 schema = 47, kept at the stricter 35 for 7.x
     ("ips", "sensor"): 35,
     ("application", "list"): 35,
     ("webfilter", "profile"): 35,
