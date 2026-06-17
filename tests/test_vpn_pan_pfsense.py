@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fwforge import cli
+from fwforge import cli, pipeline
 from fwforge.parsers import paloalto, pfsense
 
 FIX = Path(__file__).parent / "fixtures"
@@ -55,6 +55,30 @@ def test_pan_no_vpn_still_works():
                          "pa_sample.xml")
     assert cfg.phase1s == []
     assert len(cfg.policies) == 4   # unchanged from before
+
+
+def test_pan_zone_with_tunnel_iface_resolves_to_phase1():
+    # a zone that includes the PAN tunnel-interface (tunnel.1) must emit the
+    # FortiOS phase1-interface name (the real tunnel interface), not the raw
+    # tunnel.1 — which never exists, so 'set interface "tunnel.1"' fails to
+    # load (-3). The VPN section must also precede the zone that references it.
+    xml = (FIX / "pa_vpn.xml").read_text(encoding="utf-8").replace(
+        '<vsys><entry name="vsys1"><zone/></entry></vsys>',
+        '<vsys><entry name="vsys1"><zone>'
+        '<entry name="IPSEC_VPN"><network><layer3>'
+        '<member>tunnel.1</member></layer3></network></entry></zone>'
+        '</entry></vsys>')
+    result = pipeline.run_cross(xml, "paloalto", "pav.xml", {})
+    out = result.out_text
+    # zone points at the realized tunnel interface; nothing dangles on tunnel.1
+    assert 'set interface "vpn-branch-vpn"' in out
+    assert '"tunnel.1"' not in out
+    # phase1-interface (which creates that tunnel iface) precedes the zone
+    assert out.index("config vpn ipsec phase1-interface") < \
+        out.index("config system zone")
+    # the tunnel iface isn't mis-flagged as an unmapped physical port
+    assert not any("tunnel.1" in f.message and "no target port" in f.message
+                   for f in result.report.findings)
 
 
 # -- pfSense IPsec ----------------------------------------------------------

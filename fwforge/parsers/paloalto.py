@@ -700,6 +700,14 @@ class PaloParser:
                 p2_proposals=p2_props, pfs_group=p2["pfs"],
                 p2_keylife=p2["life"],
                 comment=f"PAN tunnel {tname} (peer {peer})", source=ref)
+            # the PAN tunnel-interface (e.g. tunnel.1) is realized as the
+            # FortiOS phase1-interface; point zone / route refs at that name
+            # so they resolve, and mark it a tunnel so it is neither emitted
+            # as a physical port nor flagged as an unmapped port.
+            tun_if = self.cfg.interface_by_name(tif) if tif else None
+            if tun_if is not None:
+                tun_if.target_name = tun_name
+                tun_if.kind = "tunnel"
 
     def _imported(self, name: str) -> bool:
         """Should the parser ENTER this device-level interface for the

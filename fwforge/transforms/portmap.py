@@ -109,7 +109,7 @@ def apply_ir(cfg: FirewallConfig, mapping: dict[str, str], report) -> list[str]:
     # explicit map entry still rewrites them; they're just never flagged as
     # an unmapped port needing a target.
     created = {i.name for i in cfg.interfaces
-               if i.kind in ("vlan", "aggregate", "loopback")}
+               if i.kind in ("vlan", "aggregate", "loopback", "tunnel")}
 
     def mapped(name: str) -> str:
         if name in ("any", "all", "") or name in skip_names:

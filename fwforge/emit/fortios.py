@@ -184,6 +184,10 @@ class Emitter:
             self.line("    set central-nat enable")
             self.line("end")
         self.interfaces()
+        # VPN before zones/routes/policies: a phase1-interface creates the
+        # FortiOS tunnel interface those sections reference (set interface),
+        # so it must exist first or the references fail to load.
+        self.vpn()
         self.zones()
         self.addresses()
         self.addr_groups()
@@ -194,7 +198,6 @@ class Emitter:
         self.file_filter()
         self.antivirus()
         self.ips()
-        self.vpn()
         self.vips()
         if self.nat_mode == "central":
             self.central_snat()
