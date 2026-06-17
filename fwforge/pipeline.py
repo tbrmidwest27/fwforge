@@ -14,7 +14,7 @@ from .parsers import CROSS_PARSERS, fortios_tree
 from .report import Report
 from .transforms import hwswitch
 from .transforms import names as names_tf
-from .transforms import optimize, portmap, sdwan, sslvpn, tree_refs
+from .transforms import limits, optimize, portmap, sdwan, sslvpn, tree_refs
 from .transforms import versiondelta, vdommode, zones
 from .transforms import routes as routes_tf
 from .transforms import tuning as tuning_tf
@@ -155,21 +155,23 @@ def run_cross(text: str, vendor: str, src_name: str,
                 "single non-VDOM config (names would collide across "
                 "contexts). Emitting one VDOM per vsys; convert just one with "
                 "--pa-vsys / the vsys picker if you need a flat config.")
-        return _run_cross_multi(vsys_cfgs, cfg, vendor, mapping, target,
-                                tuning, nat_mode, report, authoring)
-
-    out_text, unmapped = _cross_one(cfg, mapping, target, tuning,
-                                    nat_mode, report, authoring)
-    if vdom_mode == "multi":
-        out_text = _wrap_single_vdom(out_text, src_name, vdom_name,
-                                     vdom_scope_only, report)
-        report.meta["vdom_mode"] = f"-> multi-VDOM (VDOM '{vdom_name}')"
-    result = ConversionResult(
-        mode="cross", vendor=vendor, out_text=out_text, report=report,
-        cfg=cfg, unmapped=unmapped)
-    if unmapped:
-        result.sample_portmap = portmap.sample_map(unmapped)
-    result.exit_code = 1 if report.count("error") else 0
+        result = _run_cross_multi(vsys_cfgs, cfg, vendor, mapping, target,
+                                  tuning, nat_mode, report, authoring)
+    else:
+        out_text, unmapped = _cross_one(cfg, mapping, target, tuning,
+                                        nat_mode, report, authoring)
+        if vdom_mode == "multi":
+            out_text = _wrap_single_vdom(out_text, src_name, vdom_name,
+                                         vdom_scope_only, report)
+            report.meta["vdom_mode"] = f"-> multi-VDOM (VDOM '{vdom_name}')"
+        result = ConversionResult(
+            mode="cross", vendor=vendor, out_text=out_text, report=report,
+            cfg=cfg, unmapped=unmapped)
+        if unmapped:
+            result.sample_portmap = portmap.sample_map(unmapped)
+        result.exit_code = 1 if report.count("error") else 0
+    # backstop: every emitted name must be within FortiOS limits
+    limits.validate_name_limits(result.out_text, report)
     return result
 
 

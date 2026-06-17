@@ -21,6 +21,7 @@ OBJ_MAX = 79
 POLICY_MAX = 35
 INTF_MAX = 15  # FortiOS rejects interface names longer than this
 PROFILE_MAX = 35  # FortiOS UTM profile / IPS sensor name limit
+ZONE_MAX = 35  # FortiOS system zone name limit
 
 
 def sanitize(name: str, maxlen: int, taken: set[str]) -> str:
@@ -83,7 +84,7 @@ def apply(cfg: FirewallConfig, report) -> dict[str, str]:
     zone_renames: dict[str, str] = {}
     zone_taken: set[str] = set()
     for zone in cfg.zones:
-        new = sanitize(zone.name, OBJ_MAX, zone_taken)
+        new = sanitize(zone.name, ZONE_MAX, zone_taken)
         if new != zone.name:
             zone_renames[zone.name] = new
             report.add("info", "names",
