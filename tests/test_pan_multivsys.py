@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -564,3 +565,81 @@ def test_multivsys_routes_collapse_into_their_vdom():
     assert "config router static" in v2 and "198.51.100.1" in v2
     assert "198.51.100.1" not in v1 and "203.0.113.1" not in v2
     assert ft.find_config_under(scopes["global"], "router", "static") is None
+
+
+# --- interface-name length guardrails -----------------------------------
+# FortiOS rejects interface names > 15 chars. PAN subinterface names like
+# `ethernet1/6.1027` (16) must be clamped, keeping the VLAN id, with refs
+# following the rename.
+
+PAN_LONG_VLAN = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network><interface><ethernet>
+    <entry name="ethernet1/6"><layer3>
+      <ip><entry name="172.31.0.1/24"/></ip>
+      <units>
+        <entry name="ethernet1/6.1027"><tag>1027</tag>
+          <ip><entry name="10.130.40.129/25"/></ip></entry>
+        <entry name="ethernet1/6.1033"><tag>1033</tag>
+          <ip><entry name="10.65.254.1/24"/></ip></entry>
+      </units></layer3></entry>
+  </ethernet></interface></network>
+  <vsys><entry name="vsys1">
+    <import><network><interface>
+      <member>ethernet1/6.1027</member>
+      <member>ethernet1/6.1033</member></interface></network></import>
+    <zone><entry name="DMZ"><network><layer3>
+      <member>ethernet1/6.1027</member>
+      <member>ethernet1/6.1033</member></layer3></network></entry></zone>
+    <rulebase><security><rules>
+      <entry name="r"><from><member>DMZ</member></from>
+        <to><member>DMZ</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action>allow</action></entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def _iface_edit_names(out_text):
+    """interface names off the `config system interface` block."""
+    body = out_text.split("config system interface", 1)
+    if len(body) < 2:
+        return []
+    body = body[1].split("\nend", 1)[0]
+    return re.findall(r'edit "([^"]+)"', body)
+
+
+def test_long_vlan_name_derives_from_short_parent():
+    # parent mapped to a short port -> clean `port6.<vlan>` names
+    result = pipeline.run_cross(PAN_LONG_VLAN, "paloalto", "p.xml",
+                                {"ethernet1/6": "port6"})
+    out = result.out_text
+    assert _iface_edit_names(out) == ["port6.1027", "port6.1033"]
+    assert "ethernet1/6.1027" not in out          # nothing dangles on the old name
+    assert 'set interface "port6.1027" "port6.1033"' in out  # zone followed
+    assert any(f.area == "interfaces" and f.level == "warn"
+               and "15-char" in f.message for f in result.report.findings)
+    assert not ft.parse_config(out, "o").warnings  # valid, balanced output
+
+
+def test_long_vlan_name_clamped_even_with_long_parent():
+    # the user's case: a long parent name (`ethernet1-6`) + 4-digit VLAN
+    # would still be 16 chars — must clamp under 15, keeping the VLAN id
+    out = pipeline.run_cross(PAN_LONG_VLAN, "paloalto", "p.xml",
+                             {"ethernet1/6": "ethernet1-6"}).out_text
+    names = _iface_edit_names(out)
+    assert names and all(len(n) <= 15 for n in names)
+    assert all(n.endswith(".1027") or n.endswith(".1033") for n in names)
+    assert "ethernet1/6.1027" not in out
+
+
+def test_short_vlan_name_left_unchanged():
+    # a name already within 15 chars is not renamed (no churn)
+    out = pipeline.run_cross(MULTIVSYS_VLAN, "paloalto", "mv.xml", {}).out_text
+    # ethernet1/1.30 (14 chars) survives as-is
+    assert "ethernet1/1.30" in out
+    assert "ethernet1/1.40" in out

@@ -19,6 +19,7 @@ RESERVED = {"all", "ALL", "ALL_ICMP", "always", "none", "ANY", "any"}
 
 OBJ_MAX = 79
 POLICY_MAX = 35
+INTF_MAX = 15  # FortiOS rejects interface names longer than this
 
 
 def sanitize(name: str, maxlen: int, taken: set[str]) -> str:
@@ -128,3 +129,76 @@ def apply(cfg: FirewallConfig, report) -> dict[str, str]:
             nat.real_obj = addr_renames[nat.real_obj]
 
     return {**addr_renames, **svc_renames, **pol_renames}
+
+
+def _emit_name_ok(name: str) -> bool:
+    """Whether FortiOS will accept this name on a `config system interface`
+    `edit` line: non-empty, <= 15 chars, no whitespace. (FortiOS tolerates
+    `/` and `.` in interface names, so a short slashed name is left alone.)"""
+    return bool(name) and len(name) <= INTF_MAX and not re.search(r"\s", name)
+
+
+def sanitize_interfaces(cfg: FirewallConfig, report) -> dict[str, str]:
+    """Clamp the interfaces fwforge *creates* (VLAN / aggregate / loopback)
+    to FortiOS's 15-char interface-name limit — a hard limit FortiOS rejects
+    the `edit` line over (cascading every following `set` to fail).
+
+    A VLAN keeps its full VLAN id (the part that makes it unique) and takes
+    its parent's mapped name, truncated to fit: `ethernet1/6.1027` (16) ->
+    `port6.1027` when the parent maps to `port6`. References resolve through
+    the interface's mapped name (`_intf`), but the few that `apply_ir` already
+    rewrote to the old name are remapped here too. Returns {old -> new}.
+
+    Cross-vendor only: a FortiOS source's names are already within limits."""
+    created = [i for i in cfg.interfaces
+               if i.kind in ("aggregate", "vlan", "loopback")]
+    if not created:
+        return {}
+
+    # reserve names that stay put (already-valid created ifaces + every
+    # physical port) so a rename can't collide with one of them
+    taken: set[str] = set()
+    todo: list = []
+    for i in created:
+        (taken.add(i.mapped) if _emit_name_ok(i.mapped) else todo.append(i))
+    for i in cfg.interfaces:
+        if i.kind == "physical":
+            taken.add(i.mapped)
+
+    renames: dict[str, str] = {}
+    for i in todo:
+        old = i.mapped
+        if i.kind == "vlan" and i.vlan_id is not None:
+            parent = cfg.interface_by_name(i.parent) if i.parent else None
+            head_src = parent.mapped if parent else (i.parent or "vlan")
+            suffix = f".{i.vlan_id}"
+            head = SAFE.sub("_", head_src)[:max(1, INTF_MAX - len(suffix))]
+            head = head.strip("_.-") or "vlan"
+            preferred = f"{head}{suffix}"
+        else:
+            preferred = old
+        new = sanitize(preferred, INTF_MAX, taken)
+        taken.add(new)
+        i.target_name = new
+        renames[old] = new
+        hint = (" — map its parent port to a short name (e.g. 'port6') for "
+                "cleaner VLAN names" if i.kind == "vlan" else "")
+        report.add(
+            "warn", "interfaces",
+            f"interface '{old}' exceeds FortiOS's {INTF_MAX}-char limit; "
+            f"renamed to '{new}'{hint}",
+            getattr(i, "source", None))
+
+    if renames:
+        for zone in cfg.zones:
+            zone.members = [renames.get(m, m) for m in zone.members]
+        for p1 in cfg.phase1s:
+            p1.interface = renames.get(p1.interface, p1.interface)
+        for rt in cfg.routes:
+            rt.interface = renames.get(rt.interface, rt.interface)
+        for vip in cfg.vips:
+            vip.ext_intf = renames.get(vip.ext_intf, vip.ext_intf)
+        for nat in cfg.nats:
+            nat.real_ifc = renames.get(nat.real_ifc, nat.real_ifc)
+            nat.mapped_ifc = renames.get(nat.mapped_ifc, nat.mapped_ifc)
+    return renames
