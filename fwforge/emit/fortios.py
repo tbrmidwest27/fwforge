@@ -253,6 +253,7 @@ class Emitter:
         self.nat_mode = nat_mode  # "policy" | "central"
         self.device_system = device_system  # emit hostname/DNS/NTP
         self.out: list[str] = []
+        self._emitted_zones: set[str] = set()  # populated by zones()
 
     def line(self, s: str = ""):
         self.out.append(s)
@@ -406,6 +407,27 @@ class Emitter:
                         "confirm active/passive/static")
             self.report.add("info", "interfaces", msg)
 
+    def _resolve_intf(self, name: str) -> str | None:
+        """Resolve a policy srcintf/dstintf name to its emittable value, or
+        None if it refers to a zone that was not emitted (e.g. all members
+        were unbacked tunnels). Returning None causes the caller to omit the
+        reference and warn rather than emit a name FortiOS will reject."""
+        if name in ("any", "all", ""):
+            return "any"
+        itf = self.cfg.interface_by_name(name)
+        if itf is not None:
+            return itf.mapped  # physical / vlan / loopback / tunnel interface
+        # Is this a known zone name? Only then do we gate on _emitted_zones.
+        # Names that aren't in cfg.zones at all (e.g. a direct FortiGate port
+        # reference) pass through unchanged — the original _intf behaviour.
+        zone_names = getattr(self, "_zone_name_set", None)
+        if zone_names is None:
+            zone_names = {z.name for z in self.cfg.zones}
+            self._zone_name_set = zone_names
+        if name in zone_names:
+            return name if name in self._emitted_zones else None
+        return name  # not a zone — pass through
+
     def _unbacked_tunnel(self, name: str) -> bool:
         """A tunnel interface with no phase1 backing it. Referencing it in a
         zone/route fails to load (set interface/device -> -3): it only exists
@@ -452,6 +474,7 @@ class Emitter:
         self.line()
         self.line("config system zone")
         for z, kept in blocks:
+            self._emitted_zones.add(z.name)
             self.line(f"    edit {_q(z.name)}")
             # PAN-OS allows intrazone traffic by default; mirror that so
             # the migration doesn't break same-zone flows (flagged below)
@@ -1182,9 +1205,32 @@ class Emitter:
         mixed_policies = 0
         self.line()
         self.line("config firewall policy")
+        dropped_zone_policies: list[str] = []
         for i, p in enumerate(self.cfg.policies, start=1):
-            src_i = [_intf(self.cfg, z) for z in (p.src_zones or ["any"])]
-            dst_i = [_intf(self.cfg, z) for z in (p.dst_zones or ["any"])]
+            raw_src = p.src_zones or ["any"]
+            raw_dst = p.dst_zones or ["any"]
+            src_i = [r for z in raw_src if (r := self._resolve_intf(z))]
+            dst_i = [r for z in raw_dst if (r := self._resolve_intf(z))]
+            # Track any zone refs that resolved to nothing
+            src_dropped = [z for z in raw_src
+                           if z not in ("any", "all", "")
+                           and self._resolve_intf(z) is None]
+            dst_dropped = [z for z in raw_dst
+                           if z not in ("any", "all", "")
+                           and self._resolve_intf(z) is None]
+            if src_dropped or dst_dropped:
+                label = p.name or f"policy #{i}"
+                parts = []
+                if src_dropped:
+                    parts.append(f"srcintf: {', '.join(src_dropped)}")
+                if dst_dropped:
+                    parts.append(f"dstintf: {', '.join(dst_dropped)}")
+                dropped_zone_policies.append(
+                    f"{label} — {'; '.join(parts)}")
+            if not src_i:
+                src_i = ["any"]
+            if not dst_i:
+                dst_i = ["any"]
             pfam = self._policy_family(p, fam)
             if pfam == 6:
                 v6_policies += 1
@@ -1258,6 +1304,15 @@ class Emitter:
                 self.line(f"        set comments {_q(comment[:1023])}")
             self.line("    next")
         self.line("end")
+        if dropped_zone_policies:
+            self.report.add(
+                "warn", "policies",
+                f"{len(dropped_zone_policies)} policy(ies) had srcintf/dstintf "
+                "references to zones that were not emitted (all members were "
+                "unbacked tunnels) — those refs were replaced with 'any'. "
+                "Review and restrict once the missing tunnels are built: "
+                + "; ".join(dropped_zone_policies[:20])
+                + (" …" if len(dropped_zone_policies) > 20 else ""))
         if nat_pairs:
             self.report.add(
                 "info", "nat",
