@@ -1555,8 +1555,10 @@ class PaloParser:
 
     @staticmethod
     def _safe_prof(prefix: str, name: str) -> str:
+        # FortiOS UTM profile / IPS sensor names cap at 35 chars; the
+        # name-sanitizer uniquifies any collisions the truncation creates.
         clean = re.sub(r"[^A-Za-z0-9_.-]", "_", name or "").strip("_") or "x"
-        return f"{prefix}{clean}"[:47]
+        return f"{prefix}{clean}"[:35]
 
     # PAN virus-decoder protocol -> FortiOS antivirus protocol block
     _AV_PROTO = {"http": "http", "smtp": "smtp", "imap": "imap",

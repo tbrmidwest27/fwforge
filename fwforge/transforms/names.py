@@ -20,6 +20,7 @@ RESERVED = {"all", "ALL", "ALL_ICMP", "always", "none", "ANY", "any"}
 OBJ_MAX = 79
 POLICY_MAX = 35
 INTF_MAX = 15  # FortiOS rejects interface names longer than this
+PROFILE_MAX = 35  # FortiOS UTM profile / IPS sensor name limit
 
 
 def sanitize(name: str, maxlen: int, taken: set[str]) -> str:
@@ -202,3 +203,35 @@ def sanitize_interfaces(cfg: FirewallConfig, report) -> dict[str, str]:
             nat.real_ifc = renames.get(nat.real_ifc, nat.real_ifc)
             nat.mapped_ifc = renames.get(nat.mapped_ifc, nat.mapped_ifc)
     return renames
+
+
+def sanitize_profiles(cfg: FirewallConfig, report) -> None:
+    """Clamp UTM profile + IPS sensor names to FortiOS's 35-char limit (a
+    longer `edit` is rejected with -1, cascading the body to -61) and remap
+    the policy fields that reference them. Each profile type is its own
+    FortiOS namespace, so each gets its own taken-set."""
+    specs = [
+        (cfg.ips_sensors, "ips_sensor", "IPS sensor"),
+        (cfg.app_lists, "app_list", "application list"),
+        (cfg.webfilters, "webfilter", "webfilter profile"),
+        (cfg.file_filters, "file_filter", "file-filter profile"),
+        (cfg.av_profiles, "antivirus", "antivirus profile"),
+    ]
+    for coll, pol_field, label in specs:
+        taken: set[str] = set()
+        renames: dict[str, str] = {}
+        for obj in coll:
+            new = sanitize(obj.name, PROFILE_MAX, taken)
+            if new != obj.name:
+                renames[obj.name] = new
+                report.add("info", "names",
+                           f"renamed {label} '{obj.name}' -> '{new}' "
+                           f"(FortiOS {PROFILE_MAX}-char limit)",
+                           getattr(obj, "source", None))
+                obj.name = new
+            taken.add(obj.name)
+        if renames:
+            for pol in cfg.policies:
+                cur = getattr(pol, pol_field, "")
+                if cur in renames:
+                    setattr(pol, pol_field, renames[cur])

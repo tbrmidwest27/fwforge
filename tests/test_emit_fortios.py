@@ -1,9 +1,11 @@
 from fwforge.emit import fortios as emit_fortios
 from fwforge.model import (
-    Address, AddressGroup, BgpConfig, FirewallConfig, Interface, OspfArea,
-    OspfConfig, Policy, Service, ServiceGroup, Vip, VpnPhase1, VpnPhase2,
+    Address, AddressGroup, BgpConfig, FirewallConfig, Interface, IpsSensor,
+    OspfArea, OspfConfig, Policy, Service, ServiceGroup, Vip, VpnPhase1,
+    VpnPhase2,
 )
 from fwforge.report import Report
+from fwforge.transforms import names as names_tf
 
 
 def test_nested_groups_emitted_in_dependency_order():
@@ -112,3 +114,17 @@ def test_predefined_service_name_collisions_renamed():
     assert cfg.policies[0].services == ["VNC_svc", "SMB_grp"]
     mg = next(g for g in cfg.svc_groups if g.name == "MyGroup")
     assert mg.members == ["VNC_svc"]
+
+
+def test_utm_profile_names_clamped_to_35():
+    # FortiOS IPS-sensor / UTM profile names cap at 35 chars; a longer edit
+    # is rejected (-1). Clamp + remap the policy reference.
+    cfg = FirewallConfig(vendor="paloalto")
+    long_name = "ips-Jabil-VP-Global-Jabil-Spy-Global"   # 36 chars
+    assert len(long_name) == 36
+    cfg.ips_sensors.append(IpsSensor(name=long_name))
+    cfg.policies.append(Policy(name="p", ips_sensor=long_name))
+    names_tf.sanitize_profiles(cfg, Report())
+    nm = cfg.ips_sensors[0].name
+    assert len(nm) <= 35 and nm != long_name
+    assert cfg.policies[0].ips_sensor == nm        # reference remapped
