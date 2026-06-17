@@ -121,7 +121,7 @@ children.push(
   rule(),
   P([
     R("An open, clean-room PAN-OS → FortiOS converter. ", { italics: true }),
-    R("Prepared for Fortinet engineering review · June 2026 · fwforge v0.53.0", { color: "555555" }),
+    R("Prepared for Fortinet engineering review · June 2026 · fwforge v0.54.0", { color: "555555" }),
   ]),
   new Paragraph({ children: [new PageBreak()] }),
 );
@@ -174,6 +174,7 @@ children.push(
     [
       ["Domain", "What fwforge converts", "Notes"],
       [BC("Input formats"), "PAN-OS firewall XML and set / display-set format; Panorama exports", "One unified parser, auto-detected. Panorama template-merged running-configs handled."],
+      [BC("Device system"), "deviceconfig hostname, DNS (dns-setting), and NTP (ntp-servers) → config system global / dns / ntp", "Emitted ahead of the security config; classifies into config global under a VDOM wrap, once per device for multi-vsys."],
       [BC("Panorama & multi-vsys"), "Device-group selection; shared + pre/post rulebases merged in PAN evaluation order; optional template for network config; each vsys → its own FortiOS VDOM — interfaces hoisted to config global with set vdom, a management VDOM designated", "Cross-vsys references flagged."],
       [BC("Interfaces"), "Physical, aggregate (LAG), Layer-3 subinterfaces (VLAN), loopback, tunnel", "Mapped to the destination model's real ports via a faceplate UI with positional auto-guess; promote-a-port-to-LAG and “do not map” supported. Created VLAN / aggregate / loopback names are clamped to FortiOS's 15-char interface-name limit, references remapped."],
       [BC("Aggregates / LAG"), "PAN aggregate-ethernet → FortiOS 802.3ad aggregate (type aggregate + member ports + lacp-mode)", "LACP mode read from source; emitted before the VLANs that ride it so the script loads in order."],
