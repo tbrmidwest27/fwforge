@@ -20,6 +20,8 @@ from ..parsers import fortios_tree as ft
 # `config vdom` wrappers are stripped before lookup)
 NAME_LIMITS = {
     ("system", "interface"): 15,          # creates a real interface
+    ("system", "switch-interface"): 15,   # software switch — is an interface
+    ("system", "virtual-switch"): 15,     # hardware switch group — is an interface
     ("system", "zone"): 35,
     ("firewall", "address"): 79,
     ("firewall", "address6"): 79,

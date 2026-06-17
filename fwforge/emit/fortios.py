@@ -692,7 +692,9 @@ class Emitter:
             for n, wf in enumerate(with_urls, start=1):
                 url_table_id[wf.name] = n
                 self.line(f"    edit {n}")
-                self.line(f"        set name {_q(wf.name + '-urls')}")
+                # urlfilter is referenced by numeric id, so the name is
+                # cosmetic; clamp to a universally-safe length
+                self.line(f"        set name {_q((wf.name + '-urls')[:35])}")
                 self.line("        config entries")
                 for j, (url, utype, action) in enumerate(wf.urls, start=1):
                     self.line(f"            edit {j}")
