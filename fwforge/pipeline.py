@@ -49,6 +49,7 @@ def _cross_one(cfg: FirewallConfig, mapping, target, tuning, nat_mode,
     renames = names_tf.apply(cfg, report)
     names_tf.sanitize_interfaces(cfg, report)
     names_tf.sanitize_profiles(cfg, report)
+    limits.validate_group_nesting(cfg, report)
     routes_tf.infer_dst_zones(cfg, report)
     if tuning and tuning.any():
         # exclude/only are given as SOURCE rule names; sanitization has

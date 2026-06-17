@@ -67,6 +67,16 @@ def _q(value: str) -> str:
                   .replace("\r", "").replace("\n", "\\n")) + '"'
 
 
+def _clamp_distance(distance: int, dest: str, report) -> int:
+    """FortiOS static route distance must be 1-255. Clamp and warn."""
+    clamped = max(1, min(255, distance))
+    if clamped != distance:
+        report.add("warn", "routes",
+                   f"route {dest}: distance {distance} is outside FortiOS "
+                   f"range 1-255 — clamped to {clamped}")
+    return clamped
+
+
 def _is_v6(value: str) -> bool:
     return ":" in value
 
@@ -1033,8 +1043,9 @@ class Emitter:
                     self.line(f"        set gateway {rt.gateway}")
                 self.line("        set device "
                           + _q(_intf(self.cfg, rt.interface)))
-                if rt.distance != 10:
-                    self.line(f"        set distance {rt.distance}")
+                dist = _clamp_distance(rt.distance, rt.dest, self.report)
+                if dist != 10:
+                    self.line(f"        set distance {dist}")
                 self.line("    next")
             self.line("end")
         if v6:
@@ -1047,8 +1058,9 @@ class Emitter:
                     self.line(f"        set gateway {rt.gateway}")
                 self.line("        set device "
                           + _q(_intf(self.cfg, rt.interface)))
-                if rt.distance != 10:
-                    self.line(f"        set distance {rt.distance}")
+                dist = _clamp_distance(rt.distance, rt.dest, self.report)
+                if dist != 10:
+                    self.line(f"        set distance {dist}")
                 self.line("    next")
             self.line("end")
             self.report.add("info", "routes",

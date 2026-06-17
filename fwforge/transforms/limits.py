@@ -121,6 +121,46 @@ def validate_name_limits(out_text: str, report) -> int:
     return hits
 
 
+# FortiOS address/service group nesting depth limit.  The schema does not
+# expose this; 8 is the documented ceiling on 7.x and a safe default for 8.x.
+GROUP_NEST_MAX = 8
+
+
+def validate_group_nesting(cfg, report) -> int:
+    """Walk address groups and service groups in the IR and warn when any
+    chain exceeds GROUP_NEST_MAX levels deep.  Call this after name
+    sanitization (names.apply) so that rename maps are already applied.
+    Returns the number of over-limit groups found."""
+
+    def max_depth(name: str, by_name: dict, seen: set) -> int:
+        if name in seen:
+            return 0  # cycle — already reported elsewhere
+        g = by_name.get(name)
+        if g is None:
+            return 0  # leaf (plain address / service)
+        seen.add(name)
+        d = 1 + max((max_depth(m, by_name, seen) for m in g.members),
+                    default=0)
+        seen.discard(name)
+        return d
+
+    hits = 0
+    for label, groups in (("address group", cfg.addr_groups),
+                           ("service group", cfg.svc_groups)):
+        by_name = {g.name: g for g in groups}
+        for g in groups:
+            d = max_depth(g.name, by_name, set())
+            if d > GROUP_NEST_MAX:
+                hits += 1
+                report.add(
+                    "warn", "limits",
+                    f"{label} '{g.name}' nests {d} levels deep — FortiOS "
+                    f"caps group nesting at {GROUP_NEST_MAX}; deeper members "
+                    "will be silently dropped on load. Flatten the group "
+                    "hierarchy before deploying.")
+    return hits
+
+
 def validate_table_counts(out_text: str, report) -> int:
     """Re-parse the emitted config and warn on any table whose entry count
     exceeds FortiOS's per-VDOM cap.  Returns the hit count."""
