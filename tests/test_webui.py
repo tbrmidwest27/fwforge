@@ -635,6 +635,16 @@ def test_membership_column_live_wiring(client):
     assert "— do not map —" in page and 'SKIP_PORT = "__none__"' in page
 
 
+def test_aggregate_ports_multiselect(client):
+    # aggregate member ports can be added several at once via a multi-select
+    # listbox + an "add" button (not just one port per dropdown change)
+    jid = _load(client, "pa_sample.xml")
+    page = client.get(f"/job/{jid}").data.decode()
+    assert "function addPortPicker" in page
+    assert "function aggAddSelected" in page
+    assert 'class="addport" multiple' in page    # multi-select listbox emitted
+
+
 def test_destination_identity_and_filename(client):
     import io
     src = (FIX / "fortios_refactor.conf").read_bytes()

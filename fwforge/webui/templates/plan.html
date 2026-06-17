@@ -380,6 +380,10 @@
     .nestcol { white-space:nowrap; font-size:.78rem; }
     .nestcol select.vparent { max-width:6.5rem; }
     .nestcol .memports { margin-left:.3rem; }
+    /* multi-select port picker for aggregate members */
+    select.addport[multiple] { vertical-align:top; min-width:5.5rem;
+             font-family:monospace; font-size:.72rem; }
+    .addports { font-size:.72rem; margin-left:.25rem; vertical-align:top; }
     /* FortiOS-style interface tree: collapsible parent rows */
     .cbtn { background:none; border:none; cursor:pointer; font:inherit;
             color:var(--mut); padding:0; margin-right:.35rem;
@@ -1047,18 +1051,29 @@ function aggDelMember(id, port) {
   a.members = a.members.filter(p => p !== port);
   buildTree(); refreshNestOptions(); refreshMembership(); refreshFaceplates();
 }
+function aggAddSelected(id, btn) {
+  // add every port selected in the multi-select immediately before this button
+  const sel = btn.previousElementSibling;
+  if (!sel || sel.tagName !== "SELECT") return;
+  const a = findAgg(id); if (!a) return;
+  Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean)
+    .forEach(p => { if (!a.members.includes(p)) a.members.push(p); });
+  buildTree(); refreshNestOptions(); refreshMembership(); refreshFaceplates();
+}
+function addPortPicker(aggId, opts) {
+  // multi-select listbox + "add" button: pick several member ports at once
+  if (!opts.length) return "";
+  const sz = Math.min(Math.max(opts.length, 2), 6);
+  return `<select class="addport" multiple size="${sz}" `
+    + `title="Ctrl/Shift-click to pick several ports, then + add">`
+    + opts.map(p => `<option>${esc(p)}</option>`).join("") + `</select>`
+    + `<button type="button" class="cbtn addports" onclick="aggAddSelected(${aggId},this)" `
+    + `title="add the selected ports">+ add</button>`;
+}
 function usedPorts() {
   const s = new Set();
   AGGS.forEach(a => aggMembers(a).forEach(p => s.add(p)));
   return s;
-}
-function portPicker(a, dports) {
-  const mine = aggMembers(a), used = usedPorts();
-  const opts = dports.filter(p => !mine.includes(p) && !used.has(p));
-  if (!opts.length) return "";
-  return `<select onchange="if(this.value){aggAddMember(${a.id},this.value)}" `
-    + `style="width:5.5rem"><option value="">+ port</option>`
-    + opts.map(p => `<option>${esc(p)}</option>`).join("") + `</select>`;
 }
 function renderPanel() {   // created LAGs now render as rows in the tree
   const el = document.getElementById("agg-panel");
@@ -1171,7 +1186,7 @@ function refreshMembership() {
       const src = srcMemberNames(d.name);
       cell.innerHTML =
         mem.map(p => `<span class="mchip">${esc(p)} <span onclick="aggDelMember(${a.id},'${esc(p)}')" style="cursor:pointer;color:var(--mut)">&times;</span></span>`).join("")
-        + (opts.length ? `<select class="addport" onchange="if(this.value)aggAddMember(${a.id},this.value)"><option value="">+ port</option>${opts.map(p => `<option>${esc(p)}</option>`).join("")}</select>` : "")
+        + addPortPicker(a.id, opts)
         + (src.length ? `<div class="cap">absorbs ${src.map(esc).join(" &middot; ")}</div>` : "");
     } else if (d.kind === "vlan") {
       // a VLAN rides its parent LAG's member ports — replicate them here
@@ -1193,7 +1208,7 @@ function memberCellHTML(a) {
   const mem = aggMembers(a), used = usedPorts();
   const opts = destPortList().filter(p => !mem.includes(p) && !used.has(p));
   return mem.map(p => `<span class="mchip">${esc(p)} <span onclick="aggDelMember(${a.id},'${esc(p)}')" style="cursor:pointer;color:var(--mut)">&times;</span></span>`).join("")
-    + (opts.length ? `<select class="addport" onchange="if(this.value)aggAddMember(${a.id},this.value)"><option value="">+ port</option>${opts.map(p => `<option>${esc(p)}</option>`).join("")}</select>` : "");
+    + addPortPicker(a.id, opts);
 }
 function newAggRowHTML(a) {
   const lacp = ["active", "passive", "static"].map(m =>
