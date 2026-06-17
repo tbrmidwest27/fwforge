@@ -8,8 +8,11 @@ silent broadening is precisely the class of bug this tool exists to avoid.
 from __future__ import annotations
 
 import ipaddress
+import re
 
 from ..model import FirewallConfig, Service
+
+_PAN_TUNNEL_IF = re.compile(r'^tunnel\.\d+$')
 
 # (protocol, dst_ports, src_ports, icmp_type, proto_number) -> built-in name
 BUILTIN_SERVICES = {
@@ -408,8 +411,13 @@ class Emitter:
         zone/route fails to load (set interface/device -> -3): it only exists
         once its IPsec tunnel is built, and that tunnel did not convert."""
         itf = self.cfg.interface_by_name(name)
-        return (itf is not None and itf.kind == "tunnel"
-                and not itf.target_name)
+        if itf is None:
+            # Not in the IR at all. If the name looks like a PAN tunnel
+            # interface (tunnel.N) it will never resolve on FortiOS without a
+            # phase1 — treat as unbacked. Physical ports not in the IR are a
+            # different problem and should not be silently dropped.
+            return bool(_PAN_TUNNEL_IF.match(name))
+        return itf.kind == "tunnel" and not itf.target_name
 
     def zones(self):
         blocks: list[tuple] = []
