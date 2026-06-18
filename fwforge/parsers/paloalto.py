@@ -1103,11 +1103,20 @@ class PaloParser:
         """Synthesize tight services for a `service application-default`
         rule. Returns service names, or None when any app's default
         ports are unknown (caller falls back to ALL + warning)."""
-        if apps == ["any"] or not apps:
+        if not apps or apps == ["any"]:
             return None
         # expand application-groups to leaves first so each real app maps
         # individually (ssh inside a group -> built-in SSH, not merged)
         apps = self._expand_app_groups(apps)
+        # "any" in a mixed list (e.g. ["any", "facebook-base"]) means ANY
+        # traffic can match — the specific apps can't tighten the service
+        if "any" in apps:
+            self.note(
+                "info", "policies",
+                f"rule '{rule}': application list contains 'any' alongside "
+                "specific apps — converted as service=ALL (any overrides "
+                "specific apps); app-control profile still applied", ref)
+            return None
         # resolve PER APP (not merged) so each app keeps its own service —
         # a FortiOS BUILT-IN name when there is one (SMB, HTTPS, DNS, ...),
         # else a synthesized custom service from the app's ports
