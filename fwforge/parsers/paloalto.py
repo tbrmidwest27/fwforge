@@ -1385,7 +1385,8 @@ class PaloParser:
                                      or ["any"])],
                 services=services,
                 action="accept" if action == "allow" else "deny",
-                log=str(r.get("log-end", "yes")) != "no",
+                log=(str(r.get("log-end", "yes")) != "no"
+                     or str(r.get("log-start", "no")) == "yes"),
                 disabled=str(r.get("disabled", "no")) == "yes",
                 src_negate=str(r.get("negate-source", "no")) == "yes",
                 dst_negate=str(r.get("negate-destination", "no")) == "yes",
