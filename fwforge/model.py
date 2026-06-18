@@ -56,8 +56,8 @@ class Zone:
 @dataclass
 class Address:
     name: str
-    type: str = "subnet"  # host | subnet | range | fqdn
-    value: str = ""  # "10.0.0.1", "10.0.0.0/24", "10.0.0.1-10.0.0.9", "x.com"
+    type: str = "subnet"  # host | subnet | range | fqdn | wildcard
+    value: str = ""  # subnet: "10.0.0.0/24"; range: "10.0.0.1-10.0.0.9"; fqdn: "x.com"; wildcard: "ip/mask"
     comment: str | None = None
     source: SourceRef | None = None
 

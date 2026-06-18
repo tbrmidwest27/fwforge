@@ -1026,6 +1026,42 @@ def test_appid_category_when_no_appdb():
     assert "set category" in conf and "set application " not in conf
 
 
+WILDCARD_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <address>
+      <entry name="vpn-subnets">
+        <ip-wildcard>10.0.0.0/255.0.255.0</ip-wildcard>
+        <description>VPN summary wildcard</description>
+      </entry>
+    </address>
+    <address-group>
+      <entry name="remote-nets">
+        <static><member>vpn-subnets</member></static>
+      </entry>
+    </address-group>
+    <rulebase><security><rules/></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_ip_wildcard_address_parsed():
+    """PAN ip-wildcard addresses convert to FortiOS 'type wildcard'."""
+    from fwforge import pipeline
+    from fwforge.emit import fortios as emit_fo
+    from fwforge.report import Report
+
+    cfg = paloalto.parse(WILDCARD_CFG, "wc.xml")
+    addr = next((a for a in cfg.addresses if a.name == "vpn-subnets"), None)
+    assert addr is not None, "wildcard address not parsed"
+    assert addr.type == "wildcard"
+    assert addr.value == "10.0.0.0/255.0.255.0"
+
+    out = emit_fo.emit(cfg, Report())
+    assert "set type wildcard" in out
+    assert "set wildcard 10.0.0.0 255.0.255.0" in out
+
+
 def test_aggregate_lacp_mode_parsed():
     import re
     passive = AGGCFG.replace("<mode>active</mode>", "<mode>passive</mode>")

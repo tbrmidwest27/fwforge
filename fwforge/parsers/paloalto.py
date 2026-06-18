@@ -969,6 +969,11 @@ class PaloParser:
                 self.cfg.addresses.append(Address(
                     name=name, type="fqdn", value=str(node["fqdn"]),
                     comment=comment, source=ref))
+            elif "ip-wildcard" in node:
+                self.cfg.addresses.append(Address(
+                    name=name, type="wildcard",
+                    value=str(node["ip-wildcard"]),
+                    comment=comment, source=ref))
             else:
                 self.note("warn", "addresses",
                           f"address {name}: unsupported type "

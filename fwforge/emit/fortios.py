@@ -570,6 +570,11 @@ class Emitter:
                     elif a.type == "fqdn":
                         self.line("        set type fqdn")
                         self.line(f"        set fqdn {_q(a.value)}")
+                    elif a.type == "wildcard":
+                        ip, mask = a.value.split("/", 1)
+                        self.line("        set type wildcard")
+                        self.line(f"        set wildcard {ip.strip()} "
+                                  f"{mask.strip()}")
                 except ValueError:
                     self.report.add("error", "addresses",
                                     f"address '{a.name}': invalid value "
