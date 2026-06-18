@@ -1390,3 +1390,114 @@ def test_bidir_static_nat_subnet_converts_to_range_vip():
     infos = [f for f in findings
              if f[0] == "info" and "range VIP" in f[2]]
     assert infos, "expected an info note about 1:1 subnet NAT range VIP"
+
+
+# --- DIPP-pool and one-way static SNAT → FortiOS ippool tests ----------------
+
+_NAT_BASE_HOST = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+<address>
+  <entry name="pool-addr"><ip-netmask>203.0.113.10/32</ip-netmask></entry>
+  <entry name="snat-addr"><ip-netmask>198.51.100.5/32</ip-netmask></entry>
+</address>
+<rulebase><security><rules/></security></rulebase>
+<rulebase><nat><rules>
+  {nat_rule}
+</rules></nat></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+_DIPP_POOL_RULE = """\
+<entry name="dipp-pool-rule">
+  <from><member>trust</member></from>
+  <to><member>untrust</member></to>
+  <source><member>any</member></source>
+  <destination><member>any</member></destination>
+  <service>any</service>
+  <source-translation>
+    <dynamic-ip-and-port>
+      <translated-address><member>pool-addr</member></translated-address>
+    </dynamic-ip-and-port>
+  </source-translation>
+</entry>"""
+
+_STATIC_ONE_WAY_RULE = """\
+<entry name="oneway-snat-rule">
+  <from><member>trust</member></from>
+  <to><member>untrust</member></to>
+  <source><member>any</member></source>
+  <destination><member>any</member></destination>
+  <service>any</service>
+  <source-translation>
+    <static-ip>
+      <translated-address>snat-addr</translated-address>
+    </static-ip>
+  </source-translation>
+</entry>"""
+
+
+def test_dipp_pool_converts_to_ippool_overload():
+    """DIPP with explicit address pool → FortiOS ippool type overload."""
+    cfg = paloalto.parse(
+        _NAT_BASE_HOST.format(nat_rule=_DIPP_POOL_RULE), "nat.xml")
+    findings = cfg.meta["findings"]
+
+    # no warnings about "address pool" falling through
+    warns = [f for f in findings
+             if f[0] == "warn" and "address pool" in f[2].lower()]
+    assert warns == [], f"unexpected pool fallback warning: {warns}"
+
+    # one ippool created, overload type
+    assert len(cfg.ippools) == 1
+    pool = cfg.ippools[0]
+    assert pool.start == "203.0.113.10"
+    assert pool.end == "203.0.113.10"
+    assert pool.pool_type == "overload"
+    assert "dipp-pool-rule" in pool.name
+
+    # one ip-pool NatRule created
+    nat_rules = [n for n in cfg.nats if n.kind == "ip-pool"]
+    assert len(nat_rules) == 1
+    assert nat_rules[0].pool_name == pool.name
+
+    # info finding about conversion
+    infos = [f for f in findings
+             if f[0] == "info" and "ippool overload" in f[2].lower()]
+    assert infos, "expected info note about DIPP pool → ippool overload"
+
+
+def test_static_one_way_snat_converts_to_ippool():
+    """One-way static SNAT → FortiOS ippool type one-to-one."""
+    cfg = paloalto.parse(
+        _NAT_BASE_HOST.format(nat_rule=_STATIC_ONE_WAY_RULE), "nat.xml")
+    findings = cfg.meta["findings"]
+
+    # no warnings about one-way static
+    warns = [f for f in findings
+             if f[0] == "warn" and "one-way static" in f[2].lower()]
+    assert warns == [], f"unexpected one-way static warning: {warns}"
+
+    # one ippool created, one-to-one type
+    assert len(cfg.ippools) == 1
+    pool = cfg.ippools[0]
+    assert pool.start == "198.51.100.5"
+    assert pool.end == "198.51.100.5"
+    assert pool.pool_type == "one-to-one"
+    assert "oneway-snat-rule" in pool.name
+
+    # info finding about conversion
+    infos = [f for f in findings
+             if f[0] == "info" and "one-to-one" in f[2].lower()]
+    assert infos, "expected info note about one-way SNAT → ippool one-to-one"
+
+
+def test_ippool_emitted_in_output():
+    """ippool objects appear in the FortiOS CLI output."""
+    from fwforge import pipeline
+    cfg_xml = _NAT_BASE_HOST.format(nat_rule=_DIPP_POOL_RULE)
+    result = pipeline.run_cross(cfg_xml, "paloalto", "nat.xml", {})
+    out = result.out_text
+    assert "config firewall ippool" in out
+    assert "set startip 203.0.113.10" in out
+    assert "set endip 203.0.113.10" in out

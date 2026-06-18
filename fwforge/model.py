@@ -217,13 +217,31 @@ class Vip:
 
 
 @dataclass
+class IpPool:
+    """FortiOS IP pool for source NAT (overload or one-to-one)."""
+
+    name: str
+    start: str
+    end: str
+    pool_type: str = "overload"  # overload | one-to-one | fixed-port-range
+    comment: str | None = None
+    source: SourceRef | None = None
+
+
+@dataclass
 class NatRule:
-    """Source-NAT intent that is not a VIP (v1: interface PAT)."""
+    """Source-NAT intent that is not a VIP.
+
+    kind values:
+      dynamic-interface  — interface-address PAT (egress IP)
+      ip-pool            — explicit ippool (overload or one-to-one)
+    """
 
     kind: str = "dynamic-interface"
     real_obj: str = ""  # address object being translated
-    real_ifc: str = ""
-    mapped_ifc: str = ""
+    real_ifc: str = ""  # source zone (PAN from-zone)
+    mapped_ifc: str = ""  # dest zone (PAN to-zone)
+    pool_name: str = ""  # for kind=ip-pool: the IpPool.name to attach
     source: SourceRef | None = None
 
 
@@ -338,6 +356,7 @@ class FirewallConfig:
     schedules: list[Schedule] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
     vips: list[Vip] = field(default_factory=list)
+    ippools: list[IpPool] = field(default_factory=list)
     nats: list[NatRule] = field(default_factory=list)
     phase1s: list[VpnPhase1] = field(default_factory=list)
     phase2s: list[VpnPhase2] = field(default_factory=list)

@@ -317,6 +317,7 @@ class Emitter:
         self.antivirus()
         self.ips()
         self.vips()
+        self.ippools()
         if self.nat_mode == "central":
             self.central_snat()
         self.schedules()
@@ -1044,6 +1045,22 @@ class Emitter:
             self.line("    next")
         self.line("end")
 
+    def ippools(self):
+        if not self.cfg.ippools:
+            return
+        self.line()
+        self.line("config firewall ippool")
+        for p in self.cfg.ippools:
+            self.line(f"    edit {_q(p.name)}")
+            self.line(f"        set startip {p.start}")
+            self.line(f"        set endip {p.end}")
+            if p.pool_type and p.pool_type != "overload":
+                self.line(f"        set type {p.pool_type}")
+            if p.comment:
+                self.line(f"        set comments {_q(p.comment[:255])}")
+            self.line("    next")
+        self.line("end")
+
     def schedules(self):
         recurring = [s for s in self.cfg.schedules if s.type == "recurring"]
         onetime = [s for s in self.cfg.schedules if s.type == "onetime"]
@@ -1275,7 +1292,15 @@ class Emitter:
         nat_pairs = set() if self.nat_mode == "central" else {
             (n.real_ifc, n.mapped_ifc) for n in self.cfg.nats
             if n.kind == "dynamic-interface"}
+        # ip-pool SNAT: (srczone, dstzone) -> pool_name; first rule wins
+        pool_nat: dict[tuple, str] = {} if self.nat_mode == "central" else {}
+        for n in self.cfg.nats:
+            if n.kind == "ip-pool" and n.pool_name:
+                key = (n.real_ifc, n.mapped_ifc)
+                if key not in pool_nat:
+                    pool_nat[key] = n.pool_name
         applied_nat = 0
+        applied_pool_nat = 0
         fam = self._family_map()
         v6_policies = 0
         mixed_policies = 0
@@ -1384,6 +1409,22 @@ class Emitter:
             if p.nat or (nat_hit and p.action == "accept"):
                 self.line("        set nat enable")
                 applied_nat += 1
+            # ip-pool SNAT: set ippool enable + poolname on matching policies
+            pool_hit = None
+            if not nat_hit and p.action == "accept":
+                for sz in (p.src_zones or []):
+                    for dz in (p.dst_zones or []):
+                        pool_hit = (pool_nat.get((sz, dz))
+                                    or pool_nat.get(("*", dz))
+                                    or pool_nat.get((sz, "*")))
+                        if pool_hit:
+                            break
+                    if pool_hit:
+                        break
+            if pool_hit:
+                self.line("        set ippool enable")
+                self.line(f"        set poolname {_q(pool_hit)}")
+                applied_pool_nat += 1
             if p.disabled:
                 self.line("        set status disable")
             comment = p.comment or ""
@@ -1409,6 +1450,13 @@ class Emitter:
                 f"interface-PAT applied: 'set nat enable' on {applied_nat} "
                 f"policies matching source NAT pairs "
                 f"{sorted(nat_pairs)}",
+            )
+        if pool_nat:
+            self.report.add(
+                "info", "nat",
+                f"ip-pool SNAT applied: 'set ippool enable' on "
+                f"{applied_pool_nat} policies; "
+                f"{len(self.cfg.ippools)} ippool(s) emitted"
             )
         if v6_policies:
             self.report.add(

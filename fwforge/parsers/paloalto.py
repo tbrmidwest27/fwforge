@@ -29,6 +29,7 @@ from ..model import (
     AppList,
     AvProfile,
     FileFilterProfile,
+    IpPool,
     IpsSensor,
     FirewallConfig,
     Interface,
@@ -2236,10 +2237,42 @@ class PaloParser:
                         real_ifc=frm[0], mapped_ifc=to[0], source=ref))
                     handled = True
                 elif isinstance(dipp, dict):
-                    self.note("warn", "nat",
-                              f"nat rule '{name}': SNAT to address pool — "
-                              "create a FortiOS ippool + policy manually",
-                              ref)
+                    # DIPP with explicit translated-address pool
+                    trans_addrs = _as_list(dipp.get("translated-address"))
+                    if trans_addrs:
+                        pool_start = pool_end = None
+                        tok = trans_addrs[0]
+                        host = self._resolve_ip(tok, ref, silent=True)
+                        if host:
+                            pool_start = pool_end = host
+                        else:
+                            rng = self._resolve_range(tok)
+                            if rng:
+                                parts = rng[0].split("-")
+                                pool_start, pool_end = parts[0], parts[-1]
+                        if pool_start:
+                            pname = f"ippool-{name}"[:63]
+                            self.cfg.ippools.append(IpPool(
+                                name=pname, start=pool_start, end=pool_end,
+                                pool_type="overload",
+                                comment=f"from PAN DIPP pool '{name}'",
+                                source=ref))
+                            self.cfg.nats.append(NatRule(
+                                kind="ip-pool", pool_name=pname,
+                                real_obj=",".join(_as_list(r.get("source"))),
+                                real_ifc=frm[0], mapped_ifc=to[0],
+                                source=ref))
+                            self.note("info", "nat",
+                                      f"nat rule '{name}': DIPP pool "
+                                      f"-> FortiOS ippool overload "
+                                      f"'{pname}' ({pool_start}-{pool_end})",
+                                      ref)
+                            handled = True
+                    if not handled:
+                        self.note("warn", "nat",
+                                  f"nat rule '{name}': SNAT to address pool — "
+                                  "create a FortiOS ippool + policy manually",
+                                  ref)
                 elif isinstance(static, dict):
                     trans = str(static.get("translated-address", ""))
                     srcs = _as_list(r.get("source"))
@@ -2295,10 +2328,40 @@ class PaloParser:
                                       "static NAT could not be resolved "
                                       "— convert manually", ref)
                     else:
-                        self.note("warn", "nat",
-                                  f"nat rule '{name}': one-way static "
-                                  "source NAT — use a FortiOS ippool "
-                                  "(type one-to-one) + policy", ref)
+                        # One-way static SNAT → ippool type one-to-one
+                        pool_start = pool_end = None
+                        host = self._resolve_ip(trans, ref, silent=True)
+                        if host:
+                            pool_start = pool_end = host
+                        else:
+                            rng = self._resolve_range(trans)
+                            if rng:
+                                parts = rng[0].split("-")
+                                pool_start, pool_end = parts[0], parts[-1]
+                        if pool_start:
+                            pname = f"ippool-{name}"[:63]
+                            ptype = ("overload" if pool_start != pool_end
+                                     else "one-to-one")
+                            self.cfg.ippools.append(IpPool(
+                                name=pname, start=pool_start, end=pool_end,
+                                pool_type=ptype,
+                                comment=f"from PAN one-way static SNAT "
+                                        f"'{name}'", source=ref))
+                            self.cfg.nats.append(NatRule(
+                                kind="ip-pool", pool_name=pname,
+                                real_obj=",".join(_as_list(r.get("source"))),
+                                real_ifc=frm[0], mapped_ifc=to[0],
+                                source=ref))
+                            self.note("info", "nat",
+                                      f"nat rule '{name}': one-way static "
+                                      f"SNAT -> FortiOS ippool {ptype} "
+                                      f"'{pname}'", ref)
+                            handled = True
+                        else:
+                            self.note("warn", "nat",
+                                      f"nat rule '{name}': one-way static "
+                                      "source NAT — use a FortiOS ippool "
+                                      "(type one-to-one) + policy", ref)
                 else:
                     self.note("warn", "nat",
                               f"nat rule '{name}': unsupported "
