@@ -1719,3 +1719,60 @@ def test_tags_preserved_in_comment():
     pol = cfg.policies[0]
     assert pol.comment and "change-123" in pol.comment
     assert "team-security" in pol.comment
+
+
+_URLFILTER_BLOCKLIST_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+  <profiles>
+    <url-filtering>
+      <entry name="strict-with-lists">
+        <block><member>malware</member></block>
+        <block-list>
+          <member>*.evil-domain.com</member>
+          <member>badhost.example.org</member>
+        </block-list>
+        <allow-list>
+          <member>safe.partner.com</member>
+          <member>*.trusted.internal</member>
+        </allow-list>
+      </entry>
+    </url-filtering>
+  </profiles>
+  <rulebase><security><rules>
+    <entry name="web-out">
+      <from><member>trust</member></from>
+      <to><member>untrust</member></to>
+      <source><member>any</member></source>
+      <destination><member>any</member></destination>
+      <service><member>any</member></service>
+      <application><member>web-browsing</member></application>
+      <action>allow</action>
+      <profile-setting><profiles>
+        <url-filtering><member>strict-with-lists</member></url-filtering>
+      </profiles></profile-setting>
+    </entry>
+  </rules></security></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+
+def test_url_filtering_blocklist_allowlist():
+    """block-list and allow-list explicit URL entries in a url-filtering profile
+    are carried through to the webfilter's url table, not silently dropped."""
+    cfg = paloalto.parse(_URLFILTER_BLOCKLIST_CFG, "bl.xml")
+    assert cfg.webfilters, "webfilter profile must be produced"
+    wf = cfg.webfilters[0]
+    urls = {u: (t, a) for u, t, a in wf.urls}
+
+    # block-list entries present with correct type and action
+    assert "*.evil-domain.com" in urls
+    assert urls["*.evil-domain.com"] == ("wildcard", "block")
+    assert "badhost.example.org" in urls
+    assert urls["badhost.example.org"] == ("simple", "block")
+
+    # allow-list entries present with correct type and action
+    assert "safe.partner.com" in urls
+    assert urls["safe.partner.com"] == ("simple", "allow")
+    assert "*.trusted.internal" in urls
+    assert urls["*.trusted.internal"] == ("wildcard", "allow")

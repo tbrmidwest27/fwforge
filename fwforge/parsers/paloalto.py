@@ -1565,9 +1565,17 @@ class PaloParser:
         profs = vsys.get("profiles")
         if isinstance(profs, dict):
             for name, p in _entries(profs.get("url-filtering")):
-                self._url_profiles[name] = {
+                prof: dict = {
                     a: _as_list(p.get(a)) for a in
                     ("block", "override", "continue", "alert", "allow")}
+                # explicit block-list / allow-list: URLs/patterns in the profile
+                # supplement category-based matching; carry to FortiOS urlfilter
+                bl = _as_list(p.get("block-list"))
+                al = _as_list(p.get("allow-list"))
+                if bl or al:
+                    prof["_url_block"] = bl
+                    prof["_url_allow"] = al
+                self._url_profiles[name] = prof
             for name, p in _entries(profs.get("file-blocking")):
                 rules = []
                 for rname, r in _entries(p.get("rules")):
@@ -2043,6 +2051,15 @@ class PaloParser:
         urls: dict[str, tuple] = {}      # url -> (type, action) first-match
         unmapped: list[str] = []
         risk: list[str] = []
+        # Explicit block-list / allow-list in the profile
+        for u in acts.get("_url_block") or []:
+            uu = u.strip()
+            if uu and uu not in urls:
+                urls[uu] = ("wildcard" if "*" in uu else "simple", "block")
+        for u in acts.get("_url_allow") or []:
+            uu = u.strip()
+            if uu and uu not in urls:
+                urls[uu] = ("wildcard" if "*" in uu else "simple", "allow")
         for pan_act in ("block", "override", "continue", "alert", "allow"):
             for cat in acts.get(pan_act, []):
                 cl = cat.strip().lower()
