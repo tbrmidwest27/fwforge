@@ -1960,9 +1960,10 @@ class PaloParser:
         acts = self._url_profiles.get(pan_name)
         if acts is None:
             self.note("warn", "policies",
-                      f"rule '{rule}': url-filtering profile '{pan_name}' "
-                      "referenced but not defined — add web filtering "
-                      "manually", ref)
+                      f"url-filtering profile '{pan_name}' referenced "
+                      "but not defined — add web filtering manually",
+                      ref)
+            cache[pan_name] = ""
             return ""
         filters: dict[int, str] = {}     # ftgd id -> action (strictest wins)
         urls: dict[str, tuple] = {}      # url -> (type, action) first-match
@@ -2003,10 +2004,11 @@ class PaloParser:
         if not filters and not urls:
             if unmapped or risk:
                 self.note("warn", "policies",
-                          f"rule '{rule}': url-filtering '{pan_name}' has no "
+                          f"url-filtering profile '{pan_name}' has no "
                           "mappable FortiGuard categories "
-                          f"({', '.join(unmapped + risk)}) — add web filtering "
-                          "manually", ref)
+                          f"({', '.join(unmapped + risk)}) — add web "
+                          "filtering manually on FortiOS", ref)
+            cache[pan_name] = ""  # cache so warning fires only once
             return ""
         name = self._safe_prof("wf-", pan_name)
         self.cfg.webfilters.append(WebFilterProfile(
@@ -2038,9 +2040,10 @@ class PaloParser:
         rules = self._file_profiles.get(pan_name)
         if rules is None:
             self.note("warn", "policies",
-                      f"rule '{rule}': file-blocking profile '{pan_name}' "
-                      "referenced but not defined — add file filtering "
-                      "manually", ref)
+                      f"file-blocking profile '{pan_name}' referenced "
+                      "but not defined — add file filtering manually",
+                      ref)
+            cache[pan_name] = ""
             return ""
         out_rules = []
         unmapped: list[str] = []
@@ -2069,11 +2072,13 @@ class PaloParser:
         if not out_rules:
             if catch_all or unmapped:
                 self.note("warn", "policies",
-                          f"rule '{rule}': file-blocking '{pan_name}' has no "
+                          f"file-blocking profile '{pan_name}' has no "
                           "mappable file types"
                           + (f" ({', '.join(unmapped)})" if unmapped else "")
                           + (" (PAN 'any')" if catch_all else "")
-                          + " — add file filtering manually", ref)
+                          + " — add file filtering manually on FortiOS",
+                          ref)
+            cache[pan_name] = ""  # cache miss so warning fires only once
             return ""
         name = self._safe_prof("ff-", pan_name)
         self.cfg.file_filters.append(FileFilterProfile(
