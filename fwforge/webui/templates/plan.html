@@ -13,6 +13,12 @@
 
 {% block content %}
 {% if error %}<div class="banner err">plan error: {{ error }}</div>{% endif %}
+{% if meta.get("vendor_mismatch") %}
+<div class="banner warn">You chose <strong>{{ meta.vendor_label }}</strong>,
+  but this file looks like <strong>{{ meta.vendor_mismatch }}</strong>. It will
+  be converted as {{ meta.vendor_label }} as you selected — re-load it from the
+  start page if that's not what you intended.</div>
+{% endif %}
 
 <ol class="steps" id="stepper"></ol>
 
@@ -273,7 +279,7 @@
 </section>
 
 <!-- ================= Step: Interface Mapping ================= -->
-<section class="wstep" data-title="Interface Mapping">
+<section class="wstep ifmap-step" data-title="Interface Mapping">
 <div class="card">
   <h2>Interface Mapping</h2>
   <p class="grid-note">Source name &rarr; target port. Physical ports are
@@ -285,24 +291,45 @@
     &ldquo;&hellip; choose a port&rdquo; in red. VLANs and tunnels keep
     their names unless you change them.</p>
   <style>
-    /* FortiOS-style faceplate widget — our own CSS rendering */
+    /* ---- fluid width: this step uses the whole viewport, the rest of
+       the wizard stays at the base 1200px cap. base.html sets
+       .content{max-width:1200px}; we widen only the active mapping
+       step so dragging the window wider visibly buys space. ---- */
+    .ifmap-step.show { width:100%; }
+    @media (min-width:1280px) {
+      .content:has(.ifmap-step.show) { max-width:min(1640px, 96vw); }
+    }
+    /* fallback for browsers without :has() — the step still reflows,
+       it just keeps the 1200px cap. */
+    .ifmap-step .card { overflow:visible; }
+
+    /* ---- FortiOS-style faceplate widget — our own CSS rendering ---- */
     .fpwrap { margin:.4rem 0 .9rem; display:flex; flex-direction:column;
               gap:.55rem; }
-    .fprow { display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; }
+    .fprow { display:grid;
+             grid-template-columns:5.4rem minmax(0,1fr);
+             align-items:center; gap:.4rem .7rem; }
     .fptag { font-size:.68rem; text-transform:uppercase;
-             letter-spacing:.08em; color:var(--mut); width:5.4rem;
-             text-align:right; flex:0 0 auto; }
-    .fpname { font-weight:700; font-size:.78rem; color:#266798;
-              min-width:4.2rem; flex:0 0 auto; }
-    /* white / silver chassis like the real FortiGate front panel */
-    .fplate { background:linear-gradient(#ffffff,#eceff3);
+             letter-spacing:.08em; color:var(--mut);
+             text-align:right; align-self:center; }
+    .fpname { font-weight:700; font-size:.78rem; color:var(--brand);
+              grid-column:2; }
+    .fpname:empty { display:none; }
+    /* white / silver chassis like the real FortiGate front panel.
+       grid-column:2 keeps the plate aligned under the dest hint and
+       lets it consume all remaining width before scrolling. */
+    .fplate { grid-column:2; min-width:0;
+              background:linear-gradient(#ffffff,#eceff3);
               border:1px solid #c4ccd5; border-radius:10px;
               padding:.45rem .8rem; display:flex; gap:0;
-              align-items:center; overflow-x:auto;
+              align-items:center; overflow-x:auto; overflow-y:hidden;
+              scrollbar-width:thin;
               box-shadow:inset 0 1px 0 rgba(255,255,255,.9),
                          0 1px 3px rgba(20,30,45,.12); min-height:64px; }
+    .fphint { grid-column:2; font-size:.75rem; }
+    .fphint:empty { display:none; }
     .fpgroup { display:flex; flex-direction:column; gap:2px;
-               padding:0 .65rem; }
+               padding:0 .65rem; flex:0 0 auto; }
     .fpgroup + .fpgroup { border-left:1px solid #d7dde3; }
     .fpbezel { display:flex; flex-direction:column;
                justify-content:center; gap:2px; flex:0 0 auto;
@@ -332,6 +359,8 @@
              box-shadow:inset 0 0 3px rgba(0,0,0,.7);
              transition:background .12s, box-shadow .12s,
                         border-color .12s; }
+    .fport:focus-visible { outline:2px solid var(--brand);
+             outline-offset:2px; }
     /* RJ45 clip notch */
     .fport.rj45::after { content:""; position:absolute; left:50%;
              transform:translateX(-50%); bottom:-1px; width:10px;
@@ -363,6 +392,13 @@
     .fport.miss { box-shadow:0 0 7px rgba(255,196,0,.6); }
     .fport:hover { border-color:#9fd1ff;
              box-shadow:0 0 8px rgba(63,169,255,.7); }
+    /* legend for the port colours, aligned with the chassis column */
+    .fplegend { grid-column:2; margin:.1rem 0 0; }
+    .fpdot { display:inline-block; width:.62rem; height:.62rem;
+             border-radius:2px; vertical-align:-1px; margin-right:.25rem; }
+    .fpdot.sel { background:#3fa9ff; } .fpdot.wir { background:#2ecc40; }
+    .fpdot.col { background:#c0392b; } .fpdot.nh  { background:#e0a300; }
+
     /* live LAG/parent member ports shown in the membership column */
     .memports { font-size:.72rem; color:var(--mut);
              font-family:monospace; }
@@ -372,29 +408,114 @@
     .aggrow { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; }
     .aggmem { margin-top:.35rem; display:flex; gap:.35rem;
              flex-wrap:wrap; align-items:center; }
-    .mchip { display:inline-flex; align-items:center; gap:4px;
-             font-family:monospace; font-size:.72rem;
-             border:0.5px solid var(--mut); border-radius:4px;
-             padding:1px 6px; }
+    .mchip { display:inline-flex; align-items:center; gap:5px;
+             font-family:monospace; font-size:.72rem; line-height:1.4;
+             background:#fff; border:1px solid var(--line);
+             border-radius:999px; padding:1px 4px 1px 9px; margin:1px 0; }
+    .mchip span[onclick]:hover { color:var(--err) !important; }
+    /* solid, removable LAG member-port pills */
+    .mchip.mem { background:var(--brand-l, #e8f1f8);
+             border-color:var(--brand, #266798); color:var(--brand-d, #1b4a6e);
+             font-weight:600; }
+    .mchip.mem .x { display:inline-flex; align-items:center; justify-content:center;
+             width:15px; height:15px; border-radius:50%; cursor:pointer;
+             color:var(--brand, #266798); line-height:1; font-weight:700;
+             transition:background .12s, color .12s; }
+    .mchip.mem .x:hover { background:var(--err, #c0392b); color:#fff; }
+
+    /* the member-port authoring cell: chips + add control + absorbs sub-label */
+    .portcell { display:flex; flex-wrap:wrap; gap:.3rem; align-items:center; }
+    /* elegant "+ add port" dropdown (native <details>, no JS framework) */
+    .addmenu { position:relative; display:inline-block; }
+    .addmenu > summary { list-style:none; cursor:pointer; user-select:none;
+             display:inline-flex; align-items:center; gap:4px;
+             font-size:.72rem; line-height:1.4; padding:2px 9px;
+             border:1px dashed var(--brand, #266798); border-radius:999px;
+             background:#fff; color:var(--brand, #266798); font-weight:600;
+             transition:background .12s, color .12s; white-space:nowrap; }
+    .addmenu > summary::-webkit-details-marker { display:none; }
+    .addmenu > summary:hover,
+    .addmenu[open] > summary { background:var(--brand, #266798); color:#fff; }
+    .addmenu > summary:focus-visible { outline:2px solid var(--brand-d, #1b4a6e);
+             outline-offset:2px; }
+    .addmenu[open] > summary .caret { transform:rotate(180deg); }
+    .addmenu .caret { font-size:.6rem; transition:transform .12s; }
+    /* in-flow (not absolute): an absolute popup is clipped by the mapping
+       table's overflow-x scroll wrapper, which collapsed it to one visible
+       row. Expanding in normal flow lets every port checkbox be reached. */
+    .addpop { margin-top:4px; min-width:9rem; max-width:18rem;
+             background:#fff; border:1px solid var(--line);
+             border-radius:8px; box-shadow:0 2px 8px rgba(16,24,40,.12);
+             padding:.25rem; display:flex; flex-direction:column; }
+    /* when open, take a full row in the wrapping .portcell so the menu has
+       room beneath the chips instead of being squeezed inline */
+    .addmenu[open] { display:block; flex-basis:100%; }
+    .addpop .addopts { max-height:11rem; overflow:auto; display:flex;
+             flex-direction:column; }
+    /* each available port is a tickable checkbox row (multi-select) */
+    .addpop label.addopt { display:flex; align-items:center; gap:.45rem;
+             font-family:monospace; font-size:.72rem; line-height:1.5;
+             border-radius:5px; cursor:pointer; padding:3px 8px;
+             color:var(--ink); user-select:none; }
+    .addpop label.addopt:hover, .addpop label.addopt:focus-within {
+             background:var(--brand-l, #e8f1f8); color:var(--brand-d, #1b4a6e); }
+    .addpop label.addopt input { cursor:pointer; margin:0;
+             accent-color:var(--brand, #266798); flex:none; }
+    .addpop label.addopt span { overflow:hidden; text-overflow:ellipsis;
+             white-space:nowrap; }
+    /* footer: confirm-add bar that commits every ticked port at once */
+    .addpop .addbar { display:flex; align-items:center; justify-content:space-between;
+             gap:.5rem; margin-top:.25rem; padding-top:.3rem;
+             border-top:1px solid var(--line); }
+    .addpop .addbar .cnt { font-size:.66rem; color:var(--mut);
+             padding-left:.2rem; white-space:nowrap; }
+    .addpop .addbar button.addgo { font-size:.72rem; font-weight:600;
+             line-height:1.4; padding:3px 12px; border:none; border-radius:999px;
+             background:var(--brand, #266798); color:#fff; cursor:pointer;
+             transition:background .12s, opacity .12s; }
+    .addpop .addbar button.addgo:hover:not(:disabled) {
+             background:var(--brand-d, #1b4a6e); }
+    .addpop .addbar button.addgo:focus-visible {
+             outline:2px solid var(--brand-d, #1b4a6e); outline-offset:2px; }
+    .addpop .addbar button.addgo:disabled { opacity:.45; cursor:not-allowed; }
+    .absorbs { width:100%; font-size:.66rem; color:var(--mut);
+             margin-top:.15rem; display:flex; align-items:baseline; gap:.35rem; }
+    .absorbs b { color:var(--mut); font-weight:600; text-transform:uppercase;
+             letter-spacing:.04em; font-size:.6rem; }
+    .absorbs span { font-family:monospace; color:var(--ink); }
     /* "nests on" column: parent picker + the LAG's member ports */
     .nestcol { white-space:nowrap; font-size:.78rem; }
     .nestcol select.vparent { max-width:6.5rem; }
     .nestcol .memports { margin-left:.3rem; }
-    /* multi-select port picker for aggregate members */
-    select.addport[multiple] { vertical-align:top; min-width:5.5rem;
-             font-family:monospace; font-size:.72rem; }
-    .addports { font-size:.72rem; margin-left:.25rem; vertical-align:top; }
     /* FortiOS-style interface tree: collapsible parent rows */
     .cbtn { background:none; border:none; cursor:pointer; font:inherit;
             color:var(--mut); padding:0; margin-right:.35rem;
             width:1.1rem; text-align:center; line-height:1; }
+    .cbtn:hover { color:var(--brand); }
     tr.childrow td.indent { padding-left:3.2rem; }
     select.mdst { min-width:8.5rem; }
     td.ty { color:var(--mut); font-size:.78rem; }
     td.memcol { font-size:.78rem; }
-    .cap { font-size:.66rem; color:var(--mut); margin-top:.2rem;
-           font-family:monospace; }
     .ifdesc { font-size:.68rem; color:var(--mut); }
+
+    /* ---- responsive scroll wrapper for the mapping table ---- */
+    .ifmap-wrap { width:100%; overflow-x:auto; overflow-y:visible;
+             scrollbar-width:thin;
+             border:1px solid var(--line); border-radius:8px; }
+    .ifmap-wrap > table { margin:0; min-width:560px; }
+    .ifmap-wrap th { position:sticky; top:0; z-index:2; }
+    .ifmap-wrap td code { word-break:break-all; }
+    /* sensible minimums so columns don't collapse when scrolling */
+    .ifmap-wrap td.ty { min-width:11rem; }
+    .ifmap-wrap td.memcol { min-width:9rem; }
+
+    /* narrow viewport: tighten cell padding so more fits before scroll */
+    @media (max-width:720px) {
+      .ifmap-wrap th, .ifmap-wrap td { padding:.4rem .45rem; }
+      .fprow { grid-template-columns:1fr; }
+      .fptag { text-align:left; }
+      .fpname, .fplate, .fphint, .fplegend { grid-column:1; }
+    }
   </style>
   <div class="fpwrap" id="fp-wrap">
     <div class="fprow">
@@ -406,14 +527,14 @@
       <span class="fptag">destination</span>
       <span class="fpname" id="fp-dst-name"></span>
       <div class="fplate" id="fp-dst"></div>
-      <span class="muted" id="fp-dst-hint" style="font-size:.75rem"></span>
+      <span class="muted fphint" id="fp-dst-hint"></span>
     </div>
-    <p class="grid-note" style="margin:0">Click a source port to jump to
-      its row, then click a destination port to wire it.
-      <b style="color:#3fa9ff">blue</b> = selected pair,
-      <b style="color:#2ecc40">green</b> = wired,
-      <b style="color:#c0392b">red</b> = two sources on one port,
-      <b style="color:#e0a300">amber</b> = no home on the destination.</p>
+    <p class="grid-note fplegend" style="margin:0">Click a source port to
+      jump to its row, then click a destination port to wire it.
+      <span class="fpdot sel"></span>selected pair
+      <span class="fpdot wir"></span>wired
+      <span class="fpdot col"></span>two sources on one port
+      <span class="fpdot nh"></span>no home on the destination</p>
   </div>
   <div class="card" id="agg-panel-wrap" style="margin:.5rem 0;padding:.6rem .8rem">
     <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
@@ -426,8 +547,12 @@
   <div id="auth-fields" hidden></div>
   <p class="grid-note" id="tp-port-hint"></p>
   <datalist id="tp-ports"></datalist>
-  <table style="max-width:{% if det %}1200px{% else %}580px{% endif %}">
+  <div class="ifmap-wrap">
+  <table>
+    <thead>
     <tr><th>name</th>{% if det %}<th>type</th><th>members</th><th>ip / netmask</th>{% endif %}{% if meta.multi_vdom %}<th>vdom</th>{% endif %}<th>maps to</th></tr>
+    </thead>
+    <tbody>
     {% for ifc in meta.interfaces %}
     {% set d = det.get(ifc) if det else None %}
     <tr>
@@ -449,10 +574,13 @@
       {% endif %}
       <td>{% if d and d.kind == "vlan" %}<input type="hidden" name="map_dst" value="{{ ifc }}"><input type="hidden" name="vparent_src" value="{{ ifc }}"><select name="vparent_dst" class="vparent" data-vsrc="{{ ifc }}" onchange="vparentChanged(this)"></select>{%
           elif d and d.type == "physical" %}<select name="map_dst" class="mdst" data-src="{{ ifc }}" style="width:100%"><option value="{{ ifc }}" selected>{{ ifc }}</option></select>{%
+          elif d and d.kind == "aggregate" %}<input type="text" name="map_dst" value="{{ ifc }}" list="tp-ports" maxlength="15" oninput="aggRenameFromMapDst(this)" title="this aggregate's name — edit to rename the LAG" style="width:100%">{%
           else %}<input type="text" name="map_dst" value="{{ ifc }}" list="tp-ports" style="width:100%">{% endif %}</td>
     </tr>
     {% endfor %}
+    </tbody>
   </table>
+  </div>
 </div>
 </section>
 
@@ -1041,6 +1169,21 @@ function aggSetName(id, v) {
   refreshNestOptions(); refreshMembership();   // no re-render: keep focus
 }
 function aggSetLacp(id, v) { const a = findAgg(id); if (a) a.lacp = v; }
+// the "maps to" box of an aggregate interface IS its LAG name: editing it
+// live-renames the aggregate (a source LAG or a promoted physical) so the
+// VLAN "nests on" pickers and the model track the new name. serializeAggs
+// already reads the submitted name from this same field for any AGGS entry
+// carrying a src, so this keeps the live UI consistent with what's saved.
+function aggRenameFromMapDst(inp) {
+  const tr = inp.closest("tr");
+  const srcEl = tr && tr.querySelector('input[name="map_src"]');
+  if (!srcEl) return;
+  const a = AGGS.find(x => x.src === srcEl.value);
+  if (!a) return;
+  const old = a.name; a.name = inp.value.trim();
+  for (const k in VPARENT) if (VPARENT[k] === old) VPARENT[k] = a.name;
+  refreshNestOptions(); refreshMembership();   // no full re-render: keep focus
+}
 function aggAddMember(id, port) {
   const a = findAgg(id); if (!a || !port) return;
   if (!a.members.includes(port)) a.members.push(port);
@@ -1052,23 +1195,72 @@ function aggDelMember(id, port) {
   buildTree(); refreshNestOptions(); refreshMembership(); refreshFaceplates();
 }
 function aggAddSelected(id, btn) {
-  // add every port selected in the multi-select immediately before this button
-  const sel = btn.previousElementSibling;
-  if (!sel || sel.tagName !== "SELECT") return;
+  // commit every ticked port from the "+ add port" multi-select menu in ONE
+  // model mutation + ONE re-render, then close the menu. Tolerant of a legacy
+  // multi-select <select> sibling so the model API stays stable for callers.
+  const dt = btn && btn.closest("details.addmenu");
   const a = findAgg(id); if (!a) return;
-  Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean)
-    .forEach(p => { if (!a.members.includes(p)) a.members.push(p); });
+  let picks = [];
+  if (dt) {
+    picks = Array.from(dt.querySelectorAll('input.addchk:checked'))
+              .map(c => c.value);
+  } else if (btn && btn.previousElementSibling
+             && btn.previousElementSibling.tagName === "SELECT") {
+    picks = Array.from(btn.previousElementSibling.selectedOptions)
+              .map(o => o.value);
+  }
+  picks = picks.filter(Boolean);
+  if (!picks.length) return;
+  picks.forEach(p => { if (!a.members.includes(p)) a.members.push(p); });
+  if (dt) dt.removeAttribute("open");
   buildTree(); refreshNestOptions(); refreshMembership(); refreshFaceplates();
 }
+function aggPickPort(id, port, btn) {
+  // back-compat single-port add: one available port -> one chip. Kept so any
+  // caller/test relying on the single-add path still works.
+  const dt = btn && btn.closest("details.addmenu");
+  if (dt) dt.removeAttribute("open");
+  aggAddMember(id, port);          // pushes into AGGS[].members + re-renders
+}
+function aggAddSync(btn) {
+  // live-update the menu footer: enable "Add" only when >=1 port is ticked
+  // and reflect the count. Pure UI; no model change.
+  const dt = btn && btn.closest("details.addmenu");
+  if (!dt) return;
+  const n = dt.querySelectorAll('input.addchk:checked').length;
+  const go = dt.querySelector('button.addgo');
+  const cnt = dt.querySelector('.addbar .cnt');
+  if (go) go.disabled = n === 0;
+  if (cnt) cnt.textContent = n ? n + " selected" : "none selected";
+}
 function addPortPicker(aggId, opts) {
-  // multi-select listbox + "add" button: pick several member ports at once
+  // elegant "+ add port" dropdown: a native <details> menu listing each
+  // available port as a tickable checkbox row. Tick several, then "Add"
+  // commits them all in one re-render via aggAddSelected. No raw OS listbox.
   if (!opts.length) return "";
-  const sz = Math.min(Math.max(opts.length, 2), 6);
-  return `<select class="addport" multiple size="${sz}" `
-    + `title="Ctrl/Shift-click to pick several ports, then + add">`
-    + opts.map(p => `<option>${esc(p)}</option>`).join("") + `</select>`
-    + `<button type="button" class="cbtn addports" onclick="aggAddSelected(${aggId},this)" `
-    + `title="add the selected ports">+ add</button>`;
+  return `<details class="addmenu">`
+    + `<summary title="add member ports">+ add port`
+    + `<span class="caret" aria-hidden="true">&#9662;</span></summary>`
+    + `<div class="addpop" role="group" aria-label="available ports">`
+    + `<div class="addopts">`
+    + opts.map(p =>
+        `<label class="addopt"><input type="checkbox" class="addchk" `
+        + `value="${esc(p)}" onchange="aggAddSync(this)">`
+        + `<span>${esc(p)}</span></label>`
+      ).join("")
+    + `</div>`
+    + `<div class="addbar"><span class="cnt">none selected</span>`
+    + `<button type="button" class="addgo" disabled `
+    + `onclick="aggAddSelected(${aggId},this)">Add</button></div>`
+    + `</div></details>`;
+}
+function aggChipsHTML(a) {
+  // solid, removable member-port pills shared by both render paths
+  return aggMembers(a).map(p =>
+    `<span class="mchip mem">${esc(p)} `
+    + `<span class="x" title="remove ${esc(p)}" `
+    + `onclick="aggDelMember(${a.id},'${esc(p)}')">&times;</span></span>`
+  ).join("");
 }
 function usedPorts() {
   const s = new Set();
@@ -1157,7 +1349,8 @@ function ifTypeChanged(sel) {
                  members: seed, src: src, promoted: true});
     tyWrap.innerHTML = physTypeCell(src, true, "active");
     mapCell.innerHTML = `<input type="text" name="map_dst" value="${esc(name)}" `
-      + `list="tp-ports" style="width:100%">`;
+      + `list="tp-ports" maxlength="15" oninput="aggRenameFromMapDst(this)" `
+      + `title="this aggregate's name — edit to rename the LAG" style="width:100%">`;
   } else {
     d.kind = "physical";
     PROMOTED.delete(src);
@@ -1185,9 +1378,11 @@ function refreshMembership() {
       const opts = destPortList().filter(p => !mem.includes(p) && !used.has(p));
       const src = srcMemberNames(d.name);
       cell.innerHTML =
-        mem.map(p => `<span class="mchip">${esc(p)} <span onclick="aggDelMember(${a.id},'${esc(p)}')" style="cursor:pointer;color:var(--mut)">&times;</span></span>`).join("")
-        + addPortPicker(a.id, opts)
-        + (src.length ? `<div class="cap">absorbs ${src.map(esc).join(" &middot; ")}</div>` : "");
+        `<div class="portcell">` + aggChipsHTML(a) + addPortPicker(a.id, opts)
+        + (src.length
+            ? `<div class="absorbs"><b>Absorbs</b><span>${src.map(esc).join(" &middot; ")}</span></div>`
+            : "")
+        + `</div>`;
     } else if (d.kind === "vlan") {
       // a VLAN rides its parent LAG's member ports — replicate them here
       const a = aggs[vlanParent(d)];
@@ -1207,8 +1402,8 @@ let TREE_OPEN = {};
 function memberCellHTML(a) {
   const mem = aggMembers(a), used = usedPorts();
   const opts = destPortList().filter(p => !mem.includes(p) && !used.has(p));
-  return mem.map(p => `<span class="mchip">${esc(p)} <span onclick="aggDelMember(${a.id},'${esc(p)}')" style="cursor:pointer;color:var(--mut)">&times;</span></span>`).join("")
-    + addPortPicker(a.id, opts);
+  return `<div class="portcell">` + aggChipsHTML(a)
+    + addPortPicker(a.id, opts) + `</div>`;
 }
 function newAggRowHTML(a) {
   const lacp = ["active", "passive", "static"].map(m =>

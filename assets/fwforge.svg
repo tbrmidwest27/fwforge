@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="FW-Forge">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#266798"/>
+      <stop offset="1" stop-color="#143c5e"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <g fill="#f6f9fb">
+    <polygon points="23,23 54,23 54,33 23,33"/>
+    <polygon points="7,30 23,23 23,33"/>
+    <polygon points="29,33 39,33 38,40 30,40"/>
+    <polygon points="16,49 48,49 43,40 21,40"/>
+  </g>
+  <polygon fill="#f5a623"
+           points="49,6.5 51.6,12 57,14.6 51.6,17.2 49,22.6 46.4,17.2 41,14.6 46.4,12"/>
+</svg>

@@ -636,13 +636,22 @@ def test_membership_column_live_wiring(client):
 
 
 def test_aggregate_ports_multiselect(client):
-    # aggregate member ports can be added several at once via a multi-select
-    # listbox + an "add" button (not just one port per dropdown change)
+    # aggregate member ports are added via an elegant "+ add port" dropdown
+    # menu (a native <details> control) whose rows are tickable checkboxes, so
+    # several ports can be selected and committed in one "Add" — not a raw OS
+    # multi-select listbox. The model entry points stay present so the data
+    # API is unchanged.
     jid = _load(client, "pa_sample.xml")
     page = client.get(f"/job/{jid}").data.decode()
     assert "function addPortPicker" in page
-    assert "function aggAddSelected" in page
-    assert 'class="addport" multiple' in page    # multi-select listbox emitted
+    assert "function aggAddSelected" in page      # commits all ticked ports
+    assert "function aggPickPort" in page         # single-port add path kept
+    assert 'class="addmenu"' in page              # dropdown port picker emitted
+    assert "+ add port" in page
+    # the menu now offers checkbox rows + a single "Add" action (multi-select)
+    assert 'class="addchk"' in page               # tickable per-port checkbox
+    assert 'class="addgo"' in page                # one-shot "Add selected" btn
+    assert "function aggAddSync" in page           # footer enable/count sync
 
 
 def test_destination_identity_and_filename(client):

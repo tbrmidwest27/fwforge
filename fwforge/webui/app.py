@@ -64,12 +64,20 @@ def _load_jobs() -> None:
             continue
 
 
-def _analyze(text: str, name: str) -> dict:
-    vendor, conf = detect_vendor(text)
+def _analyze(text: str, name: str, forced_vendor: str = "") -> dict:
+    detected, conf = detect_vendor(text)
+    # When the user picked a source vendor up front (a landing-page tile ->
+    # /new/<vendor>), that choice is authoritative: we parse as that vendor
+    # even when content detection is unsure. Detection still runs as a sanity
+    # check so we can warn on a strong disagreement (vendor_mismatch below).
+    vendor = forced_vendor or detected
     meta = {
         "name": name,
         "vendor": vendor,
         "vendor_label": VENDOR_LABELS.get(vendor, vendor),
+        "detected_vendor": detected,
+        "detected_label": VENDOR_LABELS.get(detected, detected),
+        "forced_vendor": bool(forced_vendor),
         "confidence": f"{conf:.0%}",
         "created": time.strftime("%Y-%m-%d %H:%M"),
         "interfaces": [],
@@ -85,6 +93,10 @@ def _analyze(text: str, name: str) -> dict:
         "iface_details": [],
         "lines": len(text.splitlines()),
     }
+    # the user forced a vendor but content detection points elsewhere — the
+    # wizard surfaces this so a misclick can't silently mis-convert
+    if forced_vendor and detected not in ("unknown", forced_vendor):
+        meta["vendor_mismatch"] = VENDOR_LABELS.get(detected, detected)
     if vendor == "fortios":
         tree = fortios_tree.parse_config(text, name)
         meta["interfaces"] = portmap.tree_interface_names(tree)
@@ -390,6 +402,17 @@ def create_app() -> Flask:
         return render_template("index.html", jobs=jobs,
                                error=request.args.get("error", ""))
 
+    @app.get("/new/<vendor>")
+    def new(vendor):
+        """Per-vendor upload page reached by clicking a source tile on the
+        landing page. The chosen vendor is carried as a hidden field into
+        /load, where it becomes the authoritative source vendor."""
+        if vendor not in VENDOR_LABELS:
+            abort(404)
+        return render_template("new.html", vendor=vendor,
+                               vendor_label=VENDOR_LABELS[vendor],
+                               error=request.args.get("error", ""))
+
     @app.post("/detect")
     def detect_head():
         """Live vendor sniff for the upload page: the browser posts the first
@@ -426,8 +449,21 @@ def create_app() -> Flask:
         if not text.strip():
             return redirect(url_for("index", error="no config provided"))
 
-        meta = _analyze(text, name)
-        if meta["vendor"] == "unknown":
+        # a source tile (/new/<vendor>) posts its vendor as authoritative;
+        # an unknown key is ignored so the form falls back to auto-detection
+        forced = request.form.get("vendor", "").strip()
+        if forced not in VENDOR_LABELS:
+            forced = ""
+        try:
+            meta = _analyze(text, name, forced_vendor=forced)
+        except Exception as e:  # forced a vendor onto a config of another kind
+            if forced:
+                return redirect(url_for(
+                    "new", vendor=forced,
+                    error=f"couldn't parse that file as "
+                          f"{VENDOR_LABELS[forced]}: {e}"))
+            return redirect(url_for("index", error=f"parse failed: {e}"))
+        if not forced and meta["vendor"] == "unknown":
             return redirect(url_for(
                 "index",
                 error="could not detect the vendor of that config"))

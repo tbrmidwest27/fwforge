@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}New {{ vendor_label }} conversion{% endblock %}
+{% block nav_conversions %}{% endblock %}
+{% block pagetitle %}New conversion{% endblock %}
+{% block crumbs %}{{ vendor_label }} &rarr; FortiGate{% endblock %}
+
+{% block content %}
+{% if error %}<div class="banner err">{{ error }}</div>{% endif %}
+
+{% set glyphs = {
+  "cisco-asa": "ASA", "paloalto": "PAN", "juniper-srx": "SRX",
+  "pfsense": "PF", "fortios": "FGT"} %}
+{% set vclass = {
+  "cisco-asa": "v-asa", "paloalto": "v-pan", "juniper-srx": "v-srx",
+  "pfsense": "v-pf", "fortios": "v-forti"} %}
+
+<p style="margin:.1rem 0 .9rem">
+  <a class="backlink" href="{{ url_for('index') }}">&larr; choose a different
+    source</a>
+</p>
+
+<div class="card" id="new">
+  <div class="row" style="align-items:center; gap:.8rem;
+       justify-content:space-between; margin-bottom:.4rem">
+    <h2 style="margin:0; font-size:1.2rem">{{ vendor_label }} &rarr; FortiGate</h2>
+    <span class="srcchip vtile {{ vclass.get(vendor, '') }}">
+      <span class="glyph">{{ glyphs.get(vendor, "SRC") }}</span>
+      {{ vendor_label }}
+      <span class="arrow">&rarr;</span>
+      <span class="glyph" style="background:var(--brand)">FGT</span>
+    </span>
+  </div>
+  <p class="grid-note" style="margin-bottom:1rem">
+    {% if vendor == "fortios" %}
+    Load a FortiOS config to migrate it (model / VDOM / version) to another
+    FortiGate.
+    {% else %}
+    Load a {{ vendor_label }} config — it will be converted to FortiOS as
+    {{ vendor_label }}. We still check the file and warn if it looks like a
+    different vendor.
+    {% endif %}
+  </p>
+
+  <div class="uploadgrid">
+    <div class="upload-pane">
+      <h3>Upload a file</h3>
+      <p class="ph">Pick the config from your computer.</p>
+      <form method="post" action="{{ url_for('load') }}"
+            enctype="multipart/form-data">
+        <input type="hidden" name="vendor" value="{{ vendor }}">
+        <p><label for="cfg-file">Source config</label><br>
+          <input type="file" name="config" id="cfg-file"></p>
+        <p id="cfg-detect" class="grid-note"
+           style="margin-top:-2px;min-height:1.2em"></p>
+        <p><label>Destination backup <span class="muted">(optional)</span></label><br>
+          <input type="file" name="target_config"></p>
+        <button>Upload &amp; analyze</button>
+      </form>
+    </div>
+    <div class="upload-pane">
+      <h3>Load from a path</h3>
+      <p class="ph">Point at a config already on this machine.</p>
+      <form method="post" action="{{ url_for('load') }}">
+        <input type="hidden" name="vendor" value="{{ vendor }}">
+        <p><label>Source path</label><br>
+          <input type="text" name="path" style="width:100%"
+                 placeholder="e.g. C:\backups\fw.conf"></p>
+        <p><label>Destination backup path <span class="muted">(optional)</span></label><br>
+          <input type="text" name="target_path" style="width:100%"
+                 placeholder="e.g. C:\backups\fortigate.conf"></p>
+        <button class="ghost">Load from path</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="helpbox">
+    <span class="hi" aria-hidden="true">&#9432;</span>
+    <span><strong>Destination backup</strong> — any config backup taken from the
+      TARGET device (a factory-fresh one is ideal). It supplies the authoritative
+      platform code, the real port inventory, and the device identity (hostname).
+      Its policies and objects are never merged in.</span>
+  </div>
+</div>
+
+<script>
+// Live vendor sniff: confirm the chosen file reads as the expected vendor (or
+// flag a mismatch) before committing to the wizard. Mirrors the index page.
+(function () {
+  var inp = document.getElementById("cfg-file");
+  var out = document.getElementById("cfg-detect");
+  var chosen = {{ vendor|tojson }};
+  if (!inp || !out) return;
+  inp.addEventListener("change", function () {
+    var f = inp.files && inp.files[0];
+    if (!f) { out.textContent = ""; out.style.color = ""; return; }
+    out.style.color = ""; out.textContent = "checking…";
+    var reader = new FileReader();
+    reader.onload = function () {
+      var fd = new FormData();
+      fd.append("head", reader.result);
+      fetch("/detect", { method: "POST", body: fd })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j.vendor && j.vendor === chosen) {
+            out.innerHTML = "confirmed: <strong>" + j.label +
+              "</strong> (" + j.confidence + ")";
+            out.style.color = "#0a7d28";
+          } else if (j.vendor && j.vendor !== "unknown") {
+            out.innerHTML = "heads up — this looks like <strong>" +
+              j.label + "</strong>, not your selection. It will still be " +
+              "converted as you chose.";
+            out.style.color = "#b35a00";
+          } else {
+            out.innerHTML = "vendor not auto-recognized — will be converted " +
+              "as your selection.";
+            out.style.color = "";
+          }
+        })
+        .catch(function () { out.textContent = ""; });
+    };
+    reader.readAsText(f.slice(0, 65536));
+  });
+})();
+</script>
+{% endblock %}

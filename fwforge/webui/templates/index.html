@@ -5,6 +5,57 @@
 {% block content %}
 {% if error %}<div class="banner err">{{ error }}</div>{% endif %}
 
+{# ---- hero: start here ---- #}
+<section class="hero" id="new">
+  <div class="eyebrow">Start a conversion</div>
+  <h2>Pick your source platform</h2>
+  <p class="lede">Choose the firewall you're migrating from — fwforge converts
+    its config to FortiGate. Everything runs locally on this machine.</p>
+  <div class="tilegrid">
+    <a class="vtile v-asa" href="{{ url_for('new', vendor='cisco-asa') }}">
+      <span class="glyph">ASA</span>
+      <span>
+        <span class="vt">Cisco ASA</span>
+        <span class="vs">running-config &rarr; FortiOS</span>
+      </span>
+      <span class="go" aria-hidden="true">&rarr;</span>
+    </a>
+    <a class="vtile v-pan" href="{{ url_for('new', vendor='paloalto') }}">
+      <span class="glyph">PAN</span>
+      <span>
+        <span class="vt">Palo Alto</span>
+        <span class="vs">XML or display-set &rarr; FortiOS</span>
+      </span>
+      <span class="go" aria-hidden="true">&rarr;</span>
+    </a>
+    <a class="vtile v-srx" href="{{ url_for('new', vendor='juniper-srx') }}">
+      <span class="glyph">SRX</span>
+      <span>
+        <span class="vt">Juniper SRX</span>
+        <span class="vs">curly or set config &rarr; FortiOS</span>
+      </span>
+      <span class="go" aria-hidden="true">&rarr;</span>
+    </a>
+    <a class="vtile v-pf" href="{{ url_for('new', vendor='pfsense') }}">
+      <span class="glyph">PF</span>
+      <span>
+        <span class="vt">pfSense</span>
+        <span class="vs">config.xml &rarr; FortiOS</span>
+      </span>
+      <span class="go" aria-hidden="true">&rarr;</span>
+    </a>
+    <a class="vtile v-forti" href="{{ url_for('new', vendor='fortios') }}">
+      <span class="glyph">FGT</span>
+      <span>
+        <span class="vt">FortiOS</span>
+        <span class="vs">model / VDOM / version migration</span>
+      </span>
+      <span class="go" aria-hidden="true">&rarr;</span>
+    </a>
+  </div>
+</section>
+
+{# ---- secondary: existing projects ---- #}
 {% if jobs %}
 <div class="card">
   <h2>Conversion projects</h2>
@@ -46,28 +97,5 @@
   </table>
 </div>
 {% endif %}
-
-<div class="card" id="new">
-  <h2>New conversion</h2>
-  <p class="grid-note">Pick your source platform — you'll convert it to
-    FortiGate.</p>
-  <div class="tiles">
-    <a class="tile" href="{{ url_for('new', vendor='cisco-asa') }}">
-      <div class="t">Cisco ASA</div>
-      <div class="s">running-config &rarr; FortiOS</div></a>
-    <a class="tile" href="{{ url_for('new', vendor='paloalto') }}">
-      <div class="t">Palo Alto</div>
-      <div class="s">XML or display-set &rarr; FortiOS</div></a>
-    <a class="tile" href="{{ url_for('new', vendor='juniper-srx') }}">
-      <div class="t">Juniper SRX</div>
-      <div class="s">curly or set config &rarr; FortiOS</div></a>
-    <a class="tile" href="{{ url_for('new', vendor='pfsense') }}">
-      <div class="t">pfSense</div>
-      <div class="s">config.xml &rarr; FortiOS</div></a>
-    <a class="tile" href="{{ url_for('new', vendor='fortios') }}">
-      <div class="t">FortiOS</div>
-      <div class="s">model / VDOM / version migration</div></a>
-  </div>
-</div>
 
 {% endblock %}

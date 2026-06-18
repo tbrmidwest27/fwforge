@@ -204,7 +204,10 @@
     {% else %}{{ preview_total }} lines{% endif %}
     </span>
   </div>
-  <pre class="code">{% for line in preview %}<div><span class="ln">{{ loop.index }}</span>{{ line }}</div>{% endfor %}</pre>
+  <div class="codewrap">
+    <button type="button" class="copybtn" onclick="copyCode(this)">Copy</button>
+    <pre class="code">{% for line in preview %}<div><span class="ln">{{ loop.index }}</span>{{ line }}</div>{% endfor %}</pre>
+  </div>
 </div>
 
 {% if r.mode == "migrate" %}
@@ -216,7 +219,10 @@
       (full diff in diff.patch)
     {% endif %}
   </p>
-  <pre class="code diff">{% for l in r.diff %}<div class="{{ l.cls }}">{{ l.text }}</div>{% endfor %}</pre>
+  <div class="codewrap">
+    <button type="button" class="copybtn" onclick="copyCode(this)">Copy</button>
+    <pre class="code diff">{% for l in r.diff %}<div class="{{ l.cls }}">{{ l.text }}</div>{% endfor %}</pre>
+  </div>
 </div>
 {% endif %}
 
@@ -296,6 +302,17 @@
 .opt-collapse-item { background:var(--infobg); border:1px solid var(--line);
   border-radius:6px; padding:.5rem .75rem; margin-bottom:.5rem;
   font-size:.88rem; line-height:1.55; }
+
+/* ---- copy-to-clipboard on code blocks ---- */
+.codewrap { position:relative; }
+.copybtn { position:absolute; top:.5rem; right:.5rem; z-index:2;
+  background:rgba(38,103,152,.85); color:#fff; border:1px solid #3a7cad;
+  border-radius:6px; padding:.2rem .6rem; font-size:.74rem; font-weight:600;
+  cursor:pointer; opacity:0; transition:opacity .12s, background .12s; }
+.codewrap:hover .copybtn, .copybtn:focus-visible { opacity:1; }
+.copybtn:hover { background:var(--brand); }
+.copybtn:focus-visible { outline:2px solid #b9d2e6; outline-offset:2px; }
+.copybtn.done { background:var(--ok); border-color:var(--ok); opacity:1; }
 </style>
 
 <script>
@@ -327,6 +344,48 @@ function filterFindings() {
   });
   document.getElementById("fcount").textContent =
     (q || lvl) ? `${shown} match(es)` : "";
+}
+
+/* ---- copy-to-clipboard for code/diff blocks ---- */
+function copyCode(btn) {
+  const pre = btn.parentElement.querySelector("pre.code");
+  if (!pre) return;
+  // Rebuild the text line-by-line so the line-number gutter (.ln) is
+  // dropped from the Output block; the diff block has no gutter. Reading
+  // textContent avoids any HTML interpolation / XSS surface.
+  const lines = [];
+  pre.querySelectorAll(":scope > div").forEach(div => {
+    const ln = div.querySelector(".ln");
+    if (ln) {
+      const clone = div.cloneNode(true);
+      clone.querySelector(".ln").remove();
+      lines.push(clone.textContent);
+    } else {
+      lines.push(div.textContent);
+    }
+  });
+  const text = lines.join("\n");
+  const done = () => {
+    const prev = btn.textContent;
+    btn.textContent = "Copied";
+    btn.classList.add("done");
+    setTimeout(() => { btn.textContent = prev; btn.classList.remove("done"); }, 1400);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) { /* ignore */ }
+  document.body.removeChild(ta);
 }
 
 const AI_URL = "/job/{{ jid }}/ai";
