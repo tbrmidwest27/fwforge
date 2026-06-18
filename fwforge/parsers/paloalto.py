@@ -549,6 +549,7 @@ class PaloParser:
         self.parse_nat(nat_rules)
         self.parse_routes(device.get("network", {}))
         self.parse_vpn(device.get("network", {}))
+        self._detect_globalprotect(device)
         self.report_unconverted_sections(device, vsys, rulebase)
         if not self._want_vsys:
             self.report_xml_coverage()
@@ -2365,6 +2366,30 @@ class PaloParser:
             "needs TLS inspection. Import the inspection CA cert on endpoints. "
             "Map each PAN decryption rule to the appropriate FortiOS scope "
             "(inbound, outbound, or SSH inspection) manually.")
+
+    def _detect_globalprotect(self, device: dict) -> None:
+        gp = device.get("global-protect")
+        if not isinstance(gp, dict):
+            return
+        n_gw = len(_entries(gp.get("global-protect-gateway") or {}))
+        n_pt = len(_entries(gp.get("global-protect-portal") or {}))
+        if n_gw == 0 and n_pt == 0:
+            return
+        parts = []
+        if n_gw:
+            parts.append(f"{n_gw} gateway(s)")
+        if n_pt:
+            parts.append(f"{n_pt} portal(s)")
+        self.note(
+            "warn", "globalprotect",
+            f"GlobalProtect {' + '.join(parts)} not converted — "
+            "FortiOS equivalent: configure SSL-VPN under "
+            "'config vpn ssl settings' + 'config vpn ssl web portal', "
+            "or IKEv2 IPsec with certificate authentication for split-tunnel "
+            "road-warrior clients. Import GP CA under "
+            "'config vpn certificate ca'. Map each GP gateway tunnel interface "
+            "to a FortiOS SSL-VPN or IPsec phase1-interface. "
+            "GP HIP profiles → FortiOS endpoint-control + EMS connector.")
 
     def report_unconverted_sections(self, device, vsys, rulebase):
         consumed_vsys = {"zone", "address", "address-group", "service",

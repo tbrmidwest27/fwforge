@@ -489,6 +489,47 @@ def test_decryption_detection():
     assert "ssl-ssh-profile" in msg
 
 
+GP_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <global-protect>
+    <global-protect-gateway>
+      <entry name="GP-Gateway-External"/>
+      <entry name="GP-Gateway-Internal"/>
+    </global-protect-gateway>
+    <global-protect-portal>
+      <entry name="GP-Portal"/>
+    </global-protect-portal>
+  </global-protect>
+  <vsys><entry name="vsys1">
+    <zone><entry name="trust"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <rulebase><security><rules>
+      <entry name="Allow-All">
+        <from><member>any</member></from><to><member>any</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action>allow</action>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_globalprotect_detection():
+    """GlobalProtect gateways/portals emit a warn finding with area='globalprotect'."""
+    p = paloalto.PaloParser(GP_CFG, "test.xml")
+    p.parse()
+    gp = [(lvl, msg) for lvl, area, msg, _ in p._findings if area == "globalprotect"]
+    assert len(gp) == 1, f"expected 1 globalprotect finding, got {gp}"
+    lvl, msg = gp[0]
+    assert lvl == "warn"
+    assert "2 gateway(s)" in msg
+    assert "1 portal(s)" in msg
+    assert "ssl settings" in msg.lower() or "ssl-vpn" in msg.lower()
+
+
 def test_app_any_mixed_uses_all_service():
     """App list with 'any' alongside specifics → service=ALL, info finding emitted."""
     p = paloalto.PaloParser(APP_ANY_MIX_CFG, "test.xml")
