@@ -684,3 +684,142 @@ def test_created_subinterface_not_flagged_unmapped():
              if f.area == "interfaces" and "no target port" in f.message]
     assert any("'ethernet1/3'" in m for m in warns)        # physical: flagged
     assert not any("ethernet1/3.50" in m for m in warns)   # VLAN: not flagged
+
+
+# ── Multi-vsys IPsec tunnel assignment ─────────────────────────────────────────
+
+MULTIVSYS_IPSEC = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <network>
+    <interface>
+      <ethernet>
+        <entry name="ethernet1/1"><layer3><ip>
+          <entry name="192.0.2.1/29"/></ip></layer3></entry>
+        <entry name="ethernet1/2"><layer3><ip>
+          <entry name="198.51.100.1/29"/></ip></layer3></entry>
+      </ethernet>
+      <tunnel><units>
+        <entry name="tunnel.1"><ip><entry name="10.10.0.1/30"/></ip></entry>
+        <entry name="tunnel.2"><ip><entry name="10.10.0.5/30"/></ip></entry>
+      </units></tunnel>
+    </interface>
+    <ike>
+      <crypto-profiles>
+        <ike-crypto-profiles/>
+        <ipsec-crypto-profiles/>
+      </crypto-profiles>
+      <gateway>
+        <entry name="gw-a">
+          <peer-address><ip>1.2.3.4</ip></peer-address>
+          <local-address><interface>ethernet1/1</interface></local-address>
+          <protocol><ikev2/></protocol>
+        </entry>
+        <entry name="gw-b">
+          <peer-address><ip>5.6.7.8</ip></peer-address>
+          <local-address><interface>ethernet1/2</interface></local-address>
+          <protocol><ikev2/></protocol>
+        </entry>
+      </gateway>
+    </ike>
+    <tunnel><ipsec>
+      <entry name="tun-vsys1">
+        <tunnel-interface>tunnel.1</tunnel-interface>
+        <auto-key>
+          <ike-gateway><entry name="gw-a"/></ike-gateway>
+          <ipsec-crypto-profile>default</ipsec-crypto-profile>
+        </auto-key>
+      </entry>
+      <entry name="tun-vsys2">
+        <tunnel-interface>tunnel.2</tunnel-interface>
+        <auto-key>
+          <ike-gateway><entry name="gw-b"/></ike-gateway>
+          <ipsec-crypto-profile>default</ipsec-crypto-profile>
+        </auto-key>
+      </entry>
+    </ipsec></tunnel>
+  </network>
+  <vsys>
+    <entry name="vsys1">
+      <import><network>
+        <interface>
+          <member>ethernet1/1</member>
+          <member>tunnel.1</member>
+        </interface>
+      </network></import>
+      <zone>
+        <entry name="untrust"><network><layer3>
+          <member>ethernet1/1</member></layer3></network></entry>
+        <entry name="vpn"><network><layer3>
+          <member>tunnel.1</member></layer3></network></entry>
+      </zone>
+      <rulebase><security><rules>
+        <entry name="Allow-VPN">
+          <from><member>vpn</member></from><to><member>untrust</member></to>
+          <source><member>any</member></source>
+          <destination><member>any</member></destination>
+          <application><member>any</member></application>
+          <service><member>any</member></service>
+          <action>allow</action>
+        </entry>
+      </rules></security></rulebase>
+    </entry>
+    <entry name="vsys2">
+      <import><network>
+        <interface>
+          <member>ethernet1/2</member>
+          <member>tunnel.2</member>
+        </interface>
+      </network></import>
+      <zone>
+        <entry name="untrust2"><network><layer3>
+          <member>ethernet1/2</member></layer3></network></entry>
+        <entry name="vpn2"><network><layer3>
+          <member>tunnel.2</member></layer3></network></entry>
+      </zone>
+      <rulebase><security><rules>
+        <entry name="Allow-VPN2">
+          <from><member>vpn2</member></from><to><member>untrust2</member></to>
+          <source><member>any</member></source>
+          <destination><member>any</member></destination>
+          <application><member>any</member></application>
+          <service><member>any</member></service>
+          <action>allow</action>
+        </entry>
+      </rules></security></rulebase>
+    </entry>
+  </vsys>
+</entry></devices></config>"""
+
+
+def test_ipsec_tunnel_scoped_to_vsys():
+    """Each vsys only gets the IPsec tunnels whose tunnel-interface it imports."""
+    p1 = paloalto.PaloParser(MULTIVSYS_IPSEC, "test.xml", vsys="vsys1")
+    cfg1 = p1.parse()
+    p1_names = {p.name for p in cfg1.phase1s}
+    assert any("vsys1" in n or "tun-vsys1" in n for n in p1_names), \
+        f"vsys1 should have tun-vsys1 phase1, got: {p1_names}"
+    assert not any("tun-vsys2" in n for n in p1_names), \
+        f"vsys1 should NOT have tun-vsys2, got: {p1_names}"
+
+    p2 = paloalto.PaloParser(MULTIVSYS_IPSEC, "test.xml", vsys="vsys2")
+    cfg2 = p2.parse()
+    p2_names = {p.name for p in cfg2.phase1s}
+    assert any("vsys2" in n or "tun-vsys2" in n for n in p2_names), \
+        f"vsys2 should have tun-vsys2 phase1, got: {p2_names}"
+    assert not any("tun-vsys1" in n for n in p2_names), \
+        f"vsys2 should NOT have tun-vsys1, got: {p2_names}"
+
+
+def test_ipsec_tunnel_interface_in_zone():
+    """Tunnel interfaces appear in zones only for the owning vsys."""
+    p1 = paloalto.PaloParser(MULTIVSYS_IPSEC, "test.xml", vsys="vsys1")
+    cfg1 = p1.parse()
+    zone_members = {m for z in cfg1.zones for m in z.members}
+    assert any("tunnel.1" in m or "tun-vsys1" in m for m in zone_members), \
+        f"vsys1 zones should include tunnel.1, got: {zone_members}"
+
+    p2 = paloalto.PaloParser(MULTIVSYS_IPSEC, "test.xml", vsys="vsys2")
+    cfg2 = p2.parse()
+    zone_members2 = {m for z in cfg2.zones for m in z.members}
+    assert not any("tunnel.1" in m for m in zone_members2), \
+        f"vsys2 zones should NOT include tunnel.1, got: {zone_members2}"
