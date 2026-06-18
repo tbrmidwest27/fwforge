@@ -2598,8 +2598,34 @@ class PaloParser:
             static = ip.get("static-route") if isinstance(ip, dict) else None
             for rname, rnode in _entries(static):
                 ref = self.ref(rnode, f"static-route {rname} (vr {vrname})")
+                # PAN no-install: route exists for export/reference but is not
+                # forwarded — FortiOS has no equivalent; skip it.
+                if "no-install" in rnode:
+                    self.note("info", "routes",
+                              f"route {rname}: has 'no-install' flag — "
+                              "skipped (not installed in the forwarding "
+                              "table on the source; no FortiOS equivalent)",
+                              ref)
+                    continue
                 dest = str(rnode.get("destination", ""))
+                try:
+                    net = ipaddress.IPv4Network(dest, strict=False)
+                except ValueError:
+                    self.note("warn", "routes",
+                              f"route {rname}: bad destination '{dest}'",
+                              ref)
+                    continue
+                metric = rnode.get("metric")
+                dist = 10
+                if isinstance(metric, str) and metric.isdigit():
+                    dist = min(int(metric), 255)
                 nexthop = rnode.get("nexthop", {})
+                # PAN discard nexthop → FortiOS blackhole static route
+                if isinstance(nexthop, dict) and "discard" in nexthop:
+                    self.cfg.routes.append(Route(
+                        dest=str(net), blackhole=True,
+                        distance=dist, source=ref))
+                    continue
                 gw = ""
                 if isinstance(nexthop, dict):
                     gw = str(nexthop.get("ip-address", ""))
@@ -2617,17 +2643,6 @@ class PaloParser:
                                   f"route {rname}: egress interface "
                                   f"'{ifc}' inferred from connected "
                                   "networks", ref)
-                try:
-                    net = ipaddress.IPv4Network(dest, strict=False)
-                except ValueError:
-                    self.note("warn", "routes",
-                              f"route {rname}: bad destination '{dest}'",
-                              ref)
-                    continue
-                metric = rnode.get("metric")
-                dist = 10
-                if isinstance(metric, str) and metric.isdigit():
-                    dist = min(int(metric), 255)
                 self.cfg.routes.append(Route(
                     dest=str(net), gateway=gw, interface=ifc or "any",
                     distance=dist, source=ref))

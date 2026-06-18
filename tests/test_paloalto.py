@@ -2008,3 +2008,66 @@ def test_icmp_service_emitted():
 
     # web-tcp (tcp/80) maps to FortiOS builtin HTTP — no custom edit
     assert 'edit "web-tcp"' not in conf
+
+
+# ---------------------------------------------------------------------------
+# Static route: no-install (skip) and discard nexthop (→ blackhole)
+# ---------------------------------------------------------------------------
+
+_ROUTE_SPECIAL_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+  <network>
+    <virtual-router><entry name="default">
+      <routing-table><ip><static-route>
+        <entry name="normal-route">
+          <destination>10.0.0.0/8</destination>
+          <nexthop><ip-address>192.168.1.1</ip-address></nexthop>
+          <interface>ethernet1/1</interface>
+        </entry>
+        <entry name="no-install-route">
+          <destination>172.16.0.0/12</destination>
+          <nexthop><ip-address>192.168.1.2</ip-address></nexthop>
+          <no-install/>
+        </entry>
+        <entry name="blackhole-route">
+          <destination>198.51.100.0/24</destination>
+          <nexthop><discard/></nexthop>
+        </entry>
+      </static-route></ip></routing-table>
+    </entry></virtual-router>
+  </network>
+  <vsys><entry name="vsys1">
+    <rulebase><security><rules/></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_noinstall_route_skipped():
+    """Routes with <no-install/> are skipped with an info note."""
+    cfg = paloalto.parse(_ROUTE_SPECIAL_CFG, "rt.xml")
+    dests = {r.dest for r in cfg.routes}
+    assert "172.16.0.0/12" not in dests, "no-install route must be skipped"
+    assert "10.0.0.0/8" in dests      # normal route present
+    infos = [f for f in cfg.meta["findings"]
+             if f[0] == "info" and "no-install" in f[2].lower()]
+    assert infos, "expected info note for skipped no-install route"
+
+
+def test_discard_nexthop_becomes_blackhole():
+    """Routes with <discard/> nexthop are converted to FortiOS blackhole."""
+    cfg = paloalto.parse(_ROUTE_SPECIAL_CFG, "rt.xml")
+    bh = [r for r in cfg.routes if r.dest == "198.51.100.0/24"]
+    assert bh, "blackhole route must be present in IR"
+    assert bh[0].blackhole is True
+
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        _ROUTE_SPECIAL_CFG, "paloalto", "rt.xml",
+        {"ethernet1/1": "wan1"})
+    conf = res.out_text
+    assert "set blackhole enable" in conf
+    assert "198.51.100.0" in conf      # destination present
+    # normal route still has device set
+    assert "10.0.0.0" in conf
+    # no-install route absent
+    assert "172.16.0.0" not in conf

@@ -281,6 +281,7 @@ class Route:
     gateway: str = ""
     interface: str = ""  # vendor-side name; mapped later
     distance: int = 10
+    blackhole: bool = False  # true → FortiOS 'set blackhole enable'; no device/gateway
     comment: str | None = None
     source: SourceRef | None = None
 

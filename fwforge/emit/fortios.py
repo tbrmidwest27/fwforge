@@ -1130,10 +1130,13 @@ class Emitter:
                         ipaddress.IPv4Address("0.0.0.0"):
                     self.line(f"        set dst {net.network_address} "
                               f"{net.netmask}")
-                if rt.gateway:
-                    self.line(f"        set gateway {rt.gateway}")
-                self.line("        set device "
-                          + _q(_intf(self.cfg, rt.interface)))
+                if getattr(rt, "blackhole", False):
+                    self.line("        set blackhole enable")
+                else:
+                    if rt.gateway:
+                        self.line(f"        set gateway {rt.gateway}")
+                    self.line("        set device "
+                              + _q(_intf(self.cfg, rt.interface)))
                 dist = _clamp_distance(rt.distance, rt.dest, self.report)
                 if dist != 10:
                     self.line(f"        set distance {dist}")
