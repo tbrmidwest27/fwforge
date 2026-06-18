@@ -545,6 +545,7 @@ class PaloParser:
         # PAN evaluation order: Panorama pre -> local -> Panorama post
         self.parse_rules_entries(
             self._pre_rules + local_rules + self._post_rules)
+        self._detect_decryption(rulebase)
         self.parse_nat(nat_rules)
         self.parse_routes(device.get("network", {}))
         self.parse_vpn(device.get("network", {}))
@@ -2327,6 +2328,35 @@ class PaloParser:
                       f"XML coverage: 100% — all {total} config values "
                       "were inside subtrees the converter reads")
 
+    def _detect_decryption(self, rulebase: dict) -> None:
+        """Count PAN SSL/TLS decryption policies and emit an actionable warning."""
+        count = 0
+        if isinstance(rulebase, dict):
+            dec = rulebase.get("decryption") or {}
+            if isinstance(dec, dict):
+                count += len(_entries(dec.get("rules") or {}))
+        # also scan Panorama-pushed pre/post rulebases
+        pano = self.tree.get("panorama") or {}
+        if isinstance(pano, dict):
+            for rb_key in ("pre-rulebase", "post-rulebase"):
+                rb = pano.get(rb_key) or {}
+                if isinstance(rb, dict):
+                    dec = rb.get("decryption") or {}
+                    if isinstance(dec, dict):
+                        count += len(_entries(dec.get("rules") or {}))
+        if count == 0:
+            return
+        self.note(
+            "warn", "decryption",
+            f"{count} SSL/TLS decryption rule(s) not converted — "
+            "FortiOS equivalent: create an ssl-ssh-profile (clone the built-in "
+            "'deep-inspection' or 'certificate-inspection' profile under "
+            "'config firewall ssl-ssh-profile'), then set "
+            "'set ssl-ssh-profile <name>' on each security policy that "
+            "needs TLS inspection. Import the inspection CA cert on endpoints. "
+            "Map each PAN decryption rule to the appropriate FortiOS scope "
+            "(inbound, outbound, or SSH inspection) manually.")
+
     def report_unconverted_sections(self, device, vsys, rulebase):
         consumed_vsys = {"zone", "address", "address-group", "service",
                          "service-group", "rulebase", "import",
@@ -2347,7 +2377,7 @@ class PaloParser:
                       self.ref(node, key))
         if isinstance(rulebase, dict):
             for key, node in rulebase.items():
-                if key in ("security", "nat", LINE):
+                if key in ("security", "nat", "decryption", LINE):
                     continue
                 self.note("info", "coverage",
                           f"rulebase '{key}' not converted",
