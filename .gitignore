@@ -15,3 +15,6 @@ vpn.map
 vd2_demo/
 ssl_demo/
 sdwan_demo/
+
+# machine-local Claude Code settings (per-user permissions) — not shared
+.claude/settings.local.json
