@@ -196,6 +196,7 @@ class Policy:
     file_filter: str = ""  # FortiOS file-filter profile (PAN file-blocking)
     antivirus: str = ""  # FortiOS antivirus profile (PAN virus/antivirus)
     ips_sensor: str = ""  # FortiOS IPS sensor (PAN anti-spyware/vulnerability)
+    schedule: str = ""  # FortiOS schedule name; "" = "always"
     family: int = 0  # 0 = derive from addresses, 4, or 6
     source: SourceRef | None = None
 
@@ -301,6 +302,20 @@ class OspfConfig:
 
 
 @dataclass
+class Schedule:
+    """Firewall schedule (recurring or one-time)."""
+
+    name: str
+    # recurring: repeats on specified days; onetime: date-bounded window
+    type: str = "recurring"
+    days: list[str] = field(default_factory=list)  # recurring only
+    start: str = ""  # recurring: "HH:MM"; onetime: "YYYY/MM/DD HH:MM:SS"
+    end: str = ""
+    comment: str | None = None
+    source: SourceRef | None = None
+
+
+@dataclass
 class FirewallConfig:
     """The IR root — everything a conversion knows about the source."""
 
@@ -320,6 +335,7 @@ class FirewallConfig:
     file_filters: list[FileFilterProfile] = field(default_factory=list)
     av_profiles: list[AvProfile] = field(default_factory=list)
     ips_sensors: list[IpsSensor] = field(default_factory=list)
+    schedules: list[Schedule] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
     vips: list[Vip] = field(default_factory=list)
     nats: list[NatRule] = field(default_factory=list)

@@ -34,6 +34,7 @@ from ..model import (
     Interface,
     NatRule,
     Policy,
+    Schedule,
     Service,
     ServiceGroup,
     SourceRef,
@@ -62,6 +63,10 @@ _NONL3_ZONE_HINT = {
     "virtual-wire": "'config system virtual-wire-pair'",
     "layer2": "transparent-mode / switch interfaces",
 }
+
+# PAN weekly schedule day keys in evaluation order
+_PAN_DAYS = ["monday", "tuesday", "wednesday", "thursday",
+             "friday", "saturday", "sunday"]
 
 
 def detect(text: str) -> float:
@@ -533,6 +538,7 @@ class PaloParser:
         self.parse_svc_groups(vsys.get("service-group"))
         self.parse_applications(vsys)
         self.parse_profiles(vsys)
+        self.parse_schedules(vsys.get("schedule"))
         rulebase = vsys.get("rulebase", {})
         local_rules: list = []
         nat_rules = None
@@ -1262,13 +1268,8 @@ class PaloParser:
                                                else "")
                 comment_bits.append(f"PAN apps: {shown}")
             sched = r.get("schedule")
-            if isinstance(sched, str) and sched:
-                comment_bits.append(f"PAN schedule: {sched}")
-                self.note(
-                    "warn", "policies",
-                    f"rule '{name}': schedule '{sched}' not converted - "
-                    "policy is emitted always-on; recreate a firewall "
-                    "schedule and set it on the policy", ref)
+            if not (isinstance(sched, str) and sched):
+                sched = ""
             if filled_from_apps:
                 how = ("service=application-default"
                        if "application-default" in pan_services
@@ -1308,6 +1309,7 @@ class PaloParser:
                 file_filter=file_filter,
                 antivirus=antivirus,
                 ips_sensor=ips_sensor,
+                schedule=sched,
                 source=ref,
             )
             if action not in ("allow", "deny", "drop"):
@@ -1499,6 +1501,151 @@ class PaloParser:
                 "spyware": (_as_list(g.get("spyware")) or [""])[0],
                 "wildfire": (_as_list(g.get("wildfire-analysis")) or [""])[0],
                 "other": [t for t in ("data-filtering",) if g.get(t)]}
+
+    @staticmethod
+    def _zero_pad_hhmm(t: str) -> str:
+        """'8:00' → '08:00'"""
+        h, _, m = t.partition(":")
+        try:
+            return f"{int(h):02d}:{m.strip()}"
+        except ValueError:
+            return t
+
+    def parse_schedules(self, schedules_node) -> None:
+        """Parse vsys <schedule> entries into Schedule IR objects."""
+        for name, node in _entries(schedules_node):
+            ref = self.ref(node, name)
+            st = node.get("schedule-type") if isinstance(node, dict) else None
+            if not isinstance(st, dict):
+                self.note("info", "coverage",
+                          f"schedule '{name}': missing schedule-type", ref)
+                continue
+
+            if "non-recurring" in st:
+                nr = st["non-recurring"]
+                members = _as_list(
+                    nr.get("member") if isinstance(nr, dict) else nr)
+                if not members:
+                    self.note("warn", "coverage",
+                              f"schedule '{name}': non-recurring with no "
+                              "time member", ref)
+                    continue
+                raw = members[0]
+                m = re.match(
+                    r'^(\d{4}/\d{2}/\d{2})@(\d{1,2}:\d{2})'
+                    r'-(\d{4}/\d{2}/\d{2})@(\d{1,2}:\d{2})$',
+                    raw.strip())
+                if not m:
+                    self.note("warn", "coverage",
+                              f"schedule '{name}': unparseable non-recurring "
+                              f"member '{raw[:60]}'", ref)
+                    continue
+                start = (f"{m.group(1)} "
+                         f"{self._zero_pad_hhmm(m.group(2))}:00")
+                end = (f"{m.group(3)} "
+                       f"{self._zero_pad_hhmm(m.group(4))}:00")
+                self.cfg.schedules.append(Schedule(
+                    name=name, type="onetime",
+                    start=start, end=end, source=ref))
+
+            elif "recurring" in st:
+                recur = st["recurring"]
+                if not isinstance(recur, dict):
+                    continue
+
+                if "daily" in recur:
+                    daily = recur["daily"]
+                    members = _as_list(
+                        daily.get("member") if isinstance(daily, dict)
+                        else daily)
+                    raw_range = members[0] if members else "00:00-23:59"
+                    m = re.match(r'^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$',
+                                 raw_range.strip())
+                    if m:
+                        start = self._zero_pad_hhmm(m.group(1))
+                        end = self._zero_pad_hhmm(m.group(2))
+                    else:
+                        start, end = "00:00", "23:59"
+                        self.note("warn", "coverage",
+                                  f"schedule '{name}': unparseable daily "
+                                  f"time '{raw_range[:40]}'", ref)
+                    self.cfg.schedules.append(Schedule(
+                        name=name, type="recurring",
+                        days=["everyday"], start=start, end=end,
+                        source=ref))
+
+                elif "weekly" in recur:
+                    weekly = recur["weekly"]
+                    if not isinstance(weekly, dict):
+                        continue
+                    day_ranges: dict[str, str] = {}
+                    for day in _PAN_DAYS:
+                        dnode = weekly.get(day)
+                        if dnode is None:
+                            continue
+                        members = _as_list(
+                            dnode.get("member")
+                            if isinstance(dnode, dict) else dnode)
+                        if members:
+                            day_ranges[day] = members[0]
+                    if not day_ranges:
+                        continue
+                    # Group days by time-range string
+                    by_range: dict[str, list[str]] = {}
+                    for day, tr in day_ranges.items():
+                        by_range.setdefault(tr, []).append(day)
+                    if len(by_range) == 1:
+                        raw_range = next(iter(by_range))
+                        m = re.match(
+                            r'^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$',
+                            raw_range.strip())
+                        if m:
+                            start = self._zero_pad_hhmm(m.group(1))
+                            end = self._zero_pad_hhmm(m.group(2))
+                        else:
+                            start, end = "00:00", "23:59"
+                            self.note("warn", "coverage",
+                                      f"schedule '{name}': unparseable "
+                                      f"weekly time '{raw_range[:40]}'",
+                                      ref)
+                        self.cfg.schedules.append(Schedule(
+                            name=name, type="recurring",
+                            days=list(day_ranges.keys()),
+                            start=start, end=end, source=ref))
+                    else:
+                        # Multiple distinct time ranges → emit one schedule
+                        # per range with a suffix; warn about the split
+                        for idx, (tr, days) in enumerate(
+                                sorted(by_range.items()), start=1):
+                            sched_name = (name if idx == 1
+                                          else f"{name}_{idx}")
+                            m = re.match(
+                                r'^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$',
+                                tr.strip())
+                            if m:
+                                start = self._zero_pad_hhmm(m.group(1))
+                                end = self._zero_pad_hhmm(m.group(2))
+                            else:
+                                start, end = "00:00", "23:59"
+                            self.cfg.schedules.append(Schedule(
+                                name=sched_name, type="recurring",
+                                days=days, start=start, end=end,
+                                source=ref))
+                        self.note("warn", "coverage",
+                                  f"schedule '{name}': {len(by_range)} "
+                                  "different time windows across days — "
+                                  f"emitted as {len(by_range)} separate "
+                                  f"FortiOS schedules ('{name}', "
+                                  f"'{name}_2', …); policies reference "
+                                  f"the first", ref)
+                else:
+                    self.note("info", "coverage",
+                              f"schedule '{name}': unrecognized recurring "
+                              "sub-type (expected daily/weekly)", ref)
+            else:
+                self.note("info", "coverage",
+                          f"schedule '{name}': unrecognized schedule-type "
+                          "(expected recurring/non-recurring)", ref)
 
     def _resolve_profile_setting(self, r: dict, rule: str,
                                  ref: SourceRef) -> tuple[str, str, str, str]:
@@ -2404,6 +2551,7 @@ class PaloParser:
                          # profiles: url-filtering + file-blocking ARE read
                          # (other profile types flagged per-rule)
                          "profiles", "profile-group",
+                         "schedule",
                          # device-group / Panorama mode: these ARE read
                          "pre-rulebase", "post-rulebase", "parent-dg",
                          LINE}

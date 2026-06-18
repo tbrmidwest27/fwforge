@@ -319,6 +319,7 @@ class Emitter:
         self.vips()
         if self.nat_mode == "central":
             self.central_snat()
+        self.schedules()
         self.routes()
         self.bgp()
         self.ospf()
@@ -1040,6 +1041,34 @@ class Emitter:
             self.line("    next")
         self.line("end")
 
+    def schedules(self):
+        recurring = [s for s in self.cfg.schedules if s.type == "recurring"]
+        onetime = [s for s in self.cfg.schedules if s.type == "onetime"]
+        if recurring:
+            self.line()
+            self.line("config firewall schedule recurring")
+            for s in recurring:
+                self.line(f"    edit {_q(s.name)}")
+                if s.days:
+                    self.line(f"        set day {' '.join(s.days)}")
+                if s.start:
+                    self.line(f"        set start {s.start}")
+                if s.end:
+                    self.line(f"        set end {s.end}")
+                self.line("    next")
+            self.line("end")
+        if onetime:
+            self.line()
+            self.line("config firewall schedule onetime")
+            for s in onetime:
+                self.line(f"    edit {_q(s.name)}")
+                if s.start:
+                    self.line(f"        set start {s.start}")
+                if s.end:
+                    self.line(f"        set end {s.end}")
+                self.line("    next")
+            self.line("end")
+
     def routes(self):
         if not self.cfg.routes:
             return
@@ -1247,6 +1276,7 @@ class Emitter:
         fam = self._family_map()
         v6_policies = 0
         mixed_policies = 0
+        known_schedules = {s.name for s in self.cfg.schedules}
         self.line()
         self.line("config firewall policy")
         dropped_zone_policies: list[str] = []
@@ -1303,7 +1333,17 @@ class Emitter:
                     self.line(f"        set {neg} enable")
             if p.action == "accept":
                 self.line("        set action accept")
-            self.line('        set schedule "always"')
+            if p.schedule and p.schedule not in known_schedules:
+                self.report.add(
+                    "warn", "schedule",
+                    f"policy '{p.name or i}': schedule '{p.schedule}' "
+                    "could not be converted — policy emitted always-on; "
+                    "recreate the schedule manually on FortiOS",
+                    p.source)
+                sched_name = "always"
+            else:
+                sched_name = p.schedule or "always"
+            self.line(f"        set schedule {_q(sched_name)}")
             self.line("        set service "
                       + " ".join(_q(s) for s in (p.services or ["ALL"])))
             self.line("        set logtraffic "

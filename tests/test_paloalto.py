@@ -1078,3 +1078,176 @@ def test_aggregate_lacp_mode_parsed():
     ae1 = next(i for i in paloalto.parse(nolacp, "agg.xml").interfaces
                if i.name == "ae1")
     assert ae1.lacp_mode is None
+
+
+# --- Schedule conversion tests -----------------------------------------------
+
+SCHED_WEEKLY_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <schedule>
+      <entry name="business-hours">
+        <schedule-type>
+          <recurring>
+            <weekly>
+              <monday><member>08:00-17:00</member></monday>
+              <tuesday><member>08:00-17:00</member></tuesday>
+              <wednesday><member>08:00-17:00</member></wednesday>
+              <thursday><member>08:00-17:00</member></thursday>
+              <friday><member>08:00-17:00</member></friday>
+            </weekly>
+          </recurring>
+        </schedule-type>
+      </entry>
+    </schedule>
+    <rulebase><security><rules>
+      <entry name="office-web">
+        <from><member>trust</member></from>
+        <to><member>untrust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <service><member>application-default</member></service>
+        <application><member>web-browsing</member></application>
+        <schedule>business-hours</schedule>
+        <action>allow</action>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+SCHED_ONETIME_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <schedule>
+      <entry name="maintenance-2024">
+        <schedule-type>
+          <non-recurring>
+            <member>2024/01/15@02:00-2024/01/15@04:00</member>
+          </non-recurring>
+        </schedule-type>
+      </entry>
+    </schedule>
+    <rulebase><security><rules>
+      <entry name="maint-allow">
+        <from><member>mgmt</member></from>
+        <to><member>any</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <service><member>any</member></service>
+        <application><member>any</member></application>
+        <schedule>maintenance-2024</schedule>
+        <action>allow</action>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+SCHED_DAILY_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <schedule>
+      <entry name="backup-window">
+        <schedule-type>
+          <recurring>
+            <daily>
+              <member>02:00-04:00</member>
+            </daily>
+          </recurring>
+        </schedule-type>
+      </entry>
+    </schedule>
+    <rulebase><security><rules/></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_schedule_weekly_parsed():
+    """Weekly recurring schedule round-trips: IR populated + FortiOS emitted."""
+    from fwforge.emit import fortios as emit_fo
+    from fwforge.report import Report
+
+    cfg = paloalto.parse(SCHED_WEEKLY_CFG, "sched.xml")
+    assert len(cfg.schedules) == 1, "expected exactly one schedule"
+    s = cfg.schedules[0]
+    assert s.name == "business-hours"
+    assert s.type == "recurring"
+    assert set(s.days) == {"monday", "tuesday", "wednesday", "thursday", "friday"}
+    assert s.start == "08:00"
+    assert s.end == "17:00"
+
+    # policy references the schedule
+    pol = cfg.policies[0]
+    assert pol.schedule == "business-hours"
+
+    # emitter produces the schedule block
+    out = emit_fo.emit(cfg, Report())
+    assert "config firewall schedule recurring" in out
+    assert '"business-hours"' in out
+    assert "set day monday tuesday wednesday thursday friday" in out
+    assert "set start 08:00" in out
+    assert "set end 17:00" in out
+    # policy set schedule line uses name, not "always"
+    assert 'set schedule "business-hours"' in out
+    assert 'set schedule "always"' not in out
+
+    # vsys section "schedule" no longer appears in coverage notes
+    lvls = [f[0] for f in cfg.meta["findings"]
+            if "vsys section 'schedule'" in f[2]]
+    assert lvls == [], "schedule section should be consumed, not flagged"
+
+
+def test_schedule_onetime_parsed():
+    """Non-recurring (onetime) schedule converts to FortiOS schedule onetime."""
+    from fwforge.emit import fortios as emit_fo
+    from fwforge.report import Report
+
+    cfg = paloalto.parse(SCHED_ONETIME_CFG, "sched2.xml")
+    assert len(cfg.schedules) == 1
+    s = cfg.schedules[0]
+    assert s.name == "maintenance-2024"
+    assert s.type == "onetime"
+    assert s.start == "2024/01/15 02:00:00"
+    assert s.end == "2024/01/15 04:00:00"
+
+    out = emit_fo.emit(cfg, Report())
+    assert "config firewall schedule onetime" in out
+    assert '"maintenance-2024"' in out
+    assert "set start 2024/01/15 02:00:00" in out
+    assert "set end 2024/01/15 04:00:00" in out
+    assert 'set schedule "maintenance-2024"' in out
+
+
+def test_schedule_daily_parsed():
+    """Daily recurring schedule maps to FortiOS 'set day everyday'."""
+    from fwforge.emit import fortios as emit_fo
+    from fwforge.report import Report
+
+    cfg = paloalto.parse(SCHED_DAILY_CFG, "sched3.xml")
+    assert len(cfg.schedules) == 1
+    s = cfg.schedules[0]
+    assert s.name == "backup-window"
+    assert s.type == "recurring"
+    assert s.days == ["everyday"]
+    assert s.start == "02:00"
+    assert s.end == "04:00"
+
+    out = emit_fo.emit(cfg, Report())
+    assert "set day everyday" in out
+    assert "set start 02:00" in out
+    assert "set end 04:00" in out
+
+
+def test_schedule_missing_falls_back_to_always():
+    """A policy referencing an unknown schedule name falls back to 'always' with a warning."""
+    from fwforge.emit import fortios as emit_fo
+    from fwforge.report import Report
+    from fwforge.model import Policy, FirewallConfig
+
+    cfg = FirewallConfig(vendor="paloalto")
+    cfg.policies.append(Policy(name="test", schedule="nonexistent-sched"))
+    report = Report()
+    out = emit_fo.emit(cfg, report)
+    assert 'set schedule "always"' in out
+    warns = [f for f in report.findings
+             if f.area == "schedule" and "nonexistent-sched" in f.message]
+    assert warns, "expected a warning for unresolved schedule reference"
