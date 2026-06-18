@@ -1501,3 +1501,70 @@ def test_ippool_emitted_in_output():
     assert "config firewall ippool" in out
     assert "set startip 203.0.113.10" in out
     assert "set endip 203.0.113.10" in out
+
+
+# --- Application-filter category resolution ----------------------------------
+
+_APP_FILTER_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+<application-filter>
+  <entry name="block-social">
+    <category><member>general-internet</member></category>
+    <subcategory><member>social-networking</member></subcategory>
+  </entry>
+  <entry name="block-video">
+    <category><member>media</member></category>
+    <subcategory><member>video-streaming</member></subcategory>
+  </entry>
+  <entry name="any-networking">
+    <category><member>networking</member></category>
+  </entry>
+</application-filter>
+<rulebase><security><rules>
+  <entry name="deny-social">
+    <from><member>trust</member></from>
+    <to><member>untrust</member></to>
+    <source><member>any</member></source>
+    <destination><member>any</member></destination>
+    <application><member>block-social</member></application>
+    <service><member>application-default</member></service>
+    <action>deny</action>
+  </entry>
+  <entry name="deny-video">
+    <from><member>trust</member></from>
+    <to><member>untrust</member></to>
+    <source><member>any</member></source>
+    <destination><member>any</member></destination>
+    <application>
+      <member>block-video</member>
+      <member>block-social</member>
+    </application>
+    <service><member>application-default</member></service>
+    <action>deny</action>
+  </entry>
+</rules></security></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+
+def test_app_filter_resolved_to_fortiguard_category():
+    """Application-filter names are resolved via crosswalk, not left unmapped."""
+    cfg = paloalto.parse(_APP_FILTER_CFG, "appfilter.xml")
+    findings = cfg.meta["findings"]
+
+    # No "no FortiOS app-control category mapping" warnings for filter names
+    unmapped_warns = [f for f in findings
+                      if f[0] == "warn" and "category mapping" in f[2]
+                      and ("block-social" in f[2] or "block-video" in f[2])]
+    assert unmapped_warns == [], (
+        f"filter names should be resolved, not unmapped: {unmapped_warns}")
+
+    # At least one app-list was created (the deny-social policy gets one)
+    assert len(cfg.app_lists) >= 1
+
+    # The app-list for block-social should include Social.Media category
+    social_list = next(
+        (a for a in cfg.app_lists if "Social.Media" in a.cat_names), None)
+    assert social_list is not None, (
+        "expected an app-list with Social.Media for block-social filter")

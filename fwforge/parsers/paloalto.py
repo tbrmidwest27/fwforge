@@ -1084,6 +1084,7 @@ class PaloParser:
         self._custom_apps: dict[str, list[tuple[str, str]] | None] = {}
         self._app_groups: dict[str, list[str]] = {}
         self._app_filters: set[str] = set()
+        self._app_filter_cats: dict[str, list[str]] = {}  # filter → FG cats
         for name, node in _entries(vsys.get("application")):
             specs: list[tuple[str, str]] | None = []
             default = node.get("default") if isinstance(node, dict) else None
@@ -1117,8 +1118,14 @@ class PaloParser:
             self._app_groups[name] = _as_list(
                 node.get("members") if isinstance(node, dict)
                 and "members" in node else node)
-        for name, _node in _entries(vsys.get("application-filter")):
+        for name, node in _entries(vsys.get("application-filter")):
             self._app_filters.add(name)
+            if isinstance(node, dict):
+                cats = _as_list(node.get("category"))
+                subs = _as_list(node.get("subcategory"))
+                fg = pan_appid.categories_for_pan_filter(cats, subs or None)
+                if fg:
+                    self._app_filter_cats[name] = fg
 
     def _app_port_specs(self, app: str,
                         seen: set | None = None
@@ -1391,6 +1398,18 @@ class PaloParser:
         if self._app_index:
             return self._app_list_sigs(apps, rule, ref)
         cats, ids, transport, unmapped = pan_appid.map_apps(apps)
+        # Resolve application-filter names → FortiGuard categories via criteria
+        true_unmapped = []
+        for app in unmapped:
+            fg = self._app_filter_cats.get(app)
+            if fg:
+                for c in fg:
+                    if c not in cats:
+                        cats.append(c)
+                        ids.append(pan_appid.CATEGORY_ID.get(c, 0))
+            else:
+                true_unmapped.append(app)
+        unmapped = true_unmapped
         if not cats:
             if unmapped:
                 self.note("warn", "policies",
@@ -1429,6 +1448,18 @@ class PaloParser:
             pan_appid.map_to_sigs(apps, self._app_index)
         cats, cat_ids, _t, cat_unmapped = (
             pan_appid.map_apps(unmatched) if unmatched else ([], [], [], []))
+        # Resolve application-filter names in cat_unmapped → FortiGuard cats
+        true_cat_unmapped = []
+        for app in cat_unmapped:
+            fg = self._app_filter_cats.get(app)
+            if fg:
+                for c in fg:
+                    if c not in cats:
+                        cats.append(c)
+                        cat_ids.append(pan_appid.CATEGORY_ID.get(c, 0))
+            else:
+                true_cat_unmapped.append(app)
+        cat_unmapped = true_cat_unmapped
         if not sig_ids and not cat_ids:
             leftover = [a for a in (unmatched or apps)
                         if a not in ("any", "application-default")]

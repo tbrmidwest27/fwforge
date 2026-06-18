@@ -184,6 +184,32 @@ def _fg_category(app: str, entry: dict | None) -> str | None:
 # Public API
 # ---------------------------------------------------------------------------
 
+def categories_for_pan_filter(pan_categories: list[str],
+                               pan_subcategories: list[str] | None = None
+                               ) -> list[str]:
+    """Resolve PAN application-filter criteria to FortiGuard category names.
+
+    Tries subcategory-specific crosswalk keys first, then the first
+    subcategory wildcard match for each PAN category. Returns a deduplicated
+    list of FortiGuard category names (may be empty when no match exists).
+    """
+    found: list[str] = []
+    for pan_cat in (pan_categories or []):
+        for sub in (pan_subcategories or [""]):
+            if sub:
+                key = f"{pan_cat}|{sub}"
+                fg = _XWALK.get(key)
+                if fg and fg not in found:
+                    found.append(fg)
+            else:
+                # Take the first xwalk match for this category
+                for xkey, fg in _XWALK.items():
+                    if xkey.startswith(f"{pan_cat}|") and fg not in found:
+                        found.append(fg)
+                        break
+    return found
+
+
 def default_ports(app: str) -> list[tuple[str, str]] | None:
     """Default destination ports for a PAN App-ID, or None when unknown
     / dynamic. Exact name wins over the suffix-stripped form."""
