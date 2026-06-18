@@ -1,0 +1,205 @@
+"""AI Advisor — Claude Code subprocess integration for the fwforge GUI.
+
+Routes through the locally-authenticated `claude` CLI so no separate API key
+is needed; uses the user's Claude.ai plan. Requires Claude Code installed and
+authenticated on this machine.
+"""
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+_USER_FILE = Path("~/.fwforge/pan_apps.json").expanduser()
+
+_FORTIGUARD_CATS = (
+    "P2P, VoIP, Video/Audio, Proxy, Remote.Access, Game, General.Interest, "
+    "Network.Service, Update, Email, Storage.Backup, Social.Media, Web.Client, "
+    "Collaboration, Business, Cloud.IT"
+)
+
+
+def _run_claude(prompt: str, timeout: int = 90) -> str:
+    """Invoke `claude -p <prompt>` and return stdout. Raises RuntimeError on failure."""
+    exe = shutil.which("claude") or "claude"
+    try:
+        result = subprocess.run(
+            [exe, "-p", prompt, "--output-format", "text"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            # shell=True needed on Windows so cmd.exe handles .cmd wrappers;
+            # arguments still quoted correctly by list2cmdline(), and cmd.exe
+            # does not expand metacharacters inside the resulting double-quotes.
+            shell=(sys.platform == "win32"),
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Claude timed out — try again")
+    except FileNotFoundError:
+        raise RuntimeError(
+            "claude CLI not found — install Claude Code and sign in first"
+        )
+    if result.returncode != 0:
+        msg = (result.stderr or "").strip()
+        raise RuntimeError(msg or f"claude exited {result.returncode}")
+    return result.stdout.strip()
+
+
+def conversion_summary(vendor: str, target: str, r: dict) -> str:
+    """Generate a plain-English paragraph summary of the conversion result."""
+    counts = r.get("counts", {})
+    meta_rows = "\n".join(
+        f"  {k.replace('_', ' ')}: {v}"
+        for k, v in (r.get("meta") or {}).items()
+        if isinstance(v, (str, int, float))
+    )
+    top: list[str] = []
+    for level in ("error", "warn"):
+        for f in (r.get("findings", {}).get(level) or [])[:8]:
+            top.append(f"[{level.upper()}] {f['area']}: {f['message']}")
+
+    prompt = (
+        f"You are a firewall migration expert reviewing a fwforge conversion.\n\n"
+        f"Source vendor: {vendor}\n"
+        f"Target: FortiOS {target}\n"
+        f"Mode: {r.get('mode', 'cross')}\n"
+        f"Result: {counts.get('errors', 0)} errors, "
+        f"{counts.get('warnings', 0)} warnings, {counts.get('notes', 0)} notes\n"
+        f"Output: {r.get('out_size', 0)} lines\n\n"
+        f"Conversion metadata:\n{meta_rows or '  (none)'}\n\n"
+        f"Top findings:\n"
+        + ("\n".join(top) if top else "  (none)")
+        + "\n\nWrite a 2-3 paragraph plain-English summary a network engineer "
+        "can paste into a migration handoff document. Cover: (1) what converted "
+        "successfully, (2) what was flagged and why, (3) what needs manual "
+        "attention before the config is loaded on a FortiGate. Be specific and "
+        "technical. Write in prose, not bullet points."
+    )
+    return _run_claude(prompt, timeout=90)
+
+
+def explain_finding(area: str, message: str, vendor: str, target: str) -> str:
+    """Return a plain-English explanation of a single conversion finding."""
+    prompt = (
+        f"You are a FortiOS and {vendor} firewall expert.\n\n"
+        f"A fwforge conversion ({vendor} to FortiOS {target}) produced this finding:\n"
+        f"  Area:    {area}\n"
+        f"  Message: {message}\n\n"
+        "Explain this to a network engineer in plain English:\n"
+        "1. What does this mean in concrete terms?\n"
+        "2. Why did it happen?\n"
+        "3. What should they do about it?\n\n"
+        "Keep it to 3-5 sentences. Be specific and actionable. "
+        "Do not repeat the finding verbatim."
+    )
+    return _run_claude(prompt, timeout=45)
+
+
+def research_app_gaps(
+    all_findings: list[dict], vendor: str
+) -> tuple[dict, str]:
+    """Identify unmapped PAN App-IDs from conversion findings and research them.
+
+    Filters findings for app-related warnings, passes them to Claude, and
+    returns (entries_dict, raw_response). entries_dict is ready to merge into
+    pan_apps.json; it may be empty if no app gaps are found or if JSON parsing
+    fails (raw_response still contains the full Claude output).
+    """
+    app_findings = [
+        f for f in all_findings
+        if (
+            "app" in (f.get("area") or "").lower()
+            or "service all" in (f.get("message") or "").lower()
+            or "unmapped" in (f.get("message") or "").lower()
+            or "application" in (f.get("message") or "").lower()
+        )
+    ]
+    if not app_findings:
+        return {}, ""
+
+    findings_text = "\n".join(
+        f"  [{f['area']}] {f['message']}" for f in app_findings[:60]
+    )
+
+    prompt = (
+        f"You are filling a PAN App-ID database for the fwforge firewall converter.\n\n"
+        f"Below are conversion findings from a {vendor} config. Some warn about "
+        "App-IDs that are unknown, causing overly-permissive 'service ALL' "
+        "fallbacks in the FortiOS output.\n\n"
+        f"Conversion findings:\n{findings_text}\n\n"
+        "Step 1: Identify the PAN App-ID names mentioned in these findings that "
+        "lack port/service data and caused 'service ALL' fallbacks.\n\n"
+        "Step 2: Research each one using public sources (PAN Applipedia, IANA, "
+        "vendor docs).\n\n"
+        "Step 3: Return ONLY a valid JSON object (no markdown, no explanation) "
+        "with this exact structure:\n\n"
+        '{\n'
+        '  "apps": {\n'
+        '    "app-name": {\n'
+        '      "ports": [{"proto": "tcp", "ports": "80"}],\n'
+        '      "category": "pan-category",\n'
+        '      "subcategory": "pan-subcategory",\n'
+        '      "risk": 3,\n'
+        '      "transport": false,\n'
+        '      "builtin_services": [],\n'
+        '      "fortiguard_category": "Web.Client",\n'
+        '      "sig_aliases": []\n'
+        '    }\n'
+        '  }\n'
+        '}\n\n'
+        f"fortiguard_category must be exactly one of: {_FORTIGUARD_CATS}\n"
+        "Use null if none fit. Use [] for ports on dynamic apps (P2P, SIP, RTP). "
+        "If no unmapped App-IDs are found, return {\"apps\": {}}. "
+        "Return ONLY the JSON object."
+    )
+
+    raw = _run_claude(prompt, timeout=120)
+
+    # Strip markdown fences if Claude included them despite instructions
+    text = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+    text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE).strip()
+
+    try:
+        parsed = json.loads(text)
+        entries = {
+            k: v
+            for k, v in parsed.get("apps", {}).items()
+            if not k.startswith("_") and isinstance(v, dict)
+        }
+        return entries, raw
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return {}, raw
+
+
+def merge_to_user_db(entries: dict) -> tuple[int, str]:
+    """Merge app entries into ~/.fwforge/pan_apps.json (the user override file).
+
+    The user file takes precedence over the bundled baseline at load time, so
+    AI-generated entries (which should be human-reviewed) stay out of the repo.
+    Returns (count_merged, path_written).
+    """
+    if not entries:
+        return 0, ""
+
+    existing: dict = {}
+    if _USER_FILE.exists():
+        try:
+            existing = json.loads(_USER_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    apps = existing.get("apps", {})
+    apps.update(entries)
+    existing["apps"] = apps
+    existing.setdefault("_meta", {}).update(
+        {"source": "fwforge ai-advisor", "count": len(apps)}
+    )
+
+    _USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _USER_FILE.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return len(entries), str(_USER_FILE)

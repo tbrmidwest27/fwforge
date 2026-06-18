@@ -787,4 +787,49 @@ def create_app() -> Flask:
                          as_attachment=True,
                          download_name=f"{stem}.fwforge.zip")
 
+    @app.post("/job/<jid>/ai")
+    def ai_feature(jid):
+        from .ai_advisor import (conversion_summary, explain_finding,
+                                 research_app_gaps, merge_to_user_db)
+        meta = _job(jid)
+        r = meta.get("result", {})
+        if not r:
+            return {"ok": False, "error": "No conversion result yet"}, 400
+        body = request.get_json(force=True, silent=True) or {}
+        feature = body.get("feature", "")
+        vendor = VENDOR_LABELS.get(meta.get("vendor", ""), meta.get("vendor", ""))
+        target = r.get("target", "7.4")
+        try:
+            if feature == "summary":
+                return {"ok": True, "text": conversion_summary(vendor, target, r)}
+
+            elif feature == "explain":
+                area = body.get("area", "")
+                message = body.get("message", "")
+                if not message:
+                    return {"ok": False, "error": "message required"}, 400
+                return {"ok": True, "text": explain_finding(
+                    area, message, vendor, target)}
+
+            elif feature == "gaps":
+                findings = r.get("findings", {})
+                all_f = (findings.get("warn") or []) + (findings.get("info") or [])
+                entries, raw = research_app_gaps(all_f, vendor)
+                if entries:
+                    count, path = merge_to_user_db(entries)
+                    return {"ok": True, "count": count,
+                            "apps": list(entries.keys()),
+                            "path": path, "raw": raw}
+                return {"ok": True, "count": 0, "apps": [], "raw": raw,
+                        "text": raw or "No unmapped App-IDs found in findings."}
+
+            else:
+                return {"ok": False, "error": f"Unknown feature: {feature!r}"}, 400
+
+        except RuntimeError as e:
+            return {"ok": False, "error": str(e)}, 503
+        except Exception as e:
+            return {"ok": False,
+                    "error": f"{type(e).__name__}: {e}"}, 500
+
     return app

@@ -40,6 +40,7 @@
   {% if r.mode == "migrate" %}
   <button type="button" data-pane="changes">Changes ({{ r.diff_changed }})</button>
   {% endif %}
+  <button type="button" data-pane="ai">AI Analysis</button>
 </div>
 
 <!-- ============ Summary ============ -->
@@ -73,8 +74,13 @@
     <code>config</code> section) to apply selectively.</p>
   {% endif %}
 
-  <div class="card">
-    <h2>Conversion summary</h2>
+  <div class="card" id="ai-sum-card">
+    <div style="display:flex;align-items:center;gap:.8rem;margin-bottom:.6rem">
+      <h2 style="margin:0">Conversion summary</h2>
+      <button id="ai-sum-btn" class="btn ghost small"
+              onclick="aiSummary()">✦ AI narrative</button>
+    </div>
+    <div id="ai-sum-out" class="ai-out" style="display:none"></div>
     <table style="max-width:620px">
       <tr><th>run</th><td>{{ r.when }}</td></tr>
       <tr><th>mode</th><td>{{ r.mode }}</td></tr>
@@ -110,6 +116,12 @@
           data-hay="{{ (f.area ~ ' ' ~ f.message)|lower }}">
         <span class="area">{{ f.area }}</span>{{ f.message }}
         {% if f.loc %}<span class="loc">[{{ f.loc }}]</span>{% endif %}
+        <button class="btn ghost small"
+                style="margin-left:.5rem;padding:.1rem .45rem;font-size:.72rem;font-weight:500"
+                data-area="{{ f.area }}"
+                data-msg="{{ f.message }}"
+                onclick="aiExplain(this)">explain</button>
+        <div class="ai-explain-out" style="display:none"></div>
       </li>
       {% endfor %}
     </ul>
@@ -150,6 +162,61 @@
 </div>
 {% endif %}
 
+<!-- ============ AI Analysis ============ -->
+<div class="tabpane" id="pane-ai">
+  <div class="card">
+    <h2>Conversion Narrative</h2>
+    <p class="muted">Ask Claude to write a plain-English summary of this
+      conversion suitable for a handoff document.</p>
+    <button id="ai-sum-tab-btn" class="btn ghost small"
+            onclick="aiSummary(true)">✦ Generate narrative</button>
+    <div id="ai-sum-tab-out" class="ai-out" style="margin-top:.7rem"></div>
+  </div>
+
+  {% if r.mode == "cross" %}
+  <div class="card" id="ai-gaps-card">
+    <h2>App-ID Gap Analyzer</h2>
+    <p class="muted">Finds PAN App-IDs from this conversion that fell back to
+      <code>service ALL</code> (overly permissive), researches their correct
+      ports and FortiGuard category with Claude, then writes the results to
+      <code>~/.fwforge/pan_apps.json</code> so the next conversion is tighter.
+      <br><strong>Restart the GUI and re-run the conversion after filling gaps.</strong></p>
+    <div id="ai-gaps-detect" class="muted" style="margin:.4rem 0 .6rem;font-size:.83rem">
+      Scanning findings for unmapped App-IDs…</div>
+    <button id="ai-gaps-btn" class="btn ghost small" style="display:none"
+            onclick="aiGaps()">✦ Research &amp; fill gaps</button>
+    <div id="ai-gaps-out" style="margin-top:.7rem"></div>
+  </div>
+  {% endif %}
+</div>
+
+<style>
+.ai-out {
+  background: var(--infobg);
+  border: 1px solid #d5dce8;
+  border-radius: 7px;
+  padding: .7rem .9rem;
+  font-size: .88rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ai-explain-out {
+  margin-top: .35rem;
+  background: var(--infobg);
+  border-left: 3px solid var(--brand);
+  border-radius: 0 5px 5px 0;
+  padding: .45rem .7rem;
+  font-size: .84rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+}
+.ai-gap-ok { color: var(--ok); font-weight: 600; }
+.ai-gap-err { color: var(--err); font-weight: 600; }
+</style>
+
 <script>
 document.querySelectorAll("#rtabs button").forEach(btn => {
   btn.onclick = () => {
@@ -157,6 +224,7 @@ document.querySelectorAll("#rtabs button").forEach(btn => {
       b => b.classList.toggle("active", b === btn));
     document.querySelectorAll(".tabpane").forEach(
       p => p.classList.toggle("show", p.id === "pane-" + btn.dataset.pane));
+    if (btn.dataset.pane === "ai") initAiTab();
   };
 });
 const ACTIVE = "{{ active_tab }}";
@@ -164,6 +232,7 @@ if (ACTIVE && ACTIVE !== "summary") {
   const b = document.querySelector(`#rtabs button[data-pane="${ACTIVE}"]`);
   if (b) b.onclick();
 }
+
 function filterFindings() {
   const q = document.getElementById("fsearch").value.toLowerCase();
   const lvl = document.getElementById("flevel").value;
@@ -176,6 +245,145 @@ function filterFindings() {
   });
   document.getElementById("fcount").textContent =
     (q || lvl) ? `${shown} match(es)` : "";
+}
+
+const AI_URL = "/job/{{ jid }}/ai";
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+                  .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+async function aiPost(body) {
+  const r = await fetch(AI_URL, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => ({ok:false, error:"Invalid response"}));
+  if (!r.ok || !data.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+
+/* ---- Feature 3: Conversion Summary ---- */
+let summaryDone = false;
+async function aiSummary(fromTab) {
+  const btn  = fromTab ? document.getElementById("ai-sum-tab-btn")
+                       : document.getElementById("ai-sum-btn");
+  const out  = fromTab ? document.getElementById("ai-sum-tab-out")
+                       : document.getElementById("ai-sum-out");
+  if (!btn || !out) return;
+  if (summaryDone && fromTab) { out.style.display = ""; return; }
+  btn.disabled = true;
+  btn.textContent = "Asking Claude…";
+  out.style.display = "";
+  out.className = "ai-out";
+  out.textContent = "Generating narrative…";
+  try {
+    const d = await aiPost({feature: "summary"});
+    out.textContent = d.text;
+    btn.textContent = "✦ regenerate";
+    btn.disabled = false;
+    summaryDone = true;
+    // sync both buttons/outputs if both exist
+    ["ai-sum-btn","ai-sum-tab-btn"].forEach(id => {
+      const b2 = document.getElementById(id);
+      if (b2) { b2.textContent = "✦ regenerate"; b2.disabled = false; }
+    });
+    ["ai-sum-out","ai-sum-tab-out"].forEach(id => {
+      const o2 = document.getElementById(id);
+      if (o2 && o2 !== out) { o2.textContent = d.text;
+                               o2.className = "ai-out";
+                               o2.style.display = ""; }
+    });
+  } catch(e) {
+    out.className = "ai-out";
+    out.textContent = "Error: " + e.message;
+    btn.textContent = "✦ retry";
+    btn.disabled = false;
+  }
+}
+
+/* ---- Feature 2: Finding Explainer ---- */
+async function aiExplain(btn) {
+  const li  = btn.closest("li");
+  const out = li.querySelector(".ai-explain-out");
+  btn.disabled = true;
+  btn.textContent = "…";
+  out.style.display = "";
+  out.textContent = "Asking Claude…";
+  try {
+    const d = await aiPost({feature:"explain",
+                            area: btn.dataset.area,
+                            message: btn.dataset.msg});
+    out.textContent = d.text;
+    btn.textContent = "explained";
+  } catch(e) {
+    out.textContent = "Error: " + e.message;
+    btn.textContent = "retry";
+    btn.disabled = false;
+  }
+}
+
+/* ---- Feature 1: App-ID Gap Analyzer ---- */
+let gapsInitDone = false;
+function initAiTab() {
+  if (gapsInitDone) return;
+  gapsInitDone = true;
+  const detect = document.getElementById("ai-gaps-detect");
+  const gapsBtn = document.getElementById("ai-gaps-btn");
+  if (!detect) return;  // migrate mode — no gaps card
+
+  // Scan finding DOM for likely App-ID fallbacks
+  const hits = [...document.querySelectorAll("#pane-findings li")]
+    .filter(li => {
+      const h = li.dataset.hay || "";
+      return h.includes("service all") || h.includes("unmapped")
+          || (h.includes("app") && h.includes("service"));
+    });
+
+  if (hits.length === 0) {
+    detect.textContent = "No unmapped App-ID findings detected — no gaps to fill.";
+  } else {
+    detect.innerHTML =
+      `<strong>${hits.length}</strong> finding(s) suggest unmapped App-IDs `
+      + `causing <code>service ALL</code> fallbacks.`;
+    gapsBtn.style.display = "";
+  }
+}
+
+async function aiGaps() {
+  const btn = document.getElementById("ai-gaps-btn");
+  const out = document.getElementById("ai-gaps-out");
+  btn.disabled = true;
+  btn.textContent = "Researching with Claude…";
+  out.innerHTML = '<div class="ai-out">Asking Claude to research and fill app gaps — this may take 60–120 seconds…</div>';
+  try {
+    const d = await aiPost({feature: "gaps"});
+    if (d.count > 0) {
+      out.innerHTML =
+        `<div class="ai-out"><span class="ai-gap-ok">✓ Added ${d.count} app`
+        + (d.count > 1 ? "s" : "") + ` to pan_apps.json</span>\n`
+        + `Apps: ${d.apps.map(a => `<code>${escHtml(a)}</code>`).join(", ")}\n\n`
+        + `Path: <code>${escHtml(d.path)}</code>\n\n`
+        + `Restart the GUI and re-run the conversion to see tighter service `
+        + `objects instead of <code>service ALL</code>.</div>`;
+      btn.textContent = `✓ ${d.count} app${d.count>1?"s":""} filled`;
+    } else if (d.raw) {
+      out.innerHTML =
+        `<div class="ai-out">No structured entries parsed — Claude's response:\n\n`
+        + escHtml(d.raw) + `</div>`;
+      btn.disabled = false;
+      btn.textContent = "✦ retry";
+    } else {
+      out.innerHTML =
+        `<div class="ai-out">${escHtml(d.text || "No unmapped App-IDs detected.")}</div>`;
+      btn.textContent = "✦ no gaps found";
+    }
+  } catch(e) {
+    out.innerHTML = `<div class="ai-out"><span class="ai-gap-err">Error: ${escHtml(e.message)}</span></div>`;
+    btn.disabled = false;
+    btn.textContent = "✦ retry";
+  }
 }
 </script>
 {% endblock %}
