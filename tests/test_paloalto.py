@@ -1335,3 +1335,58 @@ def test_vsys_region_to_addr_group():
     region_notes = [f for f in cfg.meta["findings"]
                     if "vsys section 'region'" in f[2]]
     assert region_notes == [], "region section should be consumed, not flagged"
+
+
+# --- Subnet-based static NAT range VIP tests ---------------------------------
+
+_NAT_BASE = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+<address>
+  <entry name="src-net"><ip-netmask>172.19.139.0/24</ip-netmask></entry>
+  <entry name="nat-net"><ip-netmask>10.65.226.0/24</ip-netmask></entry>
+</address>
+<rulebase><security><rules/></security></rulebase>
+<rulebase><nat><rules>
+  {nat_rule}
+</rules></nat></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+_BIDIR_RULE = """\
+<entry name="bidir-subnet-nat">
+  <from><member>untrust</member></from>
+  <to><member>trust</member></to>
+  <source><member>src-net</member></source>
+  <destination><member>any</member></destination>
+  <service>any</service>
+  <source-translation>
+    <static-ip>
+      <bi-directional>yes</bi-directional>
+      <translated-address>nat-net</translated-address>
+    </static-ip>
+  </source-translation>
+</entry>"""
+
+
+def test_bidir_static_nat_subnet_converts_to_range_vip():
+    """Bi-directional static NAT with subnet addresses → range VIP (not warning)."""
+    cfg = paloalto.parse(_NAT_BASE.format(nat_rule=_BIDIR_RULE), "nat.xml")
+    findings = cfg.meta["findings"]
+
+    # no "NAT references non-host" warnings
+    nonhost = [f for f in findings
+               if f[0] == "warn" and "non-host address" in f[2]]
+    assert nonhost == [], f"unexpected non-host warnings: {nonhost}"
+
+    # exactly one VIP created
+    assert len(cfg.vips) == 1
+    v = cfg.vips[0]
+    # translated-address is ext_ip; original source is mapped_ip (VIP convention)
+    assert v.ext_ip == "10.65.226.0-10.65.226.255"
+    assert v.mapped_ip == "172.19.139.0-172.19.139.255"
+
+    # an info finding mentioning the range conversion
+    infos = [f for f in findings
+             if f[0] == "info" and "range VIP" in f[2]]
+    assert infos, "expected an info note about 1:1 subnet NAT range VIP"

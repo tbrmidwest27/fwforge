@@ -2165,14 +2165,16 @@ class PaloParser:
                 ocfg.areas.append(a)
             self.cfg.ospf = ocfg
 
-    def _resolve_ip(self, token: str, ref: SourceRef) -> str | None:
+    def _resolve_ip(self, token: str, ref: SourceRef,
+                    silent: bool = False) -> str | None:
         addr = self.cfg.address_by_name(token)
         if addr:
             if addr.type == "host":
                 return addr.value
-            self.note("warn", "nat",
-                      f"NAT references non-host address '{token}' "
-                      f"({addr.type}) — set the IP manually", ref)
+            if not silent:
+                self.note("warn", "nat",
+                          f"NAT references non-host address '{token}' "
+                          f"({addr.type}) — set the IP manually", ref)
             return None
         try:
             ipaddress.IPv4Address(token)
@@ -2235,17 +2237,58 @@ class PaloParser:
                               ref)
                 elif isinstance(static, dict):
                     trans = str(static.get("translated-address", ""))
-                    ext = self._resolve_ip(trans, ref)
                     srcs = _as_list(r.get("source"))
-                    mapped = self._resolve_ip(srcs[0], ref) if srcs else None
-                    if str(static.get("bi-directional", "no")) == "yes" \
-                            and ext and mapped:
+                    is_bidir = str(
+                        static.get("bi-directional", "no")) == "yes"
+                    # Try host-to-host first (silent; fall through to range)
+                    ext = self._resolve_ip(trans, ref, silent=True)
+                    mapped = (self._resolve_ip(srcs[0], ref, silent=True)
+                              if srcs else None)
+                    if is_bidir and ext and mapped:
                         self.cfg.vips.append(Vip(
                             name=f"vip-{name}", ext_ip=ext, mapped_ip=mapped,
                             ext_intf=self._zone_single_member(to[0]),
                             comment=f"from PAN bi-directional static NAT "
                                     f"'{name}'", source=ref))
                         handled = True
+                    elif is_bidir:
+                        # Try 1:1 subnet/range → FortiOS range VIP
+                        ext_r = self._resolve_range(trans)
+                        mapped_r = (self._resolve_range(srcs[0])
+                                    if srcs else None)
+                        if ext_r and mapped_r and ext_r[1] == mapped_r[1]:
+                            self.cfg.vips.append(Vip(
+                                name=f"vip-{name}", ext_ip=ext_r[0],
+                                mapped_ip=mapped_r[0],
+                                ext_intf=self._zone_single_member(to[0]),
+                                comment=f"from PAN bi-directional 1:1 "
+                                        f"subnet NAT '{name}'", source=ref))
+                            self.note(
+                                "info", "nat",
+                                f"nat rule '{name}': bi-directional 1:1 "
+                                f"subnet NAT {trans} -> "
+                                f"{srcs[0] if srcs else '?'} "
+                                f"({ext_r[1]} addrs) converted to range "
+                                "VIP — FortiOS maps ranges one-to-one",
+                                ref)
+                            handled = True
+                        elif ext_r and mapped_r:
+                            self.note("error", "nat",
+                                      f"nat rule '{name}': bi-directional "
+                                      "NAT subnet sizes differ "
+                                      f"({ext_r[1]} vs {mapped_r[1]}) "
+                                      "— convert manually", ref)
+                        else:
+                            # Emit the per-object warnings now
+                            if not ext and not ext_r:
+                                self._resolve_ip(trans, ref)
+                            if not mapped and not mapped_r:
+                                self._resolve_ip(
+                                    srcs[0], ref) if srcs else None
+                            self.note("warn", "nat",
+                                      f"nat rule '{name}': bi-directional "
+                                      "static NAT could not be resolved "
+                                      "— convert manually", ref)
                     else:
                         self.note("warn", "nat",
                                   f"nat rule '{name}': one-way static "
@@ -2258,9 +2301,11 @@ class PaloParser:
 
             if isinstance(dt, dict):
                 dsts = _as_list(r.get("destination"))
-                ext = self._resolve_ip(dsts[0], ref) if dsts else None
+                # Try host-to-host silently; range fallback below
+                ext = (self._resolve_ip(dsts[0], ref, silent=True)
+                       if dsts else None)
                 mapped = self._resolve_ip(
-                    str(dt.get("translated-address", "")), ref)
+                    str(dt.get("translated-address", "")), ref, silent=True)
                 if ext and mapped:
                     vip = Vip(
                         name=f"vip-{name}", ext_ip=ext, mapped_ip=mapped,
