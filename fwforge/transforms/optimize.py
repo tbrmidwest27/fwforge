@@ -580,6 +580,22 @@ def analyze(cfg: FirewallConfig, report) -> None:
                 pol.source,
             )
 
+    # ── deny + app-control miscombination ─────────────────────────────────────
+    # FortiOS UTM (application-list) only inspects ACCEPTED traffic; on a deny
+    # policy the app-control profile has no effect — traffic is dropped before
+    # any deep inspection occurs.
+    for pol in cfg.policies:
+        if pol.action == "deny" and pol.app_list and not pol.disabled:
+            report.add(
+                "warn", "policy-opt",
+                f"policy '{pol.name}': action=deny with application-list "
+                f"'{pol.app_list}' — app-control UTM has no effect on deny "
+                "policies (traffic is dropped before inspection). Convert to "
+                "action=accept with an app-control profile that blocks the "
+                "specific apps, or use a port-based deny without the app-list.",
+                pol.source,
+            )
+
     # ── shadow detection (top-down first-match) ────────────────────────────────
     if cfg.policies:
         addr_r = _AddrResolver(cfg)

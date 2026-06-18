@@ -90,6 +90,29 @@ def _load_xwalk() -> dict[str, str]:
 _DB: dict[str, dict] = _load_db()
 _XWALK: dict[str, str] = _load_xwalk()
 
+
+def db_counts() -> tuple[int, int]:
+    """Return (bundled_count, user_override_count) for the GUI status tile.
+
+    Reads the JSON files directly so the counts are accurate even if the
+    user modified the override file after the module was imported.
+    """
+    bundled_n = 0
+    user_n = 0
+    if _BUNDLED.exists():
+        try:
+            apps = json.loads(_BUNDLED.read_text(encoding="utf-8")).get("apps", {})
+            bundled_n = sum(1 for k in apps if not k.startswith("_"))
+        except Exception:
+            pass
+    if _USER_FILE.exists():
+        try:
+            apps = json.loads(_USER_FILE.read_text(encoding="utf-8")).get("apps", {})
+            user_n = sum(1 for k in apps if not k.startswith("_"))
+        except Exception:
+            pass
+    return bundled_n, user_n
+
 # ---------------------------------------------------------------------------
 # Backward-compat module-level dicts (derived from _DB at import time).
 # External code that accesses these directly continues to work.

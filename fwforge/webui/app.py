@@ -348,6 +348,15 @@ def create_app() -> Flask:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     _load_jobs()
 
+    @app.context_processor
+    def _inject_globals():
+        from ..parsers.pan_appid import db_counts
+        try:
+            bundled, user = db_counts()
+        except Exception:
+            bundled, user = 0, 0
+        return {"app_db_bundled": bundled, "app_db_user": user}
+
     # local tool bound to 127.0.0.1: reject cross-origin state-changing
     # requests so a web page the user happens to have open cannot silently
     # drive /load (which can read an arbitrary local file path), /convert, or

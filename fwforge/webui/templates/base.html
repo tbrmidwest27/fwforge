@@ -200,7 +200,8 @@ legend { font-weight:700; font-size:.9rem; padding:0 .35rem; }
       <span class="ic">&#65291;</span> New conversion</a>
   </nav>
   <div class="foot">v{{ version }} &middot; runs entirely on this machine
-    &mdash; no cloud, no license</div>
+    &mdash; no cloud, no license
+    {% if app_db_bundled %}<br><span style="opacity:.65;font-size:.72rem">apps: {{ app_db_bundled }} bundled{% if app_db_user %} + {{ app_db_user }} user{% endif %}</span>{% endif %}</div>
 </aside>
 <main class="area">
   <header class="tb">
