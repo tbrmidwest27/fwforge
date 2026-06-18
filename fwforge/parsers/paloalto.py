@@ -34,6 +34,7 @@ from ..model import (
     FirewallConfig,
     Interface,
     NatRule,
+    PbrRule,
     Policy,
     Schedule,
     Service,
@@ -555,6 +556,10 @@ class PaloParser:
             self._pre_rules + local_rules + self._post_rules)
         self._detect_decryption(rulebase)
         self.parse_nat(nat_rules)
+        if isinstance(rulebase, dict):
+            pbf = rulebase.get("pbf", {})
+            if isinstance(pbf, dict):
+                self.parse_pbf(pbf.get("rules"))
         self.parse_routes(device.get("network", {}))
         self.parse_vpn(device.get("network", {}))
         self._detect_globalprotect(device)
@@ -2605,6 +2610,137 @@ class PaloParser:
                     continue
         return ""
 
+    def _zone_interfaces(self, zone_name: str) -> list[str]:
+        """All interface names that belong to the named zone."""
+        for z in self.cfg.zones:
+            if z.name == zone_name:
+                return list(z.members) if z.members else []
+        return []
+
+    def parse_pbf(self, rules_node) -> None:
+        """PAN policy-based forwarding (rulebase/pbf) -> FortiOS PBR.
+
+        Each PBF entry with a forward+nexthop action becomes one PbrRule per
+        source CIDR (FortiOS config router policy has a single src/dst prefix
+        per entry). Application matching is dropped with a warning because
+        FortiOS PBR operates purely at L3/L4; the note tells the operator
+        where app-based steering can be achieved (SD-WAN or traffic shapers).
+        """
+        apps_warned: set[str] = set()
+        seq = 0
+
+        def _cidr_from_name(name: str) -> str:
+            """Resolve an address name to a CIDR for PBR (best-effort)."""
+            if name.lower() in ("any", "0.0.0.0/0"):
+                return "0.0.0.0/0"
+            for a in self.cfg.addresses:
+                if a.name == name:
+                    if a.type in ("host",):
+                        return f"{a.value}/32"
+                    if a.type == "subnet":
+                        return a.value
+                    return "0.0.0.0/0"   # non-CIDR types → any
+            return "0.0.0.0/0"
+
+        for name, rule in _entries(rules_node):
+            ref = self.ref(rule if isinstance(rule, dict) else {},
+                           f"pbf {name}")
+            if not isinstance(rule, dict):
+                continue
+            if str(rule.get("disabled", "no")).lower() == "yes":
+                continue
+
+            # zone → interfaces
+            zones = _as_list(rule.get("from", {}).get("zone", []))
+            intfs: list[str] = []
+            for z in zones:
+                intfs += self._zone_interfaces(z)
+            if not intfs and zones:
+                # zones present but no matched interface → use zone names
+                intfs = zones
+            if not intfs:
+                intfs = ["any"]
+
+            # source CIDRs
+            srcs = _as_list(rule.get("source"))
+            if not srcs or srcs == ["any"]:
+                srcs_cidr = ["0.0.0.0/0"]
+            else:
+                srcs_cidr = [_cidr_from_name(s) for s in srcs]
+
+            # destination CIDRs
+            dsts = _as_list(rule.get("destination"))
+            if not dsts or dsts == ["any"]:
+                dsts_cidr = ["0.0.0.0/0"]
+            else:
+                dsts_cidr = [_cidr_from_name(d) for d in dsts]
+
+            # applications (FortiOS PBR is L3/L4 only — warn once per name)
+            apps = [a for a in _as_list(rule.get("application"))
+                    if a.lower() not in ("any", "application-default")]
+            if apps:
+                new_apps = [a for a in apps if a not in apps_warned]
+                if new_apps:
+                    apps_warned.update(new_apps)
+                    shown = ", ".join(apps[:5]) + (" ..." if len(apps) > 5
+                                                   else "")
+                    self.note(
+                        "warn", "pbf",
+                        f"PBF rule '{name}': application filter ({shown}) "
+                        "dropped — FortiOS router policy is L3/L4 only; "
+                        "use SD-WAN rules (config system virtual-wan-link) "
+                        "for application-aware traffic steering", ref)
+
+            # action
+            action = rule.get("action", {})
+            if not isinstance(action, dict):
+                continue
+            if "discard" in action:
+                self.note("warn", "pbf",
+                          f"PBF rule '{name}': discard action not converted "
+                          "— add a static blackhole route or FortiOS policy "
+                          "deny for the traffic instead", ref)
+                continue
+            fwd = action.get("forward")
+            if not isinstance(fwd, dict):
+                continue
+            nh = fwd.get("nexthop", {})
+            if not isinstance(nh, dict):
+                continue
+            if "ip-address" not in nh:
+                vr = nh.get("virtual-router") or ""
+                self.note("warn", "pbf",
+                          f"PBF rule '{name}': nexthop is a virtual-router "
+                          f"('{vr}') — not convertible to a static gateway; "
+                          "review routing configuration manually", ref)
+                continue
+            gw = str(nh["ip-address"]).strip()
+            if not gw:
+                continue
+
+            egress = str(fwd.get("egress-interface", "")).strip()
+
+            comment_parts = []
+            if str(rule.get("description", "")).strip():
+                comment_parts.append(str(rule.get("description")).strip())
+            comment_parts.append(f"from PAN PBF '{name}'")
+            comment = "; ".join(comment_parts)
+
+            for in_intf in intfs:
+                for src in srcs_cidr:
+                    for dst in dsts_cidr:
+                        seq += 1
+                        self.cfg.pbr_rules.append(PbrRule(
+                            name=f"pbf-{name}-{seq}",
+                            src=src,
+                            dst=dst,
+                            gateway=gw,
+                            in_intf=in_intf,
+                            out_intf=egress,
+                            comment=comment,
+                            source=ref,
+                        ))
+
     def _claim_template(self, dev: tuple, claims: set) -> None:
         """Claim only the network/* and vsys/*/zone subtrees actually
         read from the selected template, by their real tree paths."""
@@ -2804,7 +2940,7 @@ class PaloParser:
                       self.ref(node, key))
         if isinstance(rulebase, dict):
             for key, node in rulebase.items():
-                if key in ("security", "nat", "decryption", LINE):
+                if key in ("security", "nat", "decryption", "pbf", LINE):
                     continue
                 self.note("info", "coverage",
                           f"rulebase '{key}' not converted",

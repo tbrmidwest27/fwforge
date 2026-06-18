@@ -137,6 +137,10 @@ def apply_ir(cfg: FirewallConfig, mapping: dict[str, str], report) -> list[str]:
     for nat in cfg.nats:
         nat.real_ifc = mapped(nat.real_ifc)
         nat.mapped_ifc = mapped(nat.mapped_ifc)
+    for pbr in getattr(cfg, "pbr_rules", []):
+        pbr.in_intf = mapped(pbr.in_intf)
+        if pbr.out_intf:
+            pbr.out_intf = mapped(pbr.out_intf)
 
     for name in sorted(unmapped):
         report.add(

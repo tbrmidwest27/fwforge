@@ -321,6 +321,25 @@ class OspfConfig:
 
 
 @dataclass
+class PbrRule:
+    """Policy-based routing rule (FortiOS: config router policy).
+
+    PAN source: rulebase/pbf/rules entries. Each entry is expanded into one
+    PbrRule per source CIDR so FortiOS's single-prefix model is satisfied.
+    """
+
+    name: str
+    src: str = "0.0.0.0/0"       # single source CIDR ("any" → "0.0.0.0/0")
+    dst: str = "0.0.0.0/0"       # single dest CIDR
+    gateway: str = ""             # next-hop IP (empty → not set)
+    in_intf: str = ""             # ingress interface (vendor-side name)
+    out_intf: str = ""            # egress interface hint (optional)
+    protocol: int | None = None   # IP protocol number (None = any)
+    comment: str | None = None
+    source: SourceRef | None = None
+
+
+@dataclass
 class Schedule:
     """Firewall schedule (recurring or one-time)."""
 
@@ -362,6 +381,7 @@ class FirewallConfig:
     phase1s: list[VpnPhase1] = field(default_factory=list)
     phase2s: list[VpnPhase2] = field(default_factory=list)
     routes: list[Route] = field(default_factory=list)
+    pbr_rules: list[PbrRule] = field(default_factory=list)
     bgp: BgpConfig | None = None
     ospf: OspfConfig | None = None
     unparsed: list[SourceRef] = field(default_factory=list)

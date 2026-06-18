@@ -322,6 +322,7 @@ class Emitter:
             self.central_snat()
         self.schedules()
         self.routes()
+        self.pbr_rules()
         self.bgp()
         self.ospf()
         self.policies()
@@ -1156,6 +1157,44 @@ class Emitter:
             self.report.add("info", "routes",
                             f"{len(v6)} IPv6 route(s) emitted as router "
                             "static6")
+
+    def pbr_rules(self):
+        """Emit FortiOS config router policy from PBF-derived PbrRule entries."""
+        rules = getattr(self.cfg, "pbr_rules", [])
+        if not rules:
+            return
+        self.line()
+        self.line("config router policy")
+        for i, r in enumerate(rules, start=1):
+            self.line(f"    edit {i}")
+            # in_intf / out_intf are already mapped by apply_ir; "any" → omit
+            if r.in_intf and r.in_intf != "any":
+                self.line(f"        set input-device {_q(r.in_intf)}")
+            # src / dst as "address netmask"
+            try:
+                src_net = ipaddress.IPv4Network(r.src, strict=False)
+                self.line(f"        set src {src_net.network_address} "
+                          f"{src_net.netmask}")
+            except ValueError:
+                pass
+            try:
+                dst_net = ipaddress.IPv4Network(r.dst, strict=False)
+                self.line(f"        set dst {dst_net.network_address} "
+                          f"{dst_net.netmask}")
+            except ValueError:
+                pass
+            if r.gateway:
+                self.line(f"        set gateway {r.gateway}")
+            if r.out_intf and r.out_intf != "any":
+                self.line(f"        set output-device {_q(r.out_intf)}")
+            if r.comment:
+                self.line(f"        set comments {_q(r.comment[:255])}")
+            self.line("    next")
+        self.line("end")
+        self.report.add("info", "pbf",
+                        f"{len(rules)} PBF rule(s) converted to FortiOS "
+                        "router policy (config router policy); application "
+                        "filters dropped — see per-rule warnings above")
 
     def _derived_router_id(self, proto: str) -> str:
         """A usable router-id when the source relied on auto-derivation:

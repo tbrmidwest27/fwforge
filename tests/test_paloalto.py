@@ -1776,3 +1776,148 @@ def test_url_filtering_blocklist_allowlist():
     assert urls["safe.partner.com"] == ("simple", "allow")
     assert "*.trusted.internal" in urls
     assert urls["*.trusted.internal"] == ("wildcard", "allow")
+
+
+# ---------------------------------------------------------------------------
+# PAN Policy-Based Forwarding (PBF) -> FortiOS router policy
+# ---------------------------------------------------------------------------
+
+_PBF_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+  <zone>
+    <entry name="trust"><network><layer3><member>ethernet1/2</member></layer3></network></entry>
+    <entry name="untrust"><network><layer3><member>ethernet1/1</member></layer3></network></entry>
+  </zone>
+  <address>
+    <entry name="corp-net"><ip-netmask>10.0.0.0/8</ip-netmask></entry>
+    <entry name="hq-subnet"><ip-netmask>192.168.1.0/24</ip-netmask></entry>
+  </address>
+  <rulebase>
+    <security><rules>
+      <entry name="allow-all">
+        <from><member>trust</member></from><to><member>untrust</member></to>
+        <source><member>any</member></source><destination><member>any</member></destination>
+        <service><member>any</member></service><application><member>any</member></application>
+        <action>allow</action>
+      </entry>
+    </rules></security>
+    <pbf><rules>
+      <entry name="steer-web-to-isp1">
+        <from><zone><member>trust</member></zone></from>
+        <source><member>corp-net</member></source>
+        <destination><member>any</member></destination>
+        <application>
+          <member>web-browsing</member>
+          <member>ssl</member>
+        </application>
+        <service><member>application-default</member></service>
+        <action>
+          <forward>
+            <nexthop><ip-address>203.0.113.1</ip-address></nexthop>
+            <egress-interface>ethernet1/1</egress-interface>
+          </forward>
+        </action>
+        <description>Route web via ISP1</description>
+      </entry>
+      <entry name="steer-multi-src">
+        <from><zone><member>trust</member></zone></from>
+        <source>
+          <member>corp-net</member>
+          <member>hq-subnet</member>
+        </source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action>
+          <forward>
+            <nexthop><ip-address>203.0.113.2</ip-address></nexthop>
+          </forward>
+        </action>
+      </entry>
+      <entry name="disabled-rule">
+        <from><zone><member>trust</member></zone></from>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action><forward><nexthop><ip-address>10.0.0.1</ip-address></nexthop></forward></action>
+        <disabled>yes</disabled>
+      </entry>
+      <entry name="discard-rule">
+        <from><zone><member>trust</member></zone></from>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application><member>any</member></application>
+        <service><member>any</member></service>
+        <action><discard/></action>
+      </entry>
+    </rules></pbf>
+  </rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+
+def test_pbf_rules_converted_to_pbr():
+    """PBF forward rules produce PbrRule entries; disabled and discard skipped."""
+    from fwforge.parsers import paloalto
+    cfg = paloalto.parse(_PBF_CFG, "pbf.xml")
+
+    # disabled-rule and discard-rule must be absent
+    gateways = [r.gateway for r in cfg.pbr_rules]
+    assert "10.0.0.1" not in gateways, "disabled rule must be skipped"
+
+    # steer-web-to-isp1: one rule (one source CIDR corp-net = 10.0.0.0/8)
+    isp1 = [r for r in cfg.pbr_rules if r.gateway == "203.0.113.1"]
+    assert isp1, "steer-web-to-isp1 must produce a PBR rule"
+    r1 = isp1[0]
+    assert r1.src == "10.0.0.0/8"          # corp-net resolved
+    assert r1.dst == "0.0.0.0/0"           # any destination
+    assert r1.in_intf == "ethernet1/2"      # trust zone → ethernet1/2
+    assert r1.out_intf == "ethernet1/1"     # egress-interface preserved
+    assert "isp1" in r1.comment.lower() or "web" in r1.comment.lower()
+
+    # steer-multi-src: two rules (one per source)
+    isp2 = [r for r in cfg.pbr_rules if r.gateway == "203.0.113.2"]
+    assert len(isp2) == 2
+    srcs = {r.src for r in isp2}
+    assert "10.0.0.0/8" in srcs    # corp-net
+    assert "192.168.1.0/24" in srcs  # hq-subnet
+
+
+def test_pbf_application_filter_warns():
+    """PBF rules with non-any applications emit an app-filter-dropped warning."""
+    from fwforge.parsers import paloalto
+    cfg = paloalto.parse(_PBF_CFG, "pbf.xml")
+    warns = [f for f in cfg.meta["findings"]
+             if f[0] == "warn" and "pbf" in f[1]
+             and "application" in f[2].lower()]
+    assert warns, "expected application-filter-dropped warning for PBF"
+
+
+def test_pbf_discard_warns():
+    """PBF discard action must produce a warning (not silently drop)."""
+    from fwforge.parsers import paloalto
+    cfg = paloalto.parse(_PBF_CFG, "pbf.xml")
+    warns = [f for f in cfg.meta["findings"]
+             if f[0] == "warn" and "pbf" in f[1]
+             and "discard" in f[2].lower()]
+    assert warns, "expected discard-not-converted warning"
+
+
+def test_pbf_emitted_as_router_policy():
+    """PBF rules appear as config router policy in FortiOS output."""
+    from fwforge import pipeline
+    res = pipeline.run_cross(
+        _PBF_CFG, "paloalto", "pbf.xml",
+        {"ethernet1/1": "wan1", "ethernet1/2": "lan1"})
+    conf = res.out_text
+    assert "config router policy" in conf
+    assert "set gateway 203.0.113.1" in conf
+    assert "set gateway 203.0.113.2" in conf
+    # two src entries for the multi-src rule + one for steer-web
+    assert conf.count("set gateway") >= 3
+    # ingress interface mapped
+    assert 'set input-device "lan1"' in conf
+    # disabled rule and discard rule must not appear
+    assert "10.0.0.1" not in conf
