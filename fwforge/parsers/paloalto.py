@@ -1407,17 +1407,17 @@ class PaloParser:
                                                    "application-default")],
                 source=ref))
             cache[key] = name
-        name = cache[key]
-        msg = (f"rule '{rule}': App-ID -> application-list '{name}' "
-               f"(categories: {', '.join(cats)})")
-        if transport:
-            msg += f"; transport app(s) ignored: {', '.join(transport)}"
-        if unmapped:
-            msg += (f"; UNMAPPED (add manually): {', '.join(unmapped)}")
-        self.note("warn", "policies", msg
-                  + ". Category-level control approximates PAN's per-app "
-                  "match; verify and tighten.", ref)
-        return name
+            # Emit conversion note once per unique profile
+            msg = (f"App-ID -> application-list '{name}' "
+                   f"(categories: {', '.join(cats)})")
+            if transport:
+                msg += f"; transport app(s) ignored: {', '.join(transport)}"
+            if unmapped:
+                msg += (f"; UNMAPPED (add manually): {', '.join(unmapped)}")
+            self.note("warn", "policies", msg
+                      + ". Category-level control approximates PAN's per-app "
+                      "match; verify and tighten.", ref)
+        return cache[key]
 
     def _app_list_sigs(self, apps: list[str], rule: str,
                        ref: SourceRef) -> str:
@@ -1448,20 +1448,20 @@ class PaloParser:
                       if a not in ("any", "application-default")],
                 source=ref))
             cache[key] = name
-        name = cache[key]
-        msg = (f"rule '{rule}': App-ID -> application-list '{name}' "
-               f"({len(sig_ids)} signature(s)")
-        if cat_ids:
-            msg += f" + category fallback {', '.join(cats)}"
-        msg += ")"
-        if transport:
-            msg += f"; transport app(s) ignored: {', '.join(transport)}"
-        if cat_unmapped:
-            msg += f"; UNMAPPED (add manually): {', '.join(cat_unmapped)}"
-        self.note("warn" if cat_unmapped else "info", "policies",
-                  msg + ". Per-application control mapped from the FortiGuard "
-                  "app DB; verify.", ref)
-        return name
+            # Emit conversion note once per unique profile
+            msg = (f"App-ID -> application-list '{name}' "
+                   f"({len(sig_ids)} signature(s)")
+            if cat_ids:
+                msg += f" + category fallback {', '.join(cats)}"
+            msg += ")"
+            if transport:
+                msg += f"; transport app(s) ignored: {', '.join(transport)}"
+            if cat_unmapped:
+                msg += f"; UNMAPPED (add manually): {', '.join(cat_unmapped)}"
+            self.note("warn" if cat_unmapped else "info", "policies",
+                      msg + ". Per-application control mapped from the "
+                      "FortiGuard app DB; verify.", ref)
+        return cache[key]
 
     # ---- security profiles: PAN url-filtering / file-blocking -> FortiOS ----
 
