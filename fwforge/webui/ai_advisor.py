@@ -7,6 +7,7 @@ authenticated on this machine.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -39,41 +40,55 @@ _FORTIGUARD_CATS = (
 
 
 def _run_claude(prompt: str, timeout: int = 90) -> str:
-    """Invoke `claude -p <prompt>` and return stdout. Raises RuntimeError on failure."""
+    """Invoke `claude -p` with the prompt on stdin and return stdout.
+
+    The prompt is handed over as a real FILE on stdin, not as an argv
+    argument and not via a pipe:
+      * argv overflows cmd.exe's ~8191-char command-line limit on big
+        prompts (the App-ID gap analyzer) -> "The command line is too long";
+      * a PIPE forwarded through the Windows .cmd shim is racy — claude
+        gives up after ~3s ("no stdin data received") if cmd.exe hasn't
+        forwarded the pipe to node yet.
+    A file handle is inherited reliably (like `claude < file`) and has no
+    size limit. Raises RuntimeError on failure.
+    """
     exe = shutil.which("claude") or "claude"
+    tf = tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", delete=False, encoding="utf-8")
     try:
-        result = subprocess.run(
-            [exe, "-p", "--output-format", "text",
-             # replace the agentic system prompt so it can't act as a repo
-             # reviewer; drop the dynamic cwd/memory/git-status sections too
-             "--system-prompt", _ADVISOR_SYSTEM,
-             "--exclude-dynamic-system-prompt-sections",
-             # load only user-level settings, never this project's .claude
-             # agents/settings
-             "--setting-sources", "user"],
-            # the prompt goes on STDIN, never argv: a large prompt (e.g. the
-            # App-ID gap analyzer's 60-finding payload) blows past cmd.exe's
-            # 8191-char command-line limit -> "The command line is too long."
-            # claude -p reads the prompt from stdin when no positional arg is
-            # given, which has no length limit.
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            # neutral cwd: don't inherit the fwforge repo, so no project
-            # CLAUDE.md / memory / git context leaks into the response
-            cwd=tempfile.gettempdir(),
-            # shell=True needed on Windows so cmd.exe handles .cmd wrappers;
-            # the command line is now short (prompt is on stdin), so the
-            # length limit no longer applies.
-            shell=(sys.platform == "win32"),
-        )
+        tf.write(prompt)
+        tf.close()
+        with open(tf.name, "r", encoding="utf-8") as fin:
+            result = subprocess.run(
+                [exe, "-p", "--output-format", "text",
+                 # replace the agentic system prompt so it can't act as a
+                 # repo reviewer; drop the dynamic cwd/memory/git sections
+                 "--system-prompt", _ADVISOR_SYSTEM,
+                 "--exclude-dynamic-system-prompt-sections",
+                 # load only user-level settings, never this project's
+                 # .claude agents/settings
+                 "--setting-sources", "user"],
+                stdin=fin,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                # neutral cwd: don't inherit the fwforge repo, so no project
+                # CLAUDE.md / memory / git context leaks into the response
+                cwd=tempfile.gettempdir(),
+                # shell=True so cmd.exe handles the .cmd wrapper on Windows
+                shell=(sys.platform == "win32"),
+            )
     except subprocess.TimeoutExpired:
         raise RuntimeError("Claude timed out — try again")
     except FileNotFoundError:
         raise RuntimeError(
             "claude CLI not found — install Claude Code and sign in first"
         )
+    finally:
+        try:
+            os.unlink(tf.name)
+        except OSError:
+            pass
     if result.returncode != 0:
         msg = (result.stderr or "").strip()
         raise RuntimeError(msg or f"claude exited {result.returncode}")
