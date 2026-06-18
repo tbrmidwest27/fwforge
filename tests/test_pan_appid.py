@@ -410,3 +410,93 @@ def test_new_db_entries():
     assert "Business" in cats
     assert "Collaboration" in cats
     assert "Network.Service" in cats
+
+
+# ── db_counts / SSL decryption detection / app=any mix ─────────────────────────
+
+DECRYPT_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <zone><entry name="trust"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <rulebase>
+      <security><rules>
+        <entry name="Allow-All">
+          <from><member>any</member></from><to><member>any</member></to>
+          <source><member>any</member></source>
+          <destination><member>any</member></destination>
+          <application><member>any</member></application>
+          <service><member>any</member></service>
+          <action>allow</action>
+        </entry>
+      </rules></security>
+      <decryption><rules>
+        <entry name="Decrypt-Out">
+          <action>decrypt</action>
+          <from><member>trust</member></from><to><member>any</member></to>
+          <source><member>any</member></source>
+          <destination><member>any</member></destination>
+        </entry>
+        <entry name="No-Decrypt-Mgmt">
+          <action>no-decrypt</action>
+          <from><member>any</member></from><to><member>trust</member></to>
+          <source><member>any</member></source>
+          <destination><member>any</member></destination>
+        </entry>
+      </rules></decryption>
+    </rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+APP_ANY_MIX_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <zone><entry name="trust"><network><layer3>
+      <member>ethernet1/1</member></layer3></network></entry></zone>
+    <rulebase><security><rules>
+      <entry name="Mixed-Any">
+        <from><member>trust</member></from><to><member>trust</member></to>
+        <source><member>any</member></source>
+        <destination><member>any</member></destination>
+        <application>
+          <member>any</member>
+          <member>web-browsing</member>
+        </application>
+        <service><member>application-default</member></service>
+        <action>allow</action>
+      </entry>
+    </rules></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_db_counts():
+    """db_counts() returns a positive bundled count and non-negative user count."""
+    bundled, user = pan_appid.db_counts()
+    assert bundled > 100, f"expected > 100 bundled apps, got {bundled}"
+    assert user >= 0
+
+
+def test_decryption_detection():
+    """SSL decryption rules emit exactly one warn finding with area='decryption'."""
+    p = paloalto.PaloParser(DECRYPT_CFG, "test.xml")
+    p.parse()
+    dec = [(lvl, msg) for lvl, area, msg, _ in p._findings if area == "decryption"]
+    assert len(dec) == 1, f"expected 1 decryption finding, got {dec}"
+    lvl, msg = dec[0]
+    assert lvl == "warn"
+    assert "2 SSL/TLS decryption rule" in msg
+    assert "ssl-ssh-profile" in msg
+
+
+def test_app_any_mixed_uses_all_service():
+    """App list with 'any' alongside specifics → service=ALL, info finding emitted."""
+    p = paloalto.PaloParser(APP_ANY_MIX_CFG, "test.xml")
+    cfg = p.parse()
+    assert cfg.policies, "no policies parsed"
+    pol = cfg.policies[0]
+    assert pol.services == ["ALL"], f"expected ['ALL'] but got {pol.services}"
+    info_msgs = [msg for lvl, area, msg, _ in p._findings
+                 if lvl == "info" and area == "policies"]
+    assert any("application list contains 'any'" in m for m in info_msgs), \
+        f"expected info about any-override in: {info_msgs}"

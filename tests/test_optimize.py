@@ -514,6 +514,38 @@ class TestCollapseCheck:
         assert not msgs
 
 
+# ── Deny + application-list miscombination ────────────────────────────────────
+
+class TestDenyAppList:
+    def _warn_msgs(self, cfg):
+        r = Report()
+        analyze(cfg, r)
+        return [f.message for f in r.findings
+                if f.level == "warn" and f.area == "policy-opt"]
+
+    def test_deny_with_app_list_warns(self):
+        p = _pol("block-fb", action="deny")
+        p.app_list = "block-facebook"
+        msgs = self._warn_msgs(_cfg(p))
+        assert any("action=deny with application-list" in m for m in msgs)
+
+    def test_accept_with_app_list_no_warn(self):
+        p = _pol("allow-web", action="accept")
+        p.app_list = "web-apps"
+        msgs = self._warn_msgs(_cfg(p))
+        assert not any("application-list" in m for m in msgs)
+
+    def test_disabled_deny_with_app_list_no_warn(self):
+        p = _pol("block-fb", action="deny", disabled=True)
+        p.app_list = "block-facebook"
+        msgs = self._warn_msgs(_cfg(p))
+        assert not any("application-list" in m for m in msgs)
+
+    def test_deny_without_app_list_no_warn(self):
+        msgs = self._warn_msgs(_cfg(_pol("block-all", action="deny")))
+        assert not any("application-list" in m for m in msgs)
+
+
 # ── Full analyze() integration ─────────────────────────────────────────────────
 
 class TestAnalyze:
