@@ -1,8 +1,8 @@
 from fwforge.emit import fortios as emit_fortios
 from fwforge.model import (
-    Address, AddressGroup, BgpConfig, FirewallConfig, Interface, IpsSensor,
-    OspfArea, OspfConfig, Policy, Service, ServiceGroup, Vip, VpnPhase1,
-    VpnPhase2,
+    Address, AddressGroup, BgpConfig, FirewallConfig, Interface, IpPool,
+    IpsSensor, NatRule, OspfArea, OspfConfig, Policy, Service, ServiceGroup,
+    Vip, VpnPhase1, VpnPhase2,
 )
 from fwforge.report import Report
 from fwforge.transforms import names as names_tf
@@ -181,3 +181,55 @@ def test_utm_profile_name_max():
     assert names_tf.profile_name_max("8.0") == 47
     assert names_tf.profile_name_max("8.2") == 47
     assert names_tf.profile_name_max("bad") == 35  # fallback
+
+
+def test_central_nat_ippool_in_snat_map_not_policy():
+    """In central NAT mode, ip-pool SNAT goes to central-snat-map, not policy."""
+    cfg = FirewallConfig(vendor="paloalto")
+    cfg.interfaces.append(Interface(name="wan1", ip="203.0.113.2/29"))
+    cfg.interfaces.append(Interface(name="lan1", ip="10.0.0.1/24"))
+    cfg.ippools.append(IpPool(name="pub-pool", start="203.0.113.10",
+                              end="203.0.113.20"))
+    cfg.nats.append(NatRule(kind="ip-pool", pool_name="pub-pool",
+                            real_ifc="trust", mapped_ifc="untrust"))
+    cfg.policies.append(Policy(name="allow-out",
+                                src_zones=["trust"], dst_zones=["untrust"],
+                                src_addrs=["all"], dst_addrs=["all"],
+                                services=["ALL"], action="accept"))
+    report = Report()
+    out = emit_fortios.emit(cfg, report, nat_mode="central")
+
+    # ip-pool rule must appear in central-snat-map
+    assert "config firewall central-snat-map" in out
+    assert "set nat-ippool" in out
+    assert '"pub-pool"' in out
+
+    # policy must NOT have set ippool enable
+    pol_block = out[out.index("config firewall policy"):]
+    assert "set ippool enable" not in pol_block
+    assert "set poolname" not in pol_block
+
+
+def test_policy_nat_mode_ippool_in_policy():
+    """In policy NAT mode, ip-pool SNAT is wired into matching policies."""
+    cfg = FirewallConfig(vendor="paloalto")
+    cfg.interfaces.append(Interface(name="wan1", ip="203.0.113.2/29"))
+    cfg.interfaces.append(Interface(name="lan1", ip="10.0.0.1/24"))
+    cfg.ippools.append(IpPool(name="pub-pool", start="203.0.113.10",
+                              end="203.0.113.20"))
+    cfg.nats.append(NatRule(kind="ip-pool", pool_name="pub-pool",
+                            real_ifc="trust", mapped_ifc="untrust"))
+    cfg.policies.append(Policy(name="allow-out",
+                                src_zones=["trust"], dst_zones=["untrust"],
+                                src_addrs=["all"], dst_addrs=["all"],
+                                services=["ALL"], action="accept"))
+    report = Report()
+    out = emit_fortios.emit(cfg, report, nat_mode="policy")
+
+    # policy block should have set ippool enable + set poolname
+    pol_block = out[out.index("config firewall policy"):]
+    assert "set ippool enable" in pol_block
+    assert '"pub-pool"' in pol_block
+
+    # no central-snat-map (only for dynamic-interface nats in policy mode)
+    assert "config firewall central-snat-map" not in out

@@ -337,14 +337,17 @@ class Emitter:
         return "\n".join(self.out) + "\n"
 
     def central_snat(self):
-        rules = [n for n in self.cfg.nats if n.kind == "dynamic-interface"]
-        if not rules:
+        nat_rules = [n for n in self.cfg.nats if n.kind == "dynamic-interface"]
+        pool_rules = [n for n in self.cfg.nats if n.kind == "ip-pool"
+                      and n.pool_name]
+        all_rules = nat_rules + pool_rules
+        if not all_rules:
             return
         addr_names = {a.name for a in self.cfg.addresses} \
             | {g.name for g in self.cfg.addr_groups}
         self.line()
         self.line("config firewall central-snat-map")
-        for i, n in enumerate(rules, start=1):
+        for i, n in enumerate(all_rules, start=1):
             src = "any" if n.real_ifc == "*" else _intf(self.cfg, n.real_ifc)
             self.line(f"    edit {i}")
             self.line(f"        set srcintf {_q(src)}")
@@ -354,13 +357,19 @@ class Emitter:
             self.line(f"        set orig-addr {_q(orig)}")
             self.line('        set dst-addr "all"')
             self.line("        set nat enable")
+            if n.kind == "ip-pool" and n.pool_name:
+                self.line(f"        set nat-ippool {_q(n.pool_name)}")
             self.line("    next")
         self.line("end")
+        parts = []
+        if nat_rules:
+            parts.append(f"{len(nat_rules)} interface-PAT rule(s)")
+        if pool_rules:
+            parts.append(f"{len(pool_rules)} ip-pool rule(s)")
         self.report.add(
             "info", "nat",
-            f"central NAT: {len(rules)} central-snat-map rule(s) generated "
-            "from the source's NAT intent; firewall policies carry no "
-            "per-policy NAT")
+            f"central NAT: {', '.join(parts)} generated in central-snat-map; "
+            "firewall policies carry no per-policy NAT")
 
     def system(self):
         """Carry device-level settings (hostname / DNS / NTP) from the
@@ -1292,13 +1301,15 @@ class Emitter:
         nat_pairs = set() if self.nat_mode == "central" else {
             (n.real_ifc, n.mapped_ifc) for n in self.cfg.nats
             if n.kind == "dynamic-interface"}
-        # ip-pool SNAT: (srczone, dstzone) -> pool_name; first rule wins
-        pool_nat: dict[tuple, str] = {} if self.nat_mode == "central" else {}
-        for n in self.cfg.nats:
-            if n.kind == "ip-pool" and n.pool_name:
-                key = (n.real_ifc, n.mapped_ifc)
-                if key not in pool_nat:
-                    pool_nat[key] = n.pool_name
+        # ip-pool SNAT: (srczone, dstzone) -> pool_name; first rule wins.
+        # In central NAT mode these live in central-snat-map, not policies.
+        pool_nat: dict[tuple, str] = {}
+        if self.nat_mode != "central":
+            for n in self.cfg.nats:
+                if n.kind == "ip-pool" and n.pool_name:
+                    key = (n.real_ifc, n.mapped_ifc)
+                    if key not in pool_nat:
+                        pool_nat[key] = n.pool_name
         applied_nat = 0
         applied_pool_nat = 0
         fam = self._family_map()
