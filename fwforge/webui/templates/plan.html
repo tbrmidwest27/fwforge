@@ -613,36 +613,80 @@
 <section class="wstep" data-title="Policy Selection">
 <div class="card">
   <h2>Policy Selection</h2>
-  <p class="grid-note">Untick a rule to leave it out of the conversion.
-    {% if meta.policies_truncated %}Showing the first
-    {{ meta.policies|length }} of
-    {{ meta.policies|length + meta.policies_truncated }} policies.{% endif %}</p>
+  <p class="grid-note">Untick a rule to leave it out of the conversion.</p>
+  {% if meta.policies_truncated %}
+  <div class="banner info">Showing the first
+    <strong>{{ meta.policies|length }}</strong> of
+    <strong>{{ meta.policies|length + meta.policies_truncated }}</strong> policies
+    — the remaining {{ meta.policies_truncated }} convert normally but aren&rsquo;t
+    listed here for selection.</div>
+  {% endif %}
   <input type="hidden" name="pol_present" value="1">
-  <div class="searchbar">
-    <input type="text" id="polsearch" placeholder="filter rules…"
-           style="width:260px" oninput="filterPolicies()">
-    <button type="button" class="ghost small" onclick="setAllPolicies(true)">select visible</button>
-    <button type="button" class="ghost small" onclick="setAllPolicies(false)">clear visible</button>
-    <span class="muted" id="polcount"></span>
+
+  <style>
+    /* ---- Policy Selection table ---- */
+    .poltable-wrap { border:1px solid var(--line); border-radius:8px;
+      overflow:auto; max-height:62vh; background:#fff;
+      margin:.25rem 0 .2rem; }
+    .poltable-wrap table { margin:0; }
+    .poltable-wrap thead th { position:sticky; top:0; z-index:2;
+      box-shadow:inset 0 -1px 0 var(--line); white-space:nowrap; }
+    .poltable th.col-keep, .poltable td.col-keep {
+      text-align:center; width:1px; white-space:nowrap; }
+    .poltable td.col-keep input { width:1.05rem; height:1.05rem;
+      accent-color:var(--brand); cursor:pointer; }
+    .poltable td.col-rule { font-weight:600; }
+    .poltable td.addr { font-family:ui-monospace,SFMono-Regular,
+      "SF Mono",Menlo,Consolas,monospace; font-size:.8rem;
+      color:var(--mut); max-width:18rem; }
+    .poltable td.zone { white-space:nowrap; }
+    /* disabled source rules: muted + struck, but still checked/submittable */
+    .poltable tr.pol-dis td.col-rule { text-decoration:line-through;
+      text-decoration-color:var(--mut); }
+    .poltable tr.pol-dis td:not(.col-keep) { opacity:.6; }
+    .poltable tr.pol-dis:hover td:not(.col-keep) { opacity:.8; }
+    .polhead { display:flex; align-items:center; gap:.5rem;
+      flex-wrap:wrap; margin:.2rem 0 .55rem; }
+    .polhead .searchbar { margin:0; flex:1 1 auto; }
+    .polhead .seltools { display:flex; gap:.4rem; align-items:center; }
+  </style>
+
+  <div class="polhead">
+    <div class="searchbar">
+      <input type="text" id="polsearch" placeholder="filter rules by name, zone, address or service…"
+             style="flex:1 1 280px;max-width:380px" oninput="filterPolicies()">
+      <span class="muted" id="polcount"></span>
+    </div>
+    <div class="seltools">
+      <button type="button" class="ghost small" onclick="setAllPolicies(true)">select visible</button>
+      <button type="button" class="ghost small" onclick="setAllPolicies(false)">clear visible</button>
+    </div>
   </div>
-  <table id="poltable">
-    <tr><th></th><th>rule</th>{% if meta.get("vsys") %}<th>vsys</th>{% endif %}<th>from</th><th>to</th><th>source</th>
+
+  <div class="poltable-wrap">
+  <table id="poltable" class="poltable">
+    <thead>
+    <tr><th class="col-keep">keep</th><th>rule</th>{% if meta.get("vsys") %}<th>vsys</th>{% endif %}<th>from</th><th>to</th><th>source</th>
         <th>destination</th><th>service</th><th>action</th></tr>
+    </thead>
+    <tbody>
     {% for p in meta.policies %}
-    <tr data-hay="{{ (p.name ~ ' ' ~ p.get('vsys', '') ~ ' ' ~ p.src ~ ' ' ~ p.dst ~ ' ' ~ p.srcaddr ~ ' ' ~ p.dstaddr ~ ' ' ~ p.service)|lower }}">
-      <td><input type="checkbox" name="pol_keep" value="{{ p.name }}" checked></td>
-      <td><strong>{{ p.name }}</strong>
+    <tr data-hay="{{ (p.name ~ ' ' ~ p.get('vsys', '') ~ ' ' ~ p.src ~ ' ' ~ p.dst ~ ' ' ~ p.srcaddr ~ ' ' ~ p.dstaddr ~ ' ' ~ p.service)|lower }}"{% if p.disabled %} class="pol-dis"{% endif %}>
+      <td class="col-keep"><input type="checkbox" name="pol_keep" value="{{ p.name }}" checked aria-label="keep {{ p.name }}"></td>
+      <td class="col-rule">{{ p.name }}
         {% if p.disabled %}<span class="badge b-info">disabled</span>{% endif %}</td>
       {% if meta.get("vsys") %}<td><span class="badge b-vdom">{{ p.get("vsys", "") }}</span></td>{% endif %}
-      <td>{{ p.src }}</td><td>{{ p.dst }}</td>
-      <td class="muted">{{ p.srcaddr }}</td>
-      <td class="muted">{{ p.dstaddr }}</td>
-      <td class="muted">{{ p.service }}</td>
+      <td class="zone">{{ p.src }}</td><td class="zone">{{ p.dst }}</td>
+      <td class="addr">{{ p.srcaddr }}</td>
+      <td class="addr">{{ p.dstaddr }}</td>
+      <td class="addr">{{ p.service }}</td>
       <td>{% if p.action == "accept" %}<span class="badge b-ok">accept</span>
         {% else %}<span class="badge b-err">deny</span>{% endif %}</td>
     </tr>
     {% endfor %}
+    </tbody>
   </table>
+  </div>
 </div>
 </section>
 
