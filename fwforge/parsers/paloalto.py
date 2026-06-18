@@ -1315,6 +1315,46 @@ class PaloParser:
             sched = r.get("schedule")
             if not (isinstance(sched, str) and sched):
                 sched = ""
+            # source-user: FSSO / AD user/group filtering
+            users = [u for u in _as_list(r.get("source-user"))
+                     if u and u.lower() != "any"]
+            # hip-profiles: endpoint posture check (no FortiOS equivalent
+            # without EMS; preserved in comment for manual follow-up)
+            hip = [h for h in _as_list(r.get("hip-profiles"))
+                   if h and h.lower() != "any"]
+            # tags: PAN organizational labels; carry into comment
+            tags = _as_list(r.get("tag"))
+
+            if users:
+                shown = ", ".join(users[:5]) + (" ..." if len(users) > 5
+                                                else "")
+                comment_bits.append(f"PAN source-user: {shown}")
+                if not self.cfg.meta.get("_warned_fsso"):
+                    self.note(
+                        "warn", "policies",
+                        "rules use PAN source-user filtering — FortiOS "
+                        "requires FSSO (Fortinet Single Sign-On): configure "
+                        "an FSSO agent under 'config user fsso', define AD "
+                        "groups under 'config user group', then add "
+                        "'set groups <name>' to each flagged policy. "
+                        "User filters are preserved in policy comments.", ref)
+                    self.cfg.meta["_warned_fsso"] = True
+            if hip:
+                shown = ", ".join(hip[:3]) + (" ..." if len(hip) > 3 else "")
+                comment_bits.append(f"PAN hip-profiles: {shown}")
+                if not self.cfg.meta.get("_warned_hip"):
+                    self.note(
+                        "warn", "policies",
+                        "rules use PAN HIP profiles (endpoint posture) — "
+                        "FortiOS equivalent is FortiClient EMS: configure "
+                        "EMS connector under 'config endpoint-control fctems', "
+                        "create compliance rules for each HIP profile, then "
+                        "add 'set fsso-groups' / endpoint-control to each "
+                        "flagged policy. HIP profile names in comments.", ref)
+                    self.cfg.meta["_warned_hip"] = True
+            if tags:
+                comment_bits.append(f"PAN tags: {', '.join(tags)}")
+
             if filled_from_apps:
                 how = ("service=application-default"
                        if "application-default" in pan_services
@@ -1355,6 +1395,7 @@ class PaloParser:
                 antivirus=antivirus,
                 ips_sensor=ips_sensor,
                 schedule=sched,
+                src_users=users,
                 source=ref,
             )
             if action not in ("allow", "deny", "drop"):

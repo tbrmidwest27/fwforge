@@ -1568,3 +1568,154 @@ def test_app_filter_resolved_to_fortiguard_category():
         (a for a in cfg.app_lists if "Social.Media" in a.cat_names), None)
     assert social_list is not None, (
         "expected an app-list with Social.Media for block-social filter")
+
+
+# --- source-user / HIP profile / tag handling --------------------------------
+
+_SOURCE_USER_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+<rulebase><security><rules>
+  <entry name="user-restricted">
+    <from><member>trust</member></from>
+    <to><member>untrust</member></to>
+    <source><member>any</member></source>
+    <destination><member>any</member></destination>
+    <source-user>
+      <member>corp\\domain-admins</member>
+      <member>corp\\it-staff</member>
+    </source-user>
+    <service><member>application-default</member></service>
+    <application><member>any</member></application>
+    <action>allow</action>
+  </entry>
+  <entry name="second-user-rule">
+    <from><member>trust</member></from>
+    <to><member>untrust</member></to>
+    <source><member>any</member></source>
+    <destination><member>any</member></destination>
+    <source-user>
+      <member>corp\\devs</member>
+    </source-user>
+    <service><member>any</member></service>
+    <application><member>any</member></application>
+    <action>allow</action>
+  </entry>
+</rules></security></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+_HIP_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+<rulebase><security><rules>
+  <entry name="hip-rule">
+    <from><member>vpn</member></from>
+    <to><member>trust</member></to>
+    <source><member>any</member></source>
+    <destination><member>any</member></destination>
+    <hip-profiles>
+      <member>compliant-windows</member>
+      <member>patched-endpoint</member>
+    </hip-profiles>
+    <service><member>any</member></service>
+    <application><member>any</member></application>
+    <action>allow</action>
+  </entry>
+</rules></security></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+_TAG_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+<rulebase><security><rules>
+  <entry name="tagged-rule">
+    <from><member>trust</member></from>
+    <to><member>untrust</member></to>
+    <source><member>any</member></source>
+    <destination><member>any</member></destination>
+    <tag>
+      <member>change-123</member>
+      <member>team-security</member>
+    </tag>
+    <service><member>any</member></service>
+    <application><member>any</member></application>
+    <action>deny</action>
+  </entry>
+</rules></security></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+
+def test_source_user_preserved_in_comment():
+    """source-user entries appear in policy comment and FSSO warning is emitted."""
+    cfg = paloalto.parse(_SOURCE_USER_CFG, "su.xml")
+    findings = cfg.meta["findings"]
+
+    # users preserved in comments
+    pol = next(p for p in cfg.policies if p.name == "user-restricted")
+    assert pol.comment and "source-user" in pol.comment.lower()
+    assert "domain-admins" in pol.comment
+
+    # src_users populated
+    assert "corp\\domain-admins" in pol.src_users
+    assert "corp\\it-staff" in pol.src_users
+
+    # FSSO warning emitted exactly once (two rules, one warning)
+    fsso_warns = [f for f in findings
+                  if f[0] == "warn" and "fsso" in f[2].lower()]
+    assert len(fsso_warns) == 1, (
+        f"expected exactly one FSSO warning, got {len(fsso_warns)}")
+
+
+def test_source_user_any_ignored():
+    """source-user=any produces no FSSO warning and empty src_users."""
+    xml = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+<rulebase><security><rules>
+  <entry name="open-rule">
+    <from><member>trust</member></from>
+    <to><member>untrust</member></to>
+    <source><member>any</member></source>
+    <destination><member>any</member></destination>
+    <source-user><member>any</member></source-user>
+    <service><member>any</member></service>
+    <application><member>any</member></application>
+    <action>allow</action>
+  </entry>
+</rules></security></rulebase>
+</entry></vsys></entry></devices></config>"""
+    cfg = paloalto.parse(xml, "su_any.xml")
+    pol = cfg.policies[0]
+    assert pol.src_users == []
+    fsso_warns = [f for f in cfg.meta["findings"]
+                  if "fsso" in f[2].lower()]
+    assert fsso_warns == []
+
+
+def test_hip_profiles_preserved_in_comment():
+    """hip-profiles appear in policy comment and EMS warning is emitted."""
+    cfg = paloalto.parse(_HIP_CFG, "hip.xml")
+    findings = cfg.meta["findings"]
+
+    pol = cfg.policies[0]
+    assert pol.comment and "hip-profiles" in pol.comment.lower()
+    assert "compliant-windows" in pol.comment
+
+    # EMS/HIP warning emitted
+    hip_warns = [f for f in findings
+                 if f[0] == "warn" and "hip" in f[2].lower()
+                 and "ems" in f[2].lower()]
+    assert hip_warns, "expected HIP → EMS warning"
+    # only once
+    assert len(hip_warns) == 1
+
+
+def test_tags_preserved_in_comment():
+    """PAN rule tags appear in the policy comment."""
+    cfg = paloalto.parse(_TAG_CFG, "tag.xml")
+    pol = cfg.policies[0]
+    assert pol.comment and "change-123" in pol.comment
+    assert "team-security" in pol.comment

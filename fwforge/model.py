@@ -197,6 +197,7 @@ class Policy:
     antivirus: str = ""  # FortiOS antivirus profile (PAN virus/antivirus)
     ips_sensor: str = ""  # FortiOS IPS sensor (PAN anti-spyware/vulnerability)
     schedule: str = ""  # FortiOS schedule name; "" = "always"
+    src_users: list[str] = field(default_factory=list)  # PAN source-user (FSSO)
     family: int = 0  # 0 = derive from addresses, 4, or 6
     source: SourceRef | None = None
 
