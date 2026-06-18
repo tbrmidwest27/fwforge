@@ -264,6 +264,24 @@ class Emitter:
         self.device_system = device_system  # emit hostname/DNS/NTP
         self.out: list[str] = []
         self._emitted_zones: set[str] = set()  # populated by zones()
+        self._truncated: list[tuple[str, str]] = []  # (original, truncated)
+
+    @property
+    def _max_name(self) -> int:
+        """Max object-name length for the target FortiOS version (47 on 8.0+, 35 earlier)."""
+        try:
+            major = int(str(self.target).split(".")[0])
+        except (ValueError, IndexError):
+            major = 7
+        return 47 if major >= 8 else 35
+
+    def _safe_name(self, name: str) -> str:
+        limit = self._max_name
+        if len(name) <= limit:
+            return name
+        trunc = name[:limit]
+        self._truncated.append((name, trunc))
+        return trunc
 
     def line(self, s: str = ""):
         self.out.append(s)
@@ -305,6 +323,15 @@ class Emitter:
         self.bgp()
         self.ospf()
         self.policies()
+        if self._truncated:
+            seen = set()
+            for orig, trunc in self._truncated:
+                if orig not in seen:
+                    seen.add(orig)
+                    self.report.add(
+                        "warn", "naming",
+                        f"Name truncated to {self._max_name} chars "
+                        f"(FortiOS {self.target}): '{orig}' → '{trunc}'")
         return "\n".join(self.out) + "\n"
 
     def central_snat(self):
@@ -679,7 +706,7 @@ class Emitter:
         sig_total = 0
         for al in self.cfg.app_lists:
             sig_total += len(al.applications)
-            self.line(f"    edit {_q(al.name)}")
+            self.line(f"    edit {_q(self._safe_name(al.name))}")
             self.line("        set other-application-action block")
             if al.apps:
                 self.line("        set comment "
@@ -735,7 +762,7 @@ class Emitter:
                 self.line(f"    edit {n}")
                 # urlfilter is referenced by numeric id, so the name is
                 # cosmetic; clamp to a universally-safe length
-                self.line(f"        set name {_q((wf.name + '-urls')[:35])}")
+                self.line(f"        set name {_q((wf.name + '-urls')[:self._max_name])}")
                 self.line("        config entries")
                 for j, (url, utype, action) in enumerate(wf.urls, start=1):
                     self.line(f"            edit {j}")
@@ -749,7 +776,7 @@ class Emitter:
         self.line()
         self.line("config webfilter profile")
         for wf in self.cfg.webfilters:
-            self.line(f"    edit {_q(wf.name)}")
+            self.line(f"    edit {_q(self._safe_name(wf.name))}")
             if wf.comment:
                 self.line(f"        set comment {_q(wf.comment[:255])}")
             if wf.filters:
@@ -787,7 +814,7 @@ class Emitter:
         self.line()
         self.line("config file-filter profile")
         for ff in self.cfg.file_filters:
-            self.line(f"    edit {_q(ff.name)}")
+            self.line(f"    edit {_q(self._safe_name(ff.name))}")
             if ff.comment:
                 self.line(f"        set comment {_q(ff.comment[:255])}")
             self.line("        config rules")
@@ -818,7 +845,7 @@ class Emitter:
         self.line("config antivirus profile")
         sandboxed = 0
         for av in self.cfg.av_profiles:
-            self.line(f"    edit {_q(av.name)}")
+            self.line(f"    edit {_q(self._safe_name(av.name))}")
             if av.comment:
                 self.line(f"        set comment {_q(av.comment[:255])}")
             if av.sandbox:               # PAN WildFire -> FortiSandbox
@@ -852,7 +879,7 @@ class Emitter:
         self.line()
         self.line("config ips sensor")
         for s in self.cfg.ips_sensors:
-            self.line(f"    edit {_q(s.name)}")
+            self.line(f"    edit {_q(self._safe_name(s.name))}")
             if s.comment:
                 self.line(f"        set comment {_q(s.comment[:255])}")
             self.line("        config entries")
@@ -1287,17 +1314,17 @@ class Emitter:
                     self.line('        set ssl-ssh-profile '
                               '"certificate-inspection"')
                 if p.app_list:
-                    self.line(f"        set application-list {_q(p.app_list)}")
+                    self.line(f"        set application-list {_q(self._safe_name(p.app_list))}")
                 if p.antivirus:
-                    self.line(f"        set av-profile {_q(p.antivirus)}")
+                    self.line(f"        set av-profile {_q(self._safe_name(p.antivirus))}")
                 if p.ips_sensor:
-                    self.line(f"        set ips-sensor {_q(p.ips_sensor)}")
+                    self.line(f"        set ips-sensor {_q(self._safe_name(p.ips_sensor))}")
                 if p.webfilter:
                     self.line("        set webfilter-profile "
-                              f"{_q(p.webfilter)}")
+                              f"{_q(self._safe_name(p.webfilter))}")
                 if p.file_filter:
                     self.line("        set file-filter-profile "
-                              f"{_q(p.file_filter)}")
+                              f"{_q(self._safe_name(p.file_filter))}")
             nat_hit = any(
                 (sz, dz) in nat_pairs or ("*", dz) in nat_pairs
                 for sz in (p.src_zones or [])

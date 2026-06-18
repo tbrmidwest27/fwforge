@@ -20,7 +20,17 @@ RESERVED = {"all", "ALL", "ALL_ICMP", "always", "none", "ANY", "any"}
 OBJ_MAX = 79
 POLICY_MAX = 35
 INTF_MAX = 15  # FortiOS rejects interface names longer than this
-PROFILE_MAX = 35  # FortiOS UTM profile / IPS sensor name limit
+PROFILE_MAX = 35     # FortiOS UTM profile / IPS sensor name limit (< 8.0)
+PROFILE_MAX_V8 = 47  # increased in FortiOS 8.0+
+
+
+def profile_name_max(target: str) -> int:
+    """Return the profile-name character limit for a given FortiOS target version."""
+    try:
+        major = int(str(target).split(".")[0])
+    except (ValueError, IndexError):
+        major = 7
+    return PROFILE_MAX_V8 if major >= 8 else PROFILE_MAX
 ZONE_MAX = 35  # FortiOS system zone name limit
 
 
@@ -206,11 +216,14 @@ def sanitize_interfaces(cfg: FirewallConfig, report) -> dict[str, str]:
     return renames
 
 
-def sanitize_profiles(cfg: FirewallConfig, report) -> None:
-    """Clamp UTM profile + IPS sensor names to FortiOS's 35-char limit (a
-    longer `edit` is rejected with -1, cascading the body to -61) and remap
-    the policy fields that reference them. Each profile type is its own
-    FortiOS namespace, so each gets its own taken-set."""
+def sanitize_profiles(cfg: FirewallConfig, report,
+                      max_len: int = PROFILE_MAX) -> None:
+    """Clamp UTM profile + IPS sensor names to the FortiOS name limit and
+    remap the policy fields that reference them. Each profile type is its own
+    FortiOS namespace, so each gets its own taken-set.
+
+    Pass max_len=profile_name_max(target) to get the version-aware limit
+    (47 chars on FortiOS 8.0+, 35 on earlier releases)."""
     specs = [
         (cfg.ips_sensors, "ips_sensor", "IPS sensor"),
         (cfg.app_lists, "app_list", "application list"),
@@ -222,12 +235,12 @@ def sanitize_profiles(cfg: FirewallConfig, report) -> None:
         taken: set[str] = set()
         renames: dict[str, str] = {}
         for obj in coll:
-            new = sanitize(obj.name, PROFILE_MAX, taken)
+            new = sanitize(obj.name, max_len, taken)
             if new != obj.name:
                 renames[obj.name] = new
                 report.add("info", "names",
                            f"renamed {label} '{obj.name}' -> '{new}' "
-                           f"(FortiOS {PROFILE_MAX}-char limit)",
+                           f"(FortiOS {max_len}-char limit)",
                            getattr(obj, "source", None))
                 obj.name = new
             taken.add(obj.name)

@@ -117,14 +117,35 @@ def test_predefined_service_name_collisions_renamed():
 
 
 def test_utm_profile_names_clamped_to_35():
-    # FortiOS IPS-sensor / UTM profile names cap at 35 chars; a longer edit
-    # is rejected (-1). Clamp + remap the policy reference.
+    # FortiOS IPS-sensor / UTM profile names cap at 35 chars (< 8.0);
+    # a longer `edit` is rejected (-1). Clamp + remap the policy reference.
     cfg = FirewallConfig(vendor="paloalto")
     long_name = "ips-Jabil-VP-Global-Jabil-Spy-Global"   # 36 chars
     assert len(long_name) == 36
     cfg.ips_sensors.append(IpsSensor(name=long_name))
     cfg.policies.append(Policy(name="p", ips_sensor=long_name))
-    names_tf.sanitize_profiles(cfg, Report())
+    names_tf.sanitize_profiles(cfg, Report())   # default max_len=35
     nm = cfg.ips_sensors[0].name
     assert len(nm) <= 35 and nm != long_name
     assert cfg.policies[0].ips_sensor == nm        # reference remapped
+
+
+def test_utm_profile_names_47_on_forti8():
+    # FortiOS 8.0+ allows 47-char profile names; a 40-char name must survive.
+    cfg = FirewallConfig(vendor="paloalto")
+    name_40 = "ips-Jabil-VP-Global-Jabil-Spy-Global-All"   # 40 chars
+    assert len(name_40) == 40
+    cfg.ips_sensors.append(IpsSensor(name=name_40))
+    cfg.policies.append(Policy(name="p", ips_sensor=name_40))
+    names_tf.sanitize_profiles(cfg, Report(),
+                               max_len=names_tf.profile_name_max("8.0"))
+    assert cfg.ips_sensors[0].name == name_40   # unchanged — fits in 47
+    assert cfg.policies[0].ips_sensor == name_40
+
+
+def test_utm_profile_name_max():
+    assert names_tf.profile_name_max("7.4") == 35
+    assert names_tf.profile_name_max("7.99") == 35
+    assert names_tf.profile_name_max("8.0") == 47
+    assert names_tf.profile_name_max("8.2") == 47
+    assert names_tf.profile_name_max("bad") == 35  # fallback

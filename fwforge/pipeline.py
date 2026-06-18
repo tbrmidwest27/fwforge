@@ -48,7 +48,8 @@ def _cross_one(cfg: FirewallConfig, mapping, target, tuning, nat_mode,
     portmap.apply_authoring(cfg, authoring, report)
     renames = names_tf.apply(cfg, report)
     names_tf.sanitize_interfaces(cfg, report)
-    names_tf.sanitize_profiles(cfg, report)
+    names_tf.sanitize_profiles(cfg, report,
+                               max_len=names_tf.profile_name_max(target))
     limits.validate_group_nesting(cfg, report)
     routes_tf.infer_dst_zones(cfg, report)
     if tuning and tuning.any():
