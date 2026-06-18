@@ -11,9 +11,25 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 _USER_FILE = Path("~/.fwforge/pan_apps.json").expanduser()
+
+# The advisor must be a single-shot text generator, NOT an agent. Launched from
+# the Flask process's cwd (the fwforge repo), `claude -p` otherwise boots full
+# Claude Code: it loads the project CLAUDE.md / .claude agents / memory, reads
+# git status, and "helpfully" tries to review the repo instead of summarizing
+# the data we hand it. This system prompt strips the agent identity; we also
+# run it in a neutral cwd and load only user settings (see _run_claude).
+_ADVISOR_SYSTEM = (
+    "You are a single-shot technical writing assistant for a firewall "
+    "configuration converter. Produce ONLY the text the user's message asks "
+    "for, derived solely from the information given in that message. Do not "
+    "use any tools, do not read or reference any files, repository, git "
+    "state, or codebase, and do not ask clarifying questions — answer "
+    "directly."
+)
 
 _FORTIGUARD_CATS = (
     "P2P, VoIP, Video/Audio, Proxy, Remote.Access, Game, General.Interest, "
@@ -27,13 +43,29 @@ def _run_claude(prompt: str, timeout: int = 90) -> str:
     exe = shutil.which("claude") or "claude"
     try:
         result = subprocess.run(
-            [exe, "-p", prompt, "--output-format", "text"],
+            [exe, "-p", "--output-format", "text",
+             # replace the agentic system prompt so it can't act as a repo
+             # reviewer; drop the dynamic cwd/memory/git-status sections too
+             "--system-prompt", _ADVISOR_SYSTEM,
+             "--exclude-dynamic-system-prompt-sections",
+             # load only user-level settings, never this project's .claude
+             # agents/settings
+             "--setting-sources", "user"],
+            # the prompt goes on STDIN, never argv: a large prompt (e.g. the
+            # App-ID gap analyzer's 60-finding payload) blows past cmd.exe's
+            # 8191-char command-line limit -> "The command line is too long."
+            # claude -p reads the prompt from stdin when no positional arg is
+            # given, which has no length limit.
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=timeout,
+            # neutral cwd: don't inherit the fwforge repo, so no project
+            # CLAUDE.md / memory / git context leaks into the response
+            cwd=tempfile.gettempdir(),
             # shell=True needed on Windows so cmd.exe handles .cmd wrappers;
-            # arguments still quoted correctly by list2cmdline(), and cmd.exe
-            # does not expand metacharacters inside the resulting double-quotes.
+            # the command line is now short (prompt is on stdin), so the
+            # length limit no longer applies.
             shell=(sys.platform == "win32"),
         )
     except subprocess.TimeoutExpired:
