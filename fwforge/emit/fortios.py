@@ -35,6 +35,8 @@ BUILTIN_SERVICES = {
     ("udp", "514", "", None, None): "SYSLOG",
     ("icmp", "", "", 8, None): "PING",
     ("icmp", "", "", None, None): "ALL_ICMP",
+    ("icmp6", "", "", 128, None): "PING6",
+    ("icmp6", "", "", None, None): "ALL_ICMP6",
     ("ip", "", "", None, 47): "GRE",
     ("ip", "", "", None, 50): "ESP",
     ("ip", "", "", None, 51): "AH",
@@ -684,6 +686,10 @@ class Emitter:
                     self.line(f"        set udp-portrange {spec}")
             elif s.protocol == "icmp":
                 self.line("        set protocol ICMP")
+                if s.icmp_type is not None:
+                    self.line(f"        set icmptype {s.icmp_type}")
+            elif s.protocol == "icmp6":
+                self.line("        set protocol ICMP6")
                 if s.icmp_type is not None:
                     self.line(f"        set icmptype {s.icmp_type}")
             elif s.protocol == "ip":

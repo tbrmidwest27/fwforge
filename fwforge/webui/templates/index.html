@@ -49,84 +49,25 @@
 
 <div class="card" id="new">
   <h2>New conversion</h2>
+  <p class="grid-note">Pick your source platform — you'll convert it to
+    FortiGate.</p>
   <div class="tiles">
-    <div class="tile"><div class="t">Cisco ASA</div>
-      <div class="s">running-config &rarr; FortiOS</div></div>
-    <div class="tile"><div class="t">Palo Alto</div>
-      <div class="s">XML or display-set &rarr; FortiOS</div></div>
-    <div class="tile"><div class="t">Juniper SRX</div>
-      <div class="s">curly or set config &rarr; FortiOS</div></div>
-    <div class="tile"><div class="t">pfSense</div>
-      <div class="s">config.xml &rarr; FortiOS</div></div>
-    <div class="tile"><div class="t">FortiOS</div>
-      <div class="s">model / VDOM / version migration</div></div>
+    <a class="tile" href="{{ url_for('new', vendor='cisco-asa') }}">
+      <div class="t">Cisco ASA</div>
+      <div class="s">running-config &rarr; FortiOS</div></a>
+    <a class="tile" href="{{ url_for('new', vendor='paloalto') }}">
+      <div class="t">Palo Alto</div>
+      <div class="s">XML or display-set &rarr; FortiOS</div></a>
+    <a class="tile" href="{{ url_for('new', vendor='juniper-srx') }}">
+      <div class="t">Juniper SRX</div>
+      <div class="s">curly or set config &rarr; FortiOS</div></a>
+    <a class="tile" href="{{ url_for('new', vendor='pfsense') }}">
+      <div class="t">pfSense</div>
+      <div class="s">config.xml &rarr; FortiOS</div></a>
+    <a class="tile" href="{{ url_for('new', vendor='fortios') }}">
+      <div class="t">FortiOS</div>
+      <div class="s">model / VDOM / version migration</div></a>
   </div>
-  <p class="grid-note">Load a config — the source vendor is detected
-    automatically.</p>
-  <div class="row">
-    <div style="flex:1 1 300px">
-      <form method="post" action="{{ url_for('load') }}"
-            enctype="multipart/form-data">
-        <p><label>source config<br>
-          <input type="file" name="config" id="cfg-file"></label></p>
-        <p id="cfg-detect" class="grid-note" style="margin-top:-2px;min-height:1.2em"></p>
-        <p><label>destination backup (optional)<br>
-          <input type="file" name="target_config"></label></p>
-        <button>Upload &amp; analyze</button>
-      </form>
-    </div>
-    <div style="flex:1 1 300px">
-      <form method="post" action="{{ url_for('load') }}">
-        <p><input type="text" name="path" style="width:100%"
-                  placeholder="...or a path on this machine, e.g. C:\backups\fw.conf"></p>
-        <p><input type="text" name="target_path" style="width:100%"
-                  placeholder="destination backup path (optional)"></p>
-        <button class="ghost">Load from path</button>
-      </form>
-    </div>
-  </div>
-  <p class="grid-note">Destination backup: any config backup taken from
-    the TARGET device — a factory-fresh one is ideal. It supplies the
-    authoritative platform code, the real port inventory, and the
-    device identity (hostname) — the output is named for and carries
-    the destination's identity (FortiGate&rarr;FortiGate only). Its
-    policies and objects are never merged in.</p>
 </div>
 
-<script>
-// Live vendor detection on the upload page: as soon as a file is chosen, send
-// its first chunk to /detect (the real parser detector) and show the result,
-// so you know it was recognized before committing to the wizard.
-(function () {
-  var inp = document.getElementById("cfg-file");
-  var out = document.getElementById("cfg-detect");
-  if (!inp || !out) return;
-  inp.addEventListener("change", function () {
-    var f = inp.files && inp.files[0];
-    if (!f) { out.textContent = ""; out.style.color = ""; return; }
-    out.style.color = ""; out.textContent = "detecting…";
-    var reader = new FileReader();
-    reader.onload = function () {
-      var fd = new FormData();
-      fd.append("head", reader.result);
-      fetch("/detect", { method: "POST", body: fd })
-        .then(function (r) { return r.json(); })
-        .then(function (j) {
-          if (j.vendor && j.vendor !== "unknown") {
-            out.innerHTML = "detected: <strong>" + j.label +
-              "</strong> (" + j.confidence + ")";
-            out.style.color = "#0a7d28";
-          } else {
-            out.innerHTML = "<strong>vendor not recognized</strong> — " +
-              "check the file, or load it anyway";
-            out.style.color = "#a01010";
-          }
-        })
-        .catch(function () { out.textContent = ""; });
-    };
-    // 64 KB of head is plenty for every detector and keeps the post tiny
-    reader.readAsText(f.slice(0, 65536));
-  });
-})();
-</script>
 {% endblock %}

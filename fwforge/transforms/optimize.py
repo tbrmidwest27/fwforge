@@ -523,7 +523,7 @@ def analyze(cfg: FirewallConfig, report) -> None:
         by_value.setdefault(("addr", a.type, a.value), []).append(a.name)
     for s in cfg.services:
         by_value.setdefault(("svc",) + s.signature(), []).append(s.name)
-    for key, names in sorted(by_value.items()):
+    for key, names in sorted(by_value.items(), key=lambda kv: str(kv[0])):
         if len(names) > 1:
             kind = "address" if key[0] == "addr" else "service"
             report.add(

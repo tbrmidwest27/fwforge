@@ -2134,3 +2134,65 @@ def test_tcp_udp_same_port_emitted_once():
     if 'edit "custom-dns"' in conf:
         assert "set tcp-portrange 5353" in conf
         assert "set udp-portrange 5353" in conf
+
+
+# ---------------------------------------------------------------------------
+# ICMPv6 service objects
+# ---------------------------------------------------------------------------
+
+_SVC_PROTO6_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+  <service>
+    <entry name="ping6">
+      <protocol><icmp6><type>128</type><code>0</code></icmp6></protocol>
+      <description>ICMPv6 Echo Request</description>
+    </entry>
+    <entry name="mld-report">
+      <protocol><icmp6><type>143</type></icmp6></protocol>
+      <description>MLDv2 Membership Report</description>
+    </entry>
+    <entry name="all-icmpv6">
+      <protocol><icmp6></icmp6></protocol>
+    </entry>
+  </service>
+  <rulebase><security><rules/></security></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+
+def test_icmpv6_service_parsed():
+    """PAN ICMPv6 service objects convert to protocol=icmp6 with optional icmptype."""
+    cfg = paloalto.parse(_SVC_PROTO6_CFG, "svc6.xml")
+    svc = {s.name: s for s in cfg.services}
+
+    assert "ping6" in svc
+    assert svc["ping6"].protocol == "icmp6"
+    assert svc["ping6"].icmp_type == 128
+    assert svc["ping6"].comment == "ICMPv6 Echo Request"
+
+    assert "mld-report" in svc
+    assert svc["mld-report"].protocol == "icmp6"
+    assert svc["mld-report"].icmp_type == 143
+
+    assert "all-icmpv6" in svc
+    assert svc["all-icmpv6"].protocol == "icmp6"
+    assert svc["all-icmpv6"].icmp_type is None
+
+
+def test_icmpv6_service_emitted():
+    """ICMPv6 type 128 (Echo Request) maps to FortiOS builtin PING6;
+    type-less ICMPv6 maps to ALL_ICMP6; non-builtin types get custom objects."""
+    from fwforge import pipeline
+    res = pipeline.run_cross(_SVC_PROTO6_CFG, "paloalto", "svc6.xml", {})
+    conf = res.out_text
+
+    # ping6 (ICMPv6 type 128) → FortiOS builtin PING6 — no custom edit
+    assert 'edit "ping6"' not in conf
+    # all-icmpv6 (no type) → FortiOS builtin ALL_ICMP6 — no custom edit
+    assert 'edit "all-icmpv6"' not in conf
+
+    # mld-report (ICMPv6 type 143) has no built-in → emitted as custom
+    assert 'edit "mld-report"' in conf
+    assert "set protocol ICMP6" in conf
+    assert "set icmptype 143" in conf

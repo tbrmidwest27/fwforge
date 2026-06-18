@@ -793,8 +793,9 @@ def test_detect_endpoint_recognizes_and_handles_unknown(client):
     assert j3["vendor"] == ""
 
 
-def test_index_ships_live_detection(client):
-    page = client.get("/").data.decode()
+def test_new_page_ships_live_detection(client):
+    """The /new upload page has the file input and live-detection elements."""
+    page = client.get("/new/paloalto").data.decode()
     assert 'id="cfg-file"' in page        # the file input the readout hooks
     assert 'id="cfg-detect"' in page      # the live readout element
     assert "/detect" in page              # the fetch target
