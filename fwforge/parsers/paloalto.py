@@ -534,6 +534,7 @@ class PaloParser:
         self.parse_zones(vsys.get("zone"))
         self.parse_addresses(vsys.get("address"))
         self.parse_addr_groups(vsys.get("address-group"))
+        self.parse_regions(vsys.get("region"))
         self.parse_services(vsys.get("service"))
         self.parse_svc_groups(vsys.get("service-group"))
         self.parse_applications(vsys)
@@ -980,6 +981,12 @@ class PaloParser:
                     name=name, type="wildcard",
                     value=str(node["ip-wildcard"]),
                     comment=comment, source=ref))
+            elif "region" in node:
+                # PAN country-based geo address → FortiOS geography type
+                country = str(node["region"]).strip().upper()
+                self.cfg.addresses.append(Address(
+                    name=name, type="geography",
+                    value=country, comment=comment, source=ref))
             else:
                 self.note("warn", "addresses",
                           f"address {name}: unsupported type "
@@ -998,6 +1005,36 @@ class PaloParser:
             members = _as_list(node.get("static"))
             self.cfg.addr_groups.append(AddressGroup(
                 name=name, members=members, source=ref))
+
+    def parse_regions(self, regions_node) -> None:
+        """Parse vsys <region> user-defined region entries.
+
+        PAN user regions are named collections of IP subnets (with optional
+        lat/lon centroid). Policies reference them by name. The natural FortiOS
+        equivalent is an address group whose members are the subnets converted
+        to individual address objects."""
+        for name, node in _entries(regions_node):
+            ref = self.ref(node, f"region {name}")
+            subnets = _as_list(
+                node.get("address") if isinstance(node, dict) else None)
+            if not subnets:
+                self.note("info", "coverage",
+                          f"region '{name}': no subnets — skipped", ref)
+                continue
+            # Create address objects for each subnet that isn't already defined
+            existing_names = {a.name for a in self.cfg.addresses}
+            member_names: list[str] = []
+            for subnet in subnets:
+                addr_name = f"{name}-{subnet.replace('/', '_')}"
+                if addr_name not in existing_names:
+                    self.cfg.addresses.append(Address(
+                        name=addr_name, type="subnet", value=subnet,
+                        comment=f"from region {name}", source=ref))
+                    existing_names.add(addr_name)
+                member_names.append(addr_name)
+            self.cfg.addr_groups.append(AddressGroup(
+                name=name, members=member_names,
+                comment=f"PAN user region", source=ref))
 
     @staticmethod
     def _ports(value: str) -> str:
@@ -2551,7 +2588,7 @@ class PaloParser:
                          # profiles: url-filtering + file-blocking ARE read
                          # (other profile types flagged per-rule)
                          "profiles", "profile-group",
-                         "schedule",
+                         "schedule", "region",
                          # device-group / Panorama mode: these ARE read
                          "pre-rulebase", "post-rulebase", "parent-dg",
                          LINE}

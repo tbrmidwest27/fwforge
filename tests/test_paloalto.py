@@ -1251,3 +1251,87 @@ def test_schedule_missing_falls_back_to_always():
     warns = [f for f in report.findings
              if f.area == "schedule" and "nonexistent-sched" in f.message]
     assert warns, "expected a warning for unresolved schedule reference"
+
+
+# --- Geography / region address tests ----------------------------------------
+
+GEO_ADDR_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <address>
+      <entry name="block-russia">
+        <region>RU</region>
+        <description>Block Russia</description>
+      </entry>
+      <entry name="block-china">
+        <region>CN</region>
+      </entry>
+    </address>
+    <address-group>
+      <entry name="blocked-countries">
+        <static>
+          <member>block-russia</member>
+          <member>block-china</member>
+        </static>
+      </entry>
+    </address-group>
+    <rulebase><security><rules/></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+REGION_VSYS_CFG = """<config version="11.0.0"><devices>
+<entry name="localhost.localdomain">
+  <vsys><entry name="vsys1">
+    <region>
+      <entry name="US-DataCenters">
+        <address>
+          <member>10.1.0.0/16</member>
+          <member>10.2.0.0/16</member>
+        </address>
+      </entry>
+    </region>
+    <rulebase><security><rules/></security></rulebase>
+  </entry></vsys>
+</entry></devices></config>"""
+
+
+def test_geography_address_parsed():
+    """PAN region-type address (country geo) converts to FortiOS type geography."""
+    from fwforge.emit import fortios as emit_fo
+    from fwforge.report import Report
+
+    cfg = paloalto.parse(GEO_ADDR_CFG, "geo.xml")
+    ru = next((a for a in cfg.addresses if a.name == "block-russia"), None)
+    cn = next((a for a in cfg.addresses if a.name == "block-china"), None)
+    assert ru is not None and ru.type == "geography" and ru.value == "RU"
+    assert cn is not None and cn.type == "geography" and cn.value == "CN"
+
+    out = emit_fo.emit(cfg, Report())
+    assert "set type geography" in out
+    assert "set country RU" in out
+    assert "set country CN" in out
+
+    # no "unsupported type" warning for region addresses
+    warns = [f for f in cfg.meta["findings"]
+             if f[0] == "warn" and "unsupported type" in f[2]]
+    assert warns == [], f"unexpected unsupported-type warnings: {warns}"
+
+
+def test_vsys_region_to_addr_group():
+    """vsys <region> user-defined regions convert to address groups."""
+    from fwforge.emit import fortios as emit_fo
+    from fwforge.report import Report
+
+    cfg = paloalto.parse(REGION_VSYS_CFG, "region.xml")
+    grp = next((g for g in cfg.addr_groups if g.name == "US-DataCenters"), None)
+    assert grp is not None, "region entry should become an address group"
+    assert len(grp.members) == 2
+
+    out = emit_fo.emit(cfg, Report())
+    # address group for the region is emitted
+    assert '"US-DataCenters"' in out
+
+    # vsys section 'region' should be consumed (no coverage note)
+    region_notes = [f for f in cfg.meta["findings"]
+                    if "vsys section 'region'" in f[2]]
+    assert region_notes == [], "region section should be consumed, not flagged"

@@ -576,6 +576,9 @@ class Emitter:
                         self.line("        set type wildcard")
                         self.line(f"        set wildcard {ip.strip()} "
                                   f"{mask.strip()}")
+                    elif a.type == "geography":
+                        self.line("        set type geography")
+                        self.line(f"        set country {a.value}")
                 except ValueError:
                     self.report.add("error", "addresses",
                                     f"address '{a.name}': invalid value "
