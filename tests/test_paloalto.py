@@ -1921,3 +1921,90 @@ def test_pbf_emitted_as_router_policy():
     assert 'set input-device "lan1"' in conf
     # disabled rule and discard rule must not appear
     assert "10.0.0.1" not in conf
+
+
+# ---------------------------------------------------------------------------
+# PAN service object ICMP / IP-protocol parsing
+# ---------------------------------------------------------------------------
+
+_SVC_PROTO_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+  <service>
+    <entry name="ping-icmp">
+      <protocol><icmp><type>8</type><code>0</code></icmp></protocol>
+      <description>Echo Request</description>
+    </entry>
+    <entry name="traceroute-icmp">
+      <protocol><icmp><type>11</type></icmp></protocol>
+    </entry>
+    <entry name="gre-tunnel">
+      <protocol><ip><ip-protocol>47</ip-protocol></ip></protocol>
+      <description>GRE encapsulation</description>
+    </entry>
+    <entry name="ah-proto">
+      <protocol><ip><ip-protocol>51</ip-protocol></ip></protocol>
+    </entry>
+    <entry name="web-tcp">
+      <protocol><tcp><port>80</port></tcp></protocol>
+    </entry>
+  </service>
+  <rulebase><security><rules/></security></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+
+def test_icmp_service_parsed():
+    """PAN ICMP service objects convert to protocol=icmp with icmptype."""
+    cfg = paloalto.parse(_SVC_PROTO_CFG, "svc.xml")
+    svc = {s.name: s for s in cfg.services}
+
+    # ping-icmp: type 8
+    assert "ping-icmp" in svc
+    assert svc["ping-icmp"].protocol == "icmp"
+    assert svc["ping-icmp"].icmp_type == 8
+    assert svc["ping-icmp"].comment == "Echo Request"
+
+    # traceroute: type 11, no code
+    assert "traceroute-icmp" in svc
+    assert svc["traceroute-icmp"].protocol == "icmp"
+    assert svc["traceroute-icmp"].icmp_type == 11
+
+
+def test_ip_protocol_service_parsed():
+    """PAN IP-protocol service objects (GRE, AH, ...) convert to protocol=ip."""
+    cfg = paloalto.parse(_SVC_PROTO_CFG, "svc.xml")
+    svc = {s.name: s for s in cfg.services}
+
+    assert "gre-tunnel" in svc
+    assert svc["gre-tunnel"].protocol == "ip"
+    assert svc["gre-tunnel"].proto_number == 47
+    assert svc["gre-tunnel"].comment == "GRE encapsulation"
+
+    assert "ah-proto" in svc
+    assert svc["ah-proto"].protocol == "ip"
+    assert svc["ah-proto"].proto_number == 51
+
+
+def test_icmp_service_emitted():
+    """ICMP and IP-protocol services that match a FortiOS built-in are replaced
+    (ping-icmp → PING, gre-tunnel → GRE); non-builtin types get custom objects."""
+    from fwforge import pipeline
+    res = pipeline.run_cross(_SVC_PROTO_CFG, "paloalto", "svc.xml", {})
+    conf = res.out_text
+
+    # ping-icmp (ICMP type 8) maps to FortiOS builtin PING — no custom edit
+    assert 'edit "ping-icmp"' not in conf
+    # gre-tunnel (IP protocol 47) maps to FortiOS builtin GRE — no custom edit
+    assert 'edit "gre-tunnel"' not in conf
+
+    # traceroute-icmp (ICMP type 11) has no built-in → emitted as custom
+    assert 'edit "traceroute-icmp"' in conf
+    assert "set protocol ICMP" in conf
+    assert "set icmptype 11" in conf
+
+    # ah-proto (IP protocol 51) maps to FortiOS builtin AH — no custom edit
+    assert 'edit "ah-proto"' not in conf
+
+    # web-tcp (tcp/80) maps to FortiOS builtin HTTP — no custom edit
+    assert 'edit "web-tcp"' not in conf

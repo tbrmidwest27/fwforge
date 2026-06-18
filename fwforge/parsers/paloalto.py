@@ -1053,6 +1053,8 @@ class PaloParser:
             proto_node = node.get("protocol", {})
             if not isinstance(proto_node, dict):
                 continue
+            desc = node.get("description")
+            comment = str(desc) if isinstance(desc, str) else None
             made = False
             for proto in ("tcp", "udp"):
                 p = proto_node.get(proto)
@@ -1062,15 +1064,49 @@ class PaloParser:
                     name=name, protocol=proto,
                     dst_ports=self._ports(p.get("port", "")),
                     src_ports=self._ports(p.get("source-port", "")),
-                    source=ref)
-                desc = node.get("description")
-                if isinstance(desc, str):
-                    svc.comment = desc
+                    comment=comment, source=ref)
                 self.cfg.services.append(svc)
                 made = True
             if not made:
+                # ICMP / ICMPv6
+                for icmp_key, fg_proto in (("icmp", "icmp"),
+                                           ("icmp6", "icmp6")):
+                    ic = proto_node.get(icmp_key)
+                    if not isinstance(ic, dict):
+                        continue
+                    raw_type = ic.get("type")
+                    icmp_type: int | None = None
+                    if raw_type is not None:
+                        try:
+                            icmp_type = int(str(raw_type))
+                        except ValueError:
+                            pass
+                    self.cfg.services.append(Service(
+                        name=name, protocol=fg_proto,
+                        icmp_type=icmp_type,
+                        comment=comment, source=ref))
+                    made = True
+                    break
+            if not made:
+                # Raw IP protocol (GRE, ESP, AH, SCTP=132, ...)
+                ip_p = proto_node.get("ip")
+                if isinstance(ip_p, dict):
+                    raw_num = ip_p.get("ip-protocol")
+                    proto_num: int | None = None
+                    if raw_num is not None:
+                        try:
+                            proto_num = int(str(raw_num))
+                        except ValueError:
+                            pass
+                    self.cfg.services.append(Service(
+                        name=name, protocol="ip",
+                        proto_number=proto_num,
+                        comment=comment, source=ref))
+                    made = True
+            if not made:
                 self.note("warn", "services",
-                          f"service {name}: no tcp/udp definition — skipped",
+                          f"service {name}: no convertible protocol "
+                          "definition (tcp/udp/icmp/ip) — skipped",
                           ref)
 
     def parse_svc_groups(self, groups):
