@@ -1,7 +1,9 @@
 from pathlib import Path
+import json
 
 from fwforge import cli
 from fwforge.parsers import pan_appid, paloalto
+from fwforge.parsers.pan_app_export import _parse_port_member, import_applipedia
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -316,3 +318,95 @@ def test_service_any_apps_become_port_group():
     msgs = [m for _, _, m, _ in cfg.meta["findings"]]
     assert any("service=any" in m and "port-based service" in m
                for m in msgs)
+
+
+# ---------------------------------------------------------------------------
+# pan_apps.json data layer: crosswalk, import, new entries
+# ---------------------------------------------------------------------------
+
+def test_crosswalk_fallback(monkeypatch):
+    """Apps with PAN category but no fortiguard_category resolve via crosswalk."""
+    fake = {
+        "xwalk-test-app": {
+            "ports": [{"proto": "tcp", "ports": "9999"}],
+            "category": "collaboration",
+            "subcategory": "web-conferencing",
+            "risk": 4, "transport": False,
+            "builtin_services": [], "fortiguard_category": None, "sig_aliases": [],
+        }
+    }
+    monkeypatch.setitem(pan_appid._DB, "xwalk-test-app", fake["xwalk-test-app"])
+    cats, ids, transport, unmapped = pan_appid.map_apps(["xwalk-test-app"])
+    assert cats == ["Collaboration"]
+    assert ids == [28]
+    assert unmapped == []
+
+
+def test_parse_port_member():
+    assert _parse_port_member("tcp/80") == {"proto": "tcp", "ports": "80"}
+    assert _parse_port_member("tcp/8080-8090") == {"proto": "tcp", "ports": "8080-8090"}
+    assert _parse_port_member("udp/1812 1813") == {"proto": "udp", "ports": "1812 1813"}
+    assert _parse_port_member("tcp/dynamic") is None
+    assert _parse_port_member("icmp") == {"proto": "icmp", "ports": ""}
+    assert _parse_port_member("icmp/8") == {"proto": "icmp", "ports": ""}
+    assert _parse_port_member("") is None
+
+
+def test_applipedia_import(tmp_path, monkeypatch):
+    """import_applipedia parses PAN XML and writes to user override file."""
+    xml = """<response status="success"><result><application>
+      <entry name="custom-erp">
+        <default><port>
+          <member>tcp/8443</member><member>tcp/9000-9010</member>
+        </port></default>
+        <category>business-systems</category>
+        <subcategory>saas</subcategory>
+        <risk>3</risk>
+        <technology>client-server</technology>
+      </entry>
+      <entry name="custom-voice">
+        <default><port><member>udp/5060</member></port></default>
+        <category>collaboration</category>
+        <subcategory>voice-and-video</subcategory>
+        <risk>3</risk>
+      </entry>
+    </application></result></response>"""
+    xml_file = tmp_path / "apps.xml"
+    xml_file.write_text(xml, encoding="utf-8")
+
+    user_file = tmp_path / "pan_apps.json"
+    import fwforge.parsers.pan_app_export as exp_mod
+    monkeypatch.setattr(exp_mod, "_USER_FILE", user_file)
+
+    n = import_applipedia(xml_file)
+    assert n == 2
+
+    data = json.loads(user_file.read_text(encoding="utf-8"))
+    erp = data["apps"]["custom-erp"]
+    # same-proto members are combined into one space-separated ports string
+    assert len(erp["ports"]) == 1
+    assert erp["ports"][0]["proto"] == "tcp"
+    assert "8443" in erp["ports"][0]["ports"]
+    assert "9000-9010" in erp["ports"][0]["ports"]
+    assert erp["category"] == "business-systems"
+    assert erp["subcategory"] == "saas"
+    assert erp["risk"] == 3
+
+    voice = data["apps"]["custom-voice"]
+    assert voice["ports"] == [{"proto": "udp", "ports": "5060"}]
+
+
+def test_new_db_entries():
+    """New enterprise apps added to pan_apps.json resolve correctly."""
+    assert pan_appid.default_ports("mongodb") == [("tcp", "27017")]
+    assert pan_appid.default_ports("redis") == [("tcp", "6379")]
+    assert pan_appid.default_ports("elasticsearch") == [("tcp", "9200 9300")]
+    assert pan_appid.default_ports("cassandra") == [("tcp", "9042")]
+    assert pan_appid.default_ports("wireguard") == [("udp", "51820")]
+    assert pan_appid.default_ports("ms-teams") == [("tcp", "443"), ("udp", "3478-3481")]
+    cats, _, _, unmapped = pan_appid.map_apps(
+        ["mongodb", "elasticsearch", "zoom", "ms-teams", "wireguard"])
+    assert unmapped == []
+    assert "Business" in cats
+    assert "Collaboration" in cats
+    assert "Network.Service" in cats

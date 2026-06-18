@@ -154,6 +154,20 @@ def cmd_schema(args) -> int:
     return 0
 
 
+def cmd_applipedia(args) -> int:
+    if args.action == "import":
+        from .parsers.pan_app_export import import_applipedia
+        try:
+            n = import_applipedia(args.file)
+        except (OSError, ValueError) as e:
+            print(f"applipedia import failed: {e}", file=sys.stderr)
+            return 2
+        user_file = Path("~/.fwforge/pan_apps.json").expanduser()
+        print(f"Imported {n} apps -> {user_file}")
+        print("Restart fwforge (or re-import a new conversion) to pick up the new data.")
+    return 0
+
+
 def cmd_appdb(args) -> int:
     if args.list or not args.host:
         cached = appdb_mod.list_cached()
@@ -577,6 +591,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--list", action="store_true",
                    help="list cached schemas")
     p.set_defaults(fn=cmd_schema)
+
+    p = sub.add_parser(
+        "applipedia",
+        help="import PAN App-ID data from a device export into the user database")
+    p.add_argument("action", choices=["import"],
+                   help="action to perform (currently: import)")
+    p.add_argument("file",
+                   help="PAN 'show application all' XML export file")
+    p.set_defaults(fn=cmd_applipedia)
 
     p = sub.add_parser(
         "app-db",
