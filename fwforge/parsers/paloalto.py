@@ -1056,17 +1056,57 @@ class PaloParser:
             desc = node.get("description")
             comment = str(desc) if isinstance(desc, str) else None
             made = False
-            for proto in ("tcp", "udp"):
-                p = proto_node.get(proto)
-                if not isinstance(p, dict):
-                    continue
-                svc = Service(
-                    name=name, protocol=proto,
-                    dst_ports=self._ports(p.get("port", "")),
-                    src_ports=self._ports(p.get("source-port", "")),
-                    comment=comment, source=ref)
-                self.cfg.services.append(svc)
+            tcp_p = proto_node.get("tcp")
+            udp_p = proto_node.get("udp")
+            if isinstance(tcp_p, dict) and isinstance(udp_p, dict):
+                # Both TCP and UDP defined on the same service: merge into a
+                # single tcp/udp Service so FortiOS doesn't see two edit blocks
+                # with the same name (the second overwrites the first).
+                tcp_dst = self._ports(tcp_p.get("port", ""))
+                udp_dst = self._ports(udp_p.get("port", ""))
+                if tcp_dst == udp_dst:
+                    # Same ports → clean tcp/udp merge
+                    self.cfg.services.append(Service(
+                        name=name, protocol="tcp/udp",
+                        dst_ports=tcp_dst,
+                        src_ports=self._ports(tcp_p.get("source-port", "")),
+                        comment=comment, source=ref))
+                else:
+                    # Different port ranges → emit one each with mangled names
+                    self.cfg.services.append(Service(
+                        name=f"{name}-tcp", protocol="tcp",
+                        dst_ports=tcp_dst,
+                        src_ports=self._ports(tcp_p.get("source-port", "")),
+                        comment=comment, source=ref))
+                    self.cfg.services.append(Service(
+                        name=f"{name}-udp", protocol="udp",
+                        dst_ports=udp_dst,
+                        src_ports=self._ports(udp_p.get("source-port", "")),
+                        comment=comment, source=ref))
+                    # Synthesize a group so policy references to "name" still work
+                    from ..model import ServiceGroup
+                    self.cfg.svc_groups.append(ServiceGroup(
+                        name=name,
+                        members=[f"{name}-tcp", f"{name}-udp"],
+                        comment=comment, source=ref))
+                    self.note("info", "services",
+                              f"service '{name}': TCP ({tcp_dst}) and UDP "
+                              f"({udp_dst}) ports differ — split into "
+                              f"'{name}-tcp'/'{name}-udp' + group '{name}'",
+                              ref)
                 made = True
+            if not made:
+                for proto in ("tcp", "udp"):
+                    p = proto_node.get(proto)
+                    if not isinstance(p, dict):
+                        continue
+                    svc = Service(
+                        name=name, protocol=proto,
+                        dst_ports=self._ports(p.get("port", "")),
+                        src_ports=self._ports(p.get("source-port", "")),
+                        comment=comment, source=ref)
+                    self.cfg.services.append(svc)
+                    made = True
             if not made:
                 # ICMP / ICMPv6
                 for icmp_key, fg_proto in (("icmp", "icmp"),

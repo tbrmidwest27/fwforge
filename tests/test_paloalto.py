@@ -2071,3 +2071,66 @@ def test_discard_nexthop_becomes_blackhole():
     assert "10.0.0.0" in conf
     # no-install route absent
     assert "172.16.0.0" not in conf
+
+
+# ---------------------------------------------------------------------------
+# Service with both TCP and UDP defined
+# ---------------------------------------------------------------------------
+
+_TCP_UDP_SVC_CFG = """\
+<config version="11.0.0"><devices><entry name="localhost.localdomain">
+<vsys><entry name="vsys1">
+  <service>
+    <entry name="custom-dns">
+      <protocol>
+        <tcp><port>5353</port></tcp>
+        <udp><port>5353</port></udp>
+      </protocol>
+      <description>mDNS on non-standard port</description>
+    </entry>
+    <entry name="split-ports">
+      <protocol>
+        <tcp><port>8080</port></tcp>
+        <udp><port>9090</port></udp>
+      </protocol>
+    </entry>
+  </service>
+  <rulebase><security><rules/></security></rulebase>
+</entry></vsys>
+</entry></devices></config>"""
+
+
+def test_tcp_udp_same_port_merged():
+    """A PAN service with tcp+udp on the SAME port merges to protocol tcp/udp."""
+    cfg = paloalto.parse(_TCP_UDP_SVC_CFG, "svc2.xml")
+    svc = {s.name: s for s in cfg.services}
+    assert "custom-dns" in svc, "single merged service expected"
+    assert svc["custom-dns"].protocol == "tcp/udp"
+    assert svc["custom-dns"].dst_ports == "5353"
+    # no separate tcp / udp objects
+    assert "custom-dns-tcp" not in svc
+    assert "custom-dns-udp" not in svc
+
+
+def test_tcp_udp_different_ports_split():
+    """A PAN service with tcp+udp on DIFFERENT ports creates tcp/udp sub-services
+    and a group so policy references resolve."""
+    cfg = paloalto.parse(_TCP_UDP_SVC_CFG, "svc2.xml")
+    svc = {s.name: s for s in cfg.services}
+    grp = {g.name: g for g in cfg.svc_groups}
+    assert "split-ports-tcp" in svc and svc["split-ports-tcp"].protocol == "tcp"
+    assert "split-ports-udp" in svc and svc["split-ports-udp"].protocol == "udp"
+    assert "split-ports" in grp
+    assert set(grp["split-ports"].members) == {"split-ports-tcp", "split-ports-udp"}
+
+
+def test_tcp_udp_same_port_emitted_once():
+    """The merged tcp/udp service must appear as ONE edit block (not two)."""
+    from fwforge import pipeline
+    res = pipeline.run_cross(_TCP_UDP_SVC_CFG, "paloalto", "svc2.xml", {})
+    conf = res.out_text
+    assert conf.count('edit "custom-dns"') <= 1   # at most once (may become builtin)
+    # the service should have both tcp and udp portrange
+    if 'edit "custom-dns"' in conf:
+        assert "set tcp-portrange 5353" in conf
+        assert "set udp-portrange 5353" in conf
