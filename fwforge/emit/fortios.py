@@ -1303,8 +1303,11 @@ class Emitter:
                       + " ".join(_q(s) for s in (p.services or ["ALL"])))
             self.line("        set logtraffic "
                       + ("all" if p.log else "disable"))
-            if (p.app_list or p.webfilter or p.file_filter or p.antivirus
-                    or p.ips_sensor):
+            # UTM only fires on accept-action policies; silently skip on deny
+            # (FortiOS would accept the CLI but drop traffic before inspection)
+            if (p.action == "accept"
+                    and (p.app_list or p.webfilter or p.file_filter
+                         or p.antivirus or p.ips_sensor)):
                 self.line("        set utm-status enable")
                 # webfilter / file-filter / antivirus / IPS on HTTPS need an
                 # SSL-inspection profile; the built-in certificate-inspection

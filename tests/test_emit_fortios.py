@@ -116,6 +116,38 @@ def test_predefined_service_name_collisions_renamed():
     assert mg.members == ["VNC_svc"]
 
 
+def test_deny_policy_no_utm_output():
+    """Deny-action policies must NOT emit utm-status or any UTM profile lines.
+    FortiOS accepts the CLI but drops traffic before inspection — the UTM
+    attributes are misleading dead config."""
+    cfg = FirewallConfig(vendor="paloalto")
+    cfg.ips_sensors.append(IpsSensor(name="strict-ips"))
+    p = Policy(name="deny-block", action="deny",
+               src_zones=["trust"], dst_zones=["untrust"],
+               src_addrs=["any"], dst_addrs=["any"], services=["ALL"])
+    p.ips_sensor = "strict-ips"
+    p.app_list = "block-apps"
+    cfg.policies.append(p)
+    out = emit_fortios.emit(cfg, Report())
+    assert "utm-status" not in out
+    assert "ips-sensor" not in out
+    assert "application-list" not in out
+
+
+def test_accept_policy_emits_utm():
+    """Accept-action policies with UTM profiles must emit utm-status."""
+    cfg = FirewallConfig(vendor="paloalto")
+    cfg.ips_sensors.append(IpsSensor(name="strict-ips"))
+    p = Policy(name="allow-web", action="accept",
+               src_zones=["trust"], dst_zones=["untrust"],
+               src_addrs=["any"], dst_addrs=["any"], services=["ALL"])
+    p.ips_sensor = "strict-ips"
+    cfg.policies.append(p)
+    out = emit_fortios.emit(cfg, Report())
+    assert "set utm-status enable" in out
+    assert "set ips-sensor" in out
+
+
 def test_utm_profile_names_clamped_to_35():
     # FortiOS IPS-sensor / UTM profile names cap at 35 chars (< 8.0);
     # a longer `edit` is rejected (-1). Clamp + remap the policy reference.
