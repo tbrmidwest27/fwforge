@@ -264,6 +264,49 @@ def test_bgp_parsed():
                for m in msgs)
 
 
+def test_bgp_local_as_override():
+    # a group/neighbor `local-as` that DIFFERS from the global AS makes the
+    # peer present a different AS — must carry to FortiOS `set local-as`. A
+    # local-as == the global AS is a no-op and must NOT be emitted.
+    text = """set routing-options autonomous-system 64601
+set protocols bgp group SAME type external
+set protocols bgp group SAME local-as 64601
+set protocols bgp group SAME peer-as 65000
+set protocols bgp group SAME neighbor 10.0.0.1
+set protocols bgp group SIP type external
+set protocols bgp group SIP peer-as 65010
+set protocols bgp group SIP neighbor 10.163.1.61 local-as 64513
+set protocols bgp group SIP neighbor 10.163.1.65 local-as 64513 private
+"""
+    cfg = juniper_srx.parse(text, "bgp.set")
+    nb = {n.ip: n for n in cfg.bgp.neighbors}
+    assert nb["10.0.0.1"].local_as == ""        # == global AS -> no-op
+    assert nb["10.163.1.61"].local_as == "64513"  # differing override carried
+    # sub-options (private/no-prepend/...) are stripped — `set local-as` takes
+    # a bare ASN; `64513 private` would be an invalid FortiOS line
+    assert nb["10.163.1.65"].local_as == "64513"
+    msgs = [m for lvl, area, m, _ in findings(cfg) if area == "routing"]
+    assert any("local-as override" in m and "10.163.1.61->64513" in m
+               for m in msgs)
+
+
+def test_bgp_local_as_emitted(tmp_path):
+    text = """set routing-options autonomous-system 64601
+set routing-options router-id 10.0.0.254
+set protocols bgp group SIP type external
+set protocols bgp group SIP peer-as 65010
+set protocols bgp group SIP neighbor 10.163.1.61 local-as 64513
+"""
+    src = tmp_path / "bgp.set"
+    src.write_text(text, encoding="utf-8")
+    rc = cli.main(["convert", str(src), "--vendor", "juniper-srx",
+                   "-o", str(tmp_path)])
+    assert rc == 0
+    conf = (tmp_path / "bgp.config-all.txt").read_text(encoding="utf-8")
+    assert "set as 64601" in conf
+    assert "set local-as 64513" in conf
+
+
 def test_ospf_parsed():
     cfg = parse_curly()
     o = cfg.ospf
