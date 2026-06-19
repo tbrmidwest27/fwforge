@@ -385,6 +385,7 @@ def _expand_groups(root: JNode, reporter) -> None:
 
     expanded: list[str] = []
     referenced: set[str] = set()
+    node_enumerated = False
     for node, path, names in occurrences:
         where = " ".join(t for k in path for t in k) or "top-level"
         for gname in names:
@@ -394,7 +395,13 @@ def _expand_groups(root: JNode, reporter) -> None:
                 reporter("warn", "groups",
                          f"apply-groups '{gname}' (at {where}) has no matching "
                          "group definition — skipped (e.g. ${node} resolves "
-                         "per chassis-cluster member; enumerate what it carries)")
+                         "per chassis-cluster member)")
+                # ${node} selects node0/node1 at runtime; those groups carry
+                # real per-member mgmt config (host-name, mgmt IP, name-servers,
+                # backup-router) that is otherwise lost silently — enumerate it.
+                if "${node}" in gname and not node_enumerated:
+                    _enumerate_node_groups(groups_node, reporter)
+                    node_enumerated = True
                 continue
             sub = _group_at_path(g, path)
             if sub is None:
@@ -439,6 +446,52 @@ def _has_apply_groups(node: JNode) -> bool:
     if node.has_leaf("apply-groups"):
         return True
     return any(_has_apply_groups(c) for _k, c in node.containers)
+
+
+def _enumerate_node_groups(groups_node: JNode, reporter) -> None:
+    """`apply-groups "${node}"` selects a per-cluster-member group (node0 /
+    node1) at runtime, so a literal read can't resolve it. Those groups hold
+    real management config — host-name, fxp0 mgmt IP, name-servers,
+    backup-router — that would otherwise vanish silently. Enumerate it per
+    node group so the operator can carry it onto each FortiGate manually."""
+    for key, g in groups_node.containers:
+        if not (key and re.fullmatch(r"node\d+", key[0])):
+            continue
+        node = key[0]
+        bits: list[str] = []
+        sysn = g.get("system")
+        if sysn is not None:
+            hn = sysn.leaf("host-name")
+            if hn:
+                bits.append(f"host-name {hn[0]}")
+            ns = [t[0] for t in sysn.leaf_all("name-server") if t]
+            if ns:
+                bits.append("name-server(s) " + ", ".join(ns))
+            br = [t[0] for t in sysn.leaf_all("backup-router")
+                  if t and t[0] != "destination"]
+            if br:
+                bits.append(f"backup-router {br[0]}")
+            dom = sysn.leaf("domain-name")
+            if dom:
+                bits.append(f"domain-name {dom[0]}")
+        ifs = g.get("interfaces")
+        if ifs is not None:
+            for mgmt in ("fxp0", "em0", "me0"):
+                dev = ifs.get(mgmt)
+                if dev is None:
+                    continue
+                for _uk, unit in dev.find("unit"):
+                    fam = unit.get("family", "inet")
+                    if fam is not None:
+                        for a in fam.leaf_all("address"):
+                            if a:
+                                bits.append(f"{mgmt} mgmt IP {a[0]}")
+        if bits:
+            reporter("warn", "groups",
+                     f"chassis-cluster member group '{node}' (selected by "
+                     f"apply-groups ${{node}}) carries: {'; '.join(bits)} — "
+                     "NOT converted (per-member mgmt config); set these on the "
+                     "corresponding FortiGate manually")
 
 
 # keywords that legally repeat (a stanza may set several) — apply-groups
@@ -1053,30 +1106,42 @@ class JunosParser:
 
     def _read_book(self, book: JNode, scope: str, ref_label: str) -> None:
         ref = self.ref(book, ref_label)
+        # set-format emits `address NAME description "..."` as a SEPARATE flat
+        # leaf; collect those first so the value-handling loop can attach them
+        # and not misread "description" as the address value (spurious
+        # "unrecognized value" warning).
+        descs: dict[str, str] = {}
+        for atoks in book.leaf_all("address"):
+            if len(atoks) >= 3 and atoks[1] == "description":
+                descs[atoks[0]] = " ".join(atoks[2:])
         for key, anode in book.find("address"):
             if len(key) < 2:
                 continue
             name = key[1]
             val = self._addr_value(anode, key)
             if val:
-                self._add_address(scope, name, val, anode, ref)
+                comment = anode.leaf_str("description") or descs.get(name)
+                self._add_address(scope, name, val, anode, ref, comment)
         for atoks in book.leaf_all("address"):
             if len(atoks) >= 2:
                 # set-format flat leaf: range/dns/wildcard arrive as plain
                 # tokens — translate to the sentinels _add_address expects
                 name, rest = atoks[0], atoks[1:]
                 kw = rest[0]
+                if kw == "description":
+                    continue  # captured above, not an address value
+                cmt = descs.get(name)
                 if kw == "range-address":
                     self._add_address(scope, name,
-                                      ["__range__"] + rest[1:], book, ref)
+                                      ["__range__"] + rest[1:], book, ref, cmt)
                 elif kw == "dns-name":
                     self._add_address(scope, name,
-                                      ["__fqdn__"] + rest[1:], book, ref)
+                                      ["__fqdn__"] + rest[1:], book, ref, cmt)
                 elif kw == "wildcard-address":
                     self._add_address(scope, name,
-                                      ["__wild__"] + rest[1:], book, ref)
+                                      ["__wild__"] + rest[1:], book, ref, cmt)
                 else:
-                    self._add_address(scope, name, rest, book, ref)
+                    self._add_address(scope, name, rest, book, ref, cmt)
         for key, aset in book.find("address-set"):
             if len(key) < 2:
                 continue
@@ -1113,13 +1178,15 @@ class JunosParser:
         return None
 
     def _add_address(self, scope: str, name: str, val: list[str],
-                     node: JNode, ref: SourceRef) -> None:
+                     node: JNode, ref: SourceRef,
+                     comment: str | None = None) -> None:
         gname = self._book_name(scope, name, ref)
         if not val:
             return
         if val[0] == "__fqdn__":
             self.cfg.addresses.append(Address(
-                name=gname, type="fqdn", value=val[1], source=ref))
+                name=gname, type="fqdn", value=val[1], comment=comment,
+                source=ref))
             return
         if val[0] == "__range__":
             # `range-address LOW to HIGH`
@@ -1127,13 +1194,42 @@ class JunosParser:
             if len(toks) >= 2:
                 self.cfg.addresses.append(Address(
                     name=gname, type="range",
-                    value=f"{toks[0]}-{toks[1]}", source=ref))
+                    value=f"{toks[0]}-{toks[1]}", comment=comment, source=ref))
             return
         if val[0] == "__wild__":
-            self.note("warn", "addresses",
-                      f"address '{name}' is a wildcard (non-contiguous "
-                      "mask) — FortiOS needs a wildcard-type address; "
-                      "set it manually", ref)
+            # Junos `wildcard-address IP/NETMASK` maps directly to a FortiOS
+            # wildcard-type address (`set wildcard IP MASK`, same 1=match
+            # semantics). Validate before converting; fall back to a warning
+            # if the shape is unexpected rather than emit a broken object.
+            spec = val[1] if len(val) > 1 else ""
+            ip, _, mask = spec.partition("/")
+            ok = False
+            if mask:
+                try:  # IPv4 only — FortiOS `set wildcard` is IPv4
+                    ipaddress.IPv4Address(ip)
+                    ipaddress.IPv4Address(mask)  # dotted netmask
+                    ok = True
+                except ipaddress.AddressValueError:
+                    ok = False
+            if ok:
+                self.cfg.addresses.append(Address(
+                    name=gname, type="wildcard", value=spec,
+                    comment=comment, source=ref))
+                # both Junos wildcard-address and FortiOS `set wildcard` use
+                # 1=must-match / 0=don't-care, so the mask carries verbatim —
+                # but flag it (warn) for a human to confirm the bit polarity,
+                # since a wrong-polarity mask would silently match the wrong
+                # hosts (rule-broadening). See juniper-srx skill §address.
+                self.note("warn", "addresses",
+                          f"address '{name}': wildcard-address {spec} -> "
+                          "FortiOS wildcard-type (non-contiguous mask, carried "
+                          "verbatim: 1=match/0=any). VERIFY the converted "
+                          "object matches the intended hosts", ref)
+            else:
+                self.note("warn", "addresses",
+                          f"address '{name}': wildcard-address '{spec}' not a "
+                          "valid IPv4 IP/NETMASK — not converted; set a FortiOS "
+                          "wildcard address manually", ref)
             return
         cidr = val[0]
         try:
@@ -1145,11 +1241,12 @@ class JunosParser:
             return
         if net.prefixlen in (32, 128):
             self.cfg.addresses.append(Address(
-                name=gname, type="host",
-                value=str(net.network_address), source=ref))
+                name=gname, type="host", value=str(net.network_address),
+                comment=comment, source=ref))
         else:
             self.cfg.addresses.append(Address(
-                name=gname, type="subnet", value=str(net), source=ref))
+                name=gname, type="subnet", value=str(net), comment=comment,
+                source=ref))
 
     def _addr_ref(self, scope: str, token: str) -> str:
         if token in ("any", "any-ipv4", "any-ipv6"):

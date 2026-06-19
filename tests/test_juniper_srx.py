@@ -387,6 +387,66 @@ security {
     assert byname["ge-0/0/1.0"].description == "local wins"
 
 
+def test_address_description_not_misread_as_value():
+    # set-format emits `address NAME description "..."` as a separate flat leaf;
+    # it must become the address comment, never be misread as a CIDR value
+    # (which produced a spurious "unrecognized value 'description'" warning).
+    text = """set security address-book global address WEB 172.20.230.5/32
+set security address-book global address WEB description "the web server"
+set security address-book global address DNS-NET 10.0.0.0/24
+set security address-book global address DNS-NET description "dns subnet"
+"""
+    cfg = juniper_srx.parse(text, "addr.set")
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert not any("unrecognized value" in m for m in msgs)
+    by = {a.name: a for a in cfg.addresses}
+    assert by["WEB"].type == "host" and by["WEB"].value == "172.20.230.5"
+    assert by["WEB"].comment == "the web server"
+    assert by["DNS-NET"].type == "subnet" and by["DNS-NET"].comment == "dns subnet"
+    # no phantom address created from the description leaf
+    assert len(cfg.addresses) == 2
+
+
+def test_wildcard_address_converted():
+    # Junos `wildcard-address IP/NETMASK` maps directly to a FortiOS
+    # wildcard-type address — convert it, don't drop it with a warning.
+    text = """set security address-book global address WK01 wildcard-address 10.0.0.31/255.0.0.255
+set security address-book global address BAD wildcard-address not-an-ip
+"""
+    cfg = juniper_srx.parse(text, "wc.set")
+    by = {a.name: a for a in cfg.addresses}
+    assert by["WK01"].type == "wildcard"
+    assert by["WK01"].value == "10.0.0.31/255.0.0.255"
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("WK01" in m and "wildcard-type" in m for m in msgs)
+    # a malformed wildcard is NOT converted (no broken object) and is flagged
+    assert "BAD" not in by
+    assert any("BAD" in m and "not converted" in m for m in msgs)
+
+
+def test_node_apply_group_enumerated():
+    # apply-groups "${node}" selects node0/node1 at runtime — unresolvable by a
+    # literal read. The per-member mgmt config (host-name / mgmt IP / DNS /
+    # backup-router) must be ENUMERATED, not just flagged "skipped".
+    text = """set apply-groups "${node}"
+set groups node0 system host-name FW-NODE0
+set groups node0 system name-server 10.0.0.53
+set groups node0 system backup-router 10.0.0.1
+set groups node0 system backup-router destination 0.0.0.0/0
+set groups node0 interfaces fxp0 unit 0 family inet address 10.0.0.10/24
+set groups node1 system host-name FW-NODE1
+set groups node1 interfaces fxp0 unit 0 family inet address 10.0.0.11/24
+"""
+    cfg = juniper_srx.parse(text, "node.set")
+    msgs = [m for lvl, area, m, _ in findings(cfg) if area == "groups"]
+    assert any("node0" in m and "FW-NODE0" in m and "10.0.0.53" in m
+               and "10.0.0.10/24" in m and "10.0.0.1" in m for m in msgs)
+    assert any("node1" in m and "FW-NODE1" in m and "10.0.0.11/24" in m
+               for m in msgs)
+    # `destination` must not be mistaken for the backup-router IP
+    assert not any("backup-router 0.0.0.0/0" in m for m in msgs)
+
+
 def test_nested_apply_groups_policy_log_honored():
     # A NESTED apply-groups (here `security policies { apply-groups policy-log }`)
     # must be expanded even when a top-level apply-groups also exists — the old
