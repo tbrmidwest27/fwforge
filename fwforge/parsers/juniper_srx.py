@@ -548,6 +548,7 @@ class JunosParser:
         self._sec = sec or JNode()
         self.parse_system()
         self.parse_interfaces()
+        self.parse_control_plane()
         self.parse_applications()
         self.parse_zones_and_books()
         self.parse_policies()
@@ -635,6 +636,101 @@ class JunosParser:
                     vlan_id=vlan,
                     parent=devname if vlan is not None else None,
                     source=self.ref(unit, f"interface {full}")))
+
+    # -- control-plane / lo0 stateless firewall filter ------------------
+
+    def parse_control_plane(self) -> None:
+        """The lo0 stateless firewall filter is the SRX Routing-Engine's own
+        firewall (control-plane protection). It has NO 1:1 FortiOS line — it
+        re-models into interface `allowaccess` + a `local-in-policy` (+ a DoS
+        policy for the policers). v1 does not auto-emit that (the terms,
+        policers and prefix-lists need manual carry); it emits a LOUD,
+        specific finding so the protection is never silently dropped — and it
+        HONORS `deactivate`: converting a disabled filter would silently
+        re-enable protection the admin turned off."""
+        ifs = self.tree.get("interfaces")
+        lo0 = ifs.get("lo0") if ifs is not None else None
+        # filter definitions live as ROOT leaves in set-format:
+        #   firewall family <fam> filter <NAME> term <T> ...
+        defined: dict[str, int] = {}
+        for leaf in self.tree.leaves:
+            toks = leaf[1:] if leaf and leaf[0] in ("inactive", "protect") \
+                else leaf
+            if len(toks) >= 5 and toks[0] == "firewall" \
+                    and toks[1] == "family" and toks[3] == "filter":
+                defined[toks[4]] = defined.get(toks[4], 0) + 1
+        # curly-format firewall filters are containers under a root `firewall`
+        fw = self.tree.get("firewall")
+        if fw is not None:
+            for fkey, fam in fw.find("family"):
+                for nkey, fnode in fam.find("filter"):
+                    if len(nkey) > 1:
+                        defined[nkey[1]] = defined.get(nkey[1], 0) \
+                            + self._leaves(fnode)
+        if lo0 is None:
+            return
+        lo0_off = self._node_inactive(lo0)
+        for ukey, unit in lo0.find("unit"):
+            uno = ukey[1] if len(ukey) > 1 else "0"
+            unit_off = lo0_off or self._node_inactive(unit)
+            _dirs = ("input", "output", "input-list", "output-list")
+            for fam in ("inet", "inet6"):
+                fnode = unit.get("family", fam)
+                if fnode is None:
+                    continue
+                # the family itself deactivated, or `deactivate ... family inet
+                # filter` (-> ["inactive","filter"] leaf) turns OFF every binding
+                fam_off = unit_off or any(t == ["inactive"] for t in fnode.leaves)
+                filter_off = any(t == ["inactive", "filter"]
+                                 for t in fnode.leaves)
+                # (dir, name, off). Collect BOTH active and deactivated bindings
+                # so a turned-off binding is reported "not converted", never
+                # dropped silently and never re-activated.
+                bindings: list[tuple[str, str, bool]] = []
+                for toks in fnode.leaves:
+                    t, b_off = toks, False
+                    if t and t[0] == "inactive":   # per-binding deactivate
+                        t, b_off = t[1:], True
+                    if len(t) >= 3 and t[0] == "filter" and t[1] in _dirs:
+                        bindings.append((t[1], t[2], b_off))
+                fcont = fnode.get("filter")          # curly `filter { input X; }`
+                if fcont is not None:
+                    c_off = any(t == ["inactive"] for t in fcont.leaves)
+                    for d in _dirs:
+                        nm = fcont.leaf_str(d)
+                        if nm:
+                            bindings.append((d, nm, c_off))
+                for direction, name, b_off in bindings:
+                    off = fam_off or filter_off or b_off
+                    self._note_lo0_filter(uno, fam, direction, name,
+                                          defined.get(name), off, lo0, unit)
+
+    def _note_lo0_filter(self, uno: str, fam: str, direction: str, name: str,
+                         nterms: int | None, off: bool,
+                         lo0: JNode, unit: JNode) -> None:
+        ref = self.ref(unit, f"interfaces lo0 unit {uno} family {fam}")
+        size = (f" ({nterms} statement(s))" if nterms
+                else " (filter not found in this config)")
+        if off:
+            self.note("warn", "control-plane",
+                      f"lo0 unit {uno} family {fam}: stateless firewall filter "
+                      f"'{name}' ({direction}){size} is the RE / control-plane "
+                      "firewall, but its binding is DEACTIVATED — it is NOT "
+                      "active on the SRX, so it is NOT converted (converting it "
+                      "would silently re-enable protection the admin turned "
+                      "off). The box currently has no lo0 control-plane filter; "
+                      "if FortiGate should protect the RE, build a "
+                      "local-in-policy from this filter manually", ref)
+            return
+        self.note("warn", "control-plane",
+                  f"lo0 unit {uno} family {fam}: stateless firewall filter "
+                  f"'{name}' ({direction}){size} is the SRX Routing-Engine / "
+                  "control-plane firewall — NO 1:1 FortiOS line. Re-model as: "
+                  "per-interface 'set allowaccess' for management services, a "
+                  "'config firewall local-in-policy' for routing/control "
+                  "protocols (BGP/OSPF/BFD/NTP/DNS), and a DoS policy for the "
+                  "filter's policers. NOT auto-converted — carry it over "
+                  "manually and verify the RE stays protected", ref)
 
     # -- applications ---------------------------------------------------
 
@@ -813,6 +909,10 @@ class JunosParser:
                 continue
             zname = key[1]
             zone_hit = self._hit_services(zn)
+            # zone-level host-inbound `protocols` applies to every interface in
+            # the zone (control-plane / routing protocols to the RE) — emit once
+            self._note_inbound_protocols(f"zone {zname}",
+                                         self._hit_protocols(zn))
             members = []
             ifn = zn.get("interfaces")
             if ifn is not None:
@@ -826,6 +926,12 @@ class JunosParser:
                         self._note_allowaccess(
                             zname, ikey[0],
                             self._hit_services(inode) or zone_hit)
+                        # no `or zone_proto` fallback here — zone-level
+                        # protocols are emitted once above; a fallback would
+                        # double-report them on every interface
+                        self._note_inbound_protocols(
+                            f"zone {zname} / {ikey[0]}",
+                            self._hit_protocols(inode))
             self.cfg.zones.append(Zone(
                 name=zname, members=members,
                 source=self.ref(zn, f"zone {zname}")))
@@ -878,6 +984,54 @@ class JunosParser:
             msg += (f" ({', '.join(extra)} have no allowaccess "
                     "equivalent; use local-in policies)")
         self.note("info", "interfaces", msg)
+
+    def _hit_protocols(self, node: JNode | None) -> list[str]:
+        """host-inbound-traffic `protocols` (bgp/ospf/vrrp/bfd/all) — the
+        SECOND, independent host-inbound knob (system-services is the first).
+        It controls which routing/control-plane protocols may reach the RE and
+        is deny-by-default; dropping it silently is a control-plane loss."""
+        if node is None:
+            return []
+        hit = node.get("host-inbound-traffic")
+        if hit is None:
+            return []
+        out: list[str] = []
+        pr = hit.get("protocols")
+        if pr is not None:
+            out += [t[0] for t in pr.leaves if t and t[0] != "inactive"]
+            # bgp/ospf are _PLAIN keywords, so they parse as (empty) child
+            # CONTAINERS under `protocols`, not leaves — read both shapes or
+            # the most security-relevant protocols would be missed silently.
+            for k, _c in pr.containers:
+                if k and k[0] != "inactive" and not self._node_inactive(_c):
+                    out.append(k[0])
+        for toks in hit.leaf_all("protocols"):
+            out += toks[:1]
+        return out
+
+    def _note_inbound_protocols(self, where: str,
+                                protocols: list[str]) -> None:
+        """Flag host-inbound `protocols` loudly — FortiOS has no per-interface
+        protocol allow-list; control traffic to the box is gated by
+        local-in-policy (the feature itself must also be configured)."""
+        if not protocols:
+            return
+        if "all" in protocols:
+            self.note("info", "interfaces",
+                      f"{where}: host-inbound-traffic protocols all — ALL "
+                      "routing/control-plane protocols (BGP/OSPF/VRRP/BFD/PIM/"
+                      "...) are allowed to the RE from here. FortiGate has no "
+                      "per-interface protocol allow-list and accepts its own "
+                      "configured control traffic by default; restrict with a "
+                      "local-in-policy if needed")
+            return
+        self.note("info", "interfaces",
+                  f"{where}: host-inbound-traffic protocols "
+                  f"{', '.join(protocols)} allowed inbound to the RE — no "
+                  "FortiGate allowaccess equivalent; the box accepts these "
+                  "when the feature (routing/VRRP/...) is configured. Verify "
+                  "they reach the FortiGate and gate with a local-in-policy "
+                  "to restrict")
 
     def _book_name(self, scope: str, name: str, ref: SourceRef) -> str:
         """Flatten a (possibly zone-scoped) book entry to a global IR
