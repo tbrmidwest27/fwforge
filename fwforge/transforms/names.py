@@ -34,6 +34,23 @@ def profile_name_max(target: str) -> int:
 ZONE_MAX = 35  # FortiOS system zone name limit
 
 
+def safe_ifname(name: str, maxlen: int = INTF_MAX) -> str:
+    """Sanitize a user-supplied interface / aggregate 'map to' name to a
+    FortiOS-legal token: only [A-Za-z0-9_.-], no leading/trailing separators,
+    clamped to `maxlen` (15 for interfaces). The GUI live-sanitizes the rename
+    fields client-side; this is the server-side backstop so a scripted POST (or
+    JS turned off) can't slip a space / quote / special char into an emitted
+    `set interface` and break the CLI script. Returns "" when nothing legal is
+    left, so the caller drops the empty mapping."""
+    out = SAFE.sub("-", str(name)).strip("-._")
+    out = out[:maxlen].strip("-._")
+    # never hand back a reserved interface keyword (FortiOS rejects an
+    # interface/zone literally named all/any/none with -162)
+    if out.lower() in {"all", "any", "none"}:
+        out = f"{out}-if"[:maxlen]
+    return out
+
+
 def sanitize(name: str, maxlen: int, taken: set[str]) -> str:
     out = SAFE.sub("_", name).strip("_") or "obj"
     if out in RESERVED:
