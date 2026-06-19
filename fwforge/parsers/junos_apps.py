@@ -125,8 +125,32 @@ JUNOS_APPS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+# Predefined junos-* applications that are ALGs with a dynamically-negotiated
+# data/control channel — they resolve (above) to their SIGNALING port only, so
+# a port-only FortiOS service silently loses the dynamic channel. FortiGate has
+# its own session-helper / voip-profile for these; the converter flags it so
+# the narrowing is never silent (mirrors the application-protocol caveat that
+# config-defined ALG apps already get).
+# Every name here MUST be a key in JUNOS_APPS (the caveat only fires after a
+# successful resolve). ALGs that resolve to NO single port (junos-rtsp,
+# junos-sccp, junos-ms-rpc-*, junos-traceroute) are deliberately absent from
+# JUNOS_APPS and stay on the unresolved/disable path instead — do NOT list them
+# here (it would be dead config). A test enforces JUNOS_ALGS ⊆ JUNOS_APPS.
+JUNOS_ALGS: frozenset = frozenset({
+    "junos-ftp", "junos-tftp", "junos-sip", "junos-h323",
+    "junos-sqlnet-v1", "junos-sqlnet-v2", "junos-pptp", "junos-rsh",
+    "junos-ntalk", "junos-mgcp-ua", "junos-mgcp-ca",
+})
+
+
 def junos_app(name: str) -> list[tuple[str, str]] | None:
     """Port specs for a predefined junos-* application, or None when
     unknown (dynamic ALGs like junos-ftp-data dynamics, or names not in
     the curated table)."""
     return JUNOS_APPS.get(name.lower())
+
+
+def is_alg(name: str) -> bool:
+    """True if `name` is a predefined junos-* ALG whose dynamic data channel
+    needs a FortiGate session-helper (the resolved port is signaling-only)."""
+    return name.lower() in JUNOS_ALGS
