@@ -1309,6 +1309,35 @@ class JunosParser:
         return (self._from_to(rs, "from") or "any",
                 self._from_to(rs, "to") or "any")
 
+    def _src_nat_match(self, rule: JNode) -> str:
+        """Summarize a source-NAT rule's `match` restrictions (port / proto /
+        non-any address). Returns '' when the match is unrestricted (any->any),
+        i.e. nothing is lost by applying NAT at zone-pair granularity."""
+        m = rule.get("match")
+        if m is None:
+            return ""
+        bits: list[str] = []
+        for kw, label in (("destination-port", "dst-port"),
+                          ("source-port", "src-port"),
+                          ("protocol", "protocol"),
+                          ("application", "application")):
+            for toks in m.leaf_all(kw):
+                if toks:
+                    bits.append(f"{label} {' '.join(toks)}")
+            # protocol may also land as a child container (icmp/tcp/...)
+            mc = m.get(kw)
+            if mc is not None:
+                bits += [f"{label} {k[0]}" for k, _c in mc.containers if k]
+        _any = ("0.0.0.0/0", "::/0", "any", "any-ipv4", "any-ipv6")
+        for kw, label in (("source-address-name", "src"),
+                          ("destination-address-name", "dst"),
+                          ("source-address", "src"),
+                          ("destination-address", "dst")):
+            for toks in m.leaf_all(kw):
+                if toks and toks[0] not in _any:
+                    bits.append(f"{label}-addr {toks[0]}")
+        return ", ".join(bits)
+
     def _parse_src_nat(self, src: JNode | None) -> None:
         if src is None:
             return
@@ -1321,6 +1350,12 @@ class JunosParser:
             for rkey, rule in rs.find("rule"):
                 rname = rkey[1] if len(rkey) > 1 else "rule"
                 ref = self.ref(rule, f"source-nat {rname}")
+                # a source-NAT rule `match` (port/proto/specific address) limits
+                # WHICH traffic in the zone-pair is translated. FortiOS
+                # policy-mode NAT is per-policy (`set nat enable` covers the
+                # whole policy / zone-pair) and can't express a port/proto match
+                # -> dropping it silently widens NAT scope. Flag it loudly.
+                restr = self._src_nat_match(rule)
                 then = rule.get("then") or JNode()
                 snat = then.get("source-nat") or JNode()
                 if snat.get("interface") is not None \
@@ -1328,19 +1363,33 @@ class JunosParser:
                     self.cfg.nats.append(NatRule(
                         kind="dynamic-interface", real_ifc=fz,
                         mapped_ifc=tz, source=ref))
+                    if restr:
+                        self.note("warn", "nat",
+                                  f"source-nat rule '{rname}' ({fz}->{tz}) only "
+                                  f"translates traffic matching {restr} — "
+                                  "FortiOS policy-mode NAT enables source-NAT "
+                                  f"per policy (the whole {fz}->{tz} zone-pair), "
+                                  "so NAT may apply MORE BROADLY than the SRX "
+                                  "rule. Verify, or scope it with a matching "
+                                  "policy / central-snat-map", ref)
                 elif snat.has_leaf("off") or snat.get("off") is not None:
+                    scope = (f" only traffic matching {restr}" if restr
+                             else " matching")
                     self.note("info", "nat",
-                              f"source-nat rule '{rname}': nat off "
-                              "(exempt) — no FortiOS nat on matching "
-                              "policies; verify", ref)
+                              f"source-nat rule '{rname}' ({fz}->{tz}): nat off "
+                              f"(exempt) — SRX exempts{scope} from NAT; FortiOS "
+                              "has no NAT on matching policies by default, so "
+                              "ensure those policies don't enable NAT; verify",
+                              ref)
                 else:
                     pool_names = [t[0] for t in snat.leaf_all("pool") if t]
                     for pk, _pn in snat.find("pool"):
                         if len(pk) > 1:
                             pool_names.append(pk[1])
+                    extra = (f" (only matches {restr})" if restr else "")
                     self.note("warn", "nat",
                               f"source-nat rule '{rname}' uses pool "
-                              f"{', '.join(pool_names) or '(unnamed)'} — "
+                              f"{', '.join(pool_names) or '(unnamed)'}{extra} — "
                               "IP-pool source NAT not converted; recreate "
                               "as a FortiOS IP pool + set nat enable", ref)
 

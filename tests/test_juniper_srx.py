@@ -495,6 +495,39 @@ interfaces {
     assert not any("Re-model as:" in m for m in cp)  # never the active wording
 
 
+def test_src_nat_match_restriction_flagged():
+    # a source-NAT rule `match` (port/proto/specific addr) limits WHICH traffic
+    # is translated; FortiOS policy-mode NAT is per-policy and can't express it,
+    # so the match must be flagged (NAT applies more broadly than the SRX rule).
+    text = """set security nat source rule-set DC-MGMT from zone DC
+set security nat source rule-set DC-MGMT to zone MGMT
+set security nat source rule-set DC-MGMT rule SSH match source-address-name 0.0.0.0/0
+set security nat source rule-set DC-MGMT rule SSH match destination-port 22
+set security nat source rule-set DC-MGMT rule SSH then source-nat interface
+set security nat source rule-set DC-MGMT rule ICMP match protocol icmp
+set security nat source rule-set DC-MGMT rule ICMP then source-nat interface
+set security nat source rule-set DC-MGMT rule APP match application junos-ssh
+set security nat source rule-set DC-MGMT rule APP then source-nat interface
+set security nat source rule-set OPEN from zone A
+set security nat source rule-set OPEN to zone B
+set security nat source rule-set OPEN rule any match source-address-name 0.0.0.0/0
+set security nat source rule-set OPEN rule any then source-nat interface
+"""
+    cfg = juniper_srx.parse(text, "srcnat.set")
+    msgs = [m for lvl, area, m, _ in findings(cfg) if area == "nat"]
+    # restricted rules flagged with their match + broadening warning
+    assert any("SSH" in m and "dst-port 22" in m and "MORE BROADLY" in m
+               for m in msgs)
+    assert any("ICMP" in m and "protocol icmp" in m for m in msgs)
+    # `match application <name>` restricts NAT too — must not slip through
+    assert any("APP" in m and "junos-ssh" in m and "MORE BROADLY" in m
+               for m in msgs)
+    # an unrestricted (any->any) rule must NOT raise the broadening warning
+    assert not any("rule 'any'" in m and "MORE BROADLY" in m for m in msgs)
+    # the NAT intent is still emitted for all (zone-pair PAT)
+    assert sum(1 for n in cfg.nats if n.kind == "dynamic-interface") == 4
+
+
 def test_logical_systems_flagged():
     text = (FIX / "srx_sample.conf").read_text(encoding="utf-8") + """
 logical-systems {
