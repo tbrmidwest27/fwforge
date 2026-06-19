@@ -287,6 +287,15 @@ def _is_named(tok: str, path: list[str]) -> bool:
         return "vpn" not in path
     if tok == "application":
         return bool(path) and path[-1] == "applications"
+    if tok == "term":
+        # `term` opens a named sub-block ONLY inside an application
+        # definition (set-format: `applications application X term Y
+        # protocol ...`). Without this, the term's protocol/destination-port
+        # land in a flat leaf, `_app_to_specs` reads no protocol → returns
+        # None → the policy's service is broadened to ALL. Other `term`
+        # stanzas (policy-options, firewall filter) aren't modelled and never
+        # reach here (their top-level keyword falls through to a root leaf).
+        return "applications" in path
     return tok in _NAMED
 
 
@@ -1859,6 +1868,22 @@ class JunosParser:
                     continue
                 unread.append((f"protocols {' '.join(key)}",
                                self._leaves(node)))
+        # set-format: a top-level keyword the parser doesn't model becomes a
+        # leaf on the ROOT node (not a container), so the scans above never
+        # see it. Count those by leading keyword too — otherwise whole stanzas
+        # (firewall/lo0 control-plane filters, policy-options, snmp, chassis,
+        # services) are dropped with NO finding, breaking the no-silent-loss
+        # promise. Strip a leading inactive/protect marker so a deactivated
+        # unknown stanza still counts under its real keyword.
+        ignore_root = {"version", "apply-groups"}
+        root_kw: dict[str, int] = {}
+        for leaf in self.tree.leaves:
+            toks = leaf[1:] if leaf and leaf[0] in ("inactive", "protect") \
+                else leaf
+            if toks and toks[0] not in ignore_root:
+                root_kw[toks[0]] = root_kw.get(toks[0], 0) + 1
+        for kw, cnt in sorted(root_kw.items()):
+            unread.append((kw, cnt))
         for label, n in sorted(unread, key=lambda x: -x[1])[:15]:
             self.note("info", "coverage",
                       f"unread stanza: {label} ({n} statement(s)) — not "

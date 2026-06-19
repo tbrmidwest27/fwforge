@@ -871,3 +871,58 @@ def test_dnat_unresolvable_match_address_skipped():
     assert not any(v.name == "vip-r" for v in cfg.vips)
     msgs = [m for _, _, m, _ in findings(cfg)]
     assert any("skipped" in m and "no-such-object" in m for m in msgs)
+
+
+def test_setformat_term_app_resolves_not_broadened():
+    # C1a regression: a set-format multi-`term` custom application must parse
+    # each term's protocol/destination-port. Previously `term` was not a
+    # name-consuming container, so the term leaves were lost, `_app_to_specs`
+    # found no protocol, returned None, and the policy's service was silently
+    # broadened to ALL (the no-silent-broadening bug class).
+    # real `display set` output puts each leaf on its own line
+    text = (
+        "set applications application multiterm term t1 protocol tcp\n"
+        "set applications application multiterm term t1 destination-port 8080\n"
+        "set applications application multiterm term t2 protocol udp\n"
+        "set applications application multiterm term t2 destination-port 9090\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "match source-address any\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "match destination-address any\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "match application multiterm\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "then permit\n")
+    cfg = juniper_srx.parse(text, "term.set")
+    pol = _pol(cfg, "p")
+    assert "ALL" not in pol.services            # not broadened
+    ports = _policy_ports(cfg, "p")
+    assert "8080" in ports and "9090" in ports  # both terms resolved
+    assert not any("multiterm" in m and "no port" in m
+                   for _, _, m, _ in findings(cfg))
+
+
+def test_setformat_unknown_toplevel_stanza_flagged():
+    # C2 regression: a top-level set-format keyword the parser doesn't model
+    # (firewall/lo0 control-plane filter, policy-options, ...) becomes a leaf
+    # on the ROOT node. report_coverage only walked containers, so it was
+    # dropped with NO finding. It must now be counted + flagged, upholding the
+    # no-silent-loss promise.
+    text = (
+        "set firewall family inet filter FF-LO0 term t1 from protocol udp\n"
+        "set firewall family inet filter FF-LO0 term t1 then accept\n"
+        "set interfaces lo0 unit 0 family inet filter input FF-LO0\n"
+        "set policy-options prefix-list PL-LOCAL 10.0.0.0/8\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "match source-address any\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "match destination-address any\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "match application any\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "then permit\n")
+    cfg = juniper_srx.parse(text, "fw.set")
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("firewall" in m and "unread stanza" in m for m in msgs)
+    assert any("policy-options" in m and "unread stanza" in m for m in msgs)
+    assert cfg.meta.get("stanzas_unread", 0) >= 2
