@@ -926,3 +926,105 @@ def test_setformat_unknown_toplevel_stanza_flagged():
     assert any("firewall" in m and "unread stanza" in m for m in msgs)
     assert any("policy-options" in m and "unread stanza" in m for m in msgs)
     assert cfg.meta.get("stanzas_unread", 0) >= 2
+
+
+def _appset_policy(action, member_lines):
+    return (
+        "".join(member_lines)
+        + "set security policies from-zone trust to-zone untrust policy p "
+        "match source-address any\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "match destination-address any\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        "match application mixed\n"
+        "set security policies from-zone trust to-zone untrust policy p "
+        f"then {action}\n")
+
+
+def test_partial_appset_resolves_not_broadened():
+    # C1b regression: an application-set with one resolvable + one unresolvable
+    # member must resolve the GOOD member and flag the bad one — NOT collapse
+    # the whole set to service ALL (the old all-or-nothing behavior).
+    text = _appset_policy("permit", [
+        "set applications application known-tcp protocol tcp\n",
+        "set applications application known-tcp destination-port 7777\n",
+        "set applications application-set mixed application known-tcp\n",
+        "set applications application-set mixed application bogus-undefined\n",
+    ])
+    cfg = juniper_srx.parse(text, "mixed.set")
+    pol = _pol(cfg, "p")
+    assert "ALL" not in pol.services        # not broadened
+    assert not pol.disabled                 # partial resolve stays enabled
+    assert "7777" in _policy_ports(cfg, "p")  # good member resolved
+    assert any("bogus-undefined" in m and ("narrowed" in m or "NOT included" in m)
+               for _, _, m, _ in findings(cfg))
+
+
+def test_cyclic_or_empty_appset_permit_disabled():
+    # Doctrine-hole regression: a self-referential (or empty) application-set
+    # resolves to ([], []) — no specs AND no unresolved names — and used to slip
+    # past the `if unresolved` gate, so a permit shipped an enabled allow-all
+    # (the emitter renders empty services as ALL). A permit with no resolved
+    # service must be DISABLED instead.
+    text = (
+        "set applications application-set selfref application-set selfref\n"
+        "set security policies from-zone trust to-zone untrust policy pcyc "
+        "match source-address any\n"
+        "set security policies from-zone trust to-zone untrust policy pcyc "
+        "match destination-address any\n"
+        "set security policies from-zone trust to-zone untrust policy pcyc "
+        "match application selfref\n"
+        "set security policies from-zone trust to-zone untrust policy pcyc "
+        "then permit\n")
+    cfg = juniper_srx.parse(text, "cyclic.set")
+    pol = _pol(cfg, "pcyc")
+    assert pol.disabled                     # not a live allow-all
+    assert "REVIEW" in (pol.comment or "")
+
+
+def test_unresolvable_permit_disabled_not_broadened():
+    # Doctrine: a permit policy whose application(s) resolve to NOTHING must be
+    # emitted DISABLED with a review comment, never silently broadened to ALL.
+    text = (
+        "set applications application onlyalg application-protocol dns\n"
+        "set security policies from-zone trust to-zone untrust policy ponly "
+        "match source-address any\n"
+        "set security policies from-zone trust to-zone untrust policy ponly "
+        "match destination-address any\n"
+        "set security policies from-zone trust to-zone untrust policy ponly "
+        "match application onlyalg\n"
+        "set security policies from-zone trust to-zone untrust policy ponly "
+        "then permit\n")
+    cfg = juniper_srx.parse(text, "onlyalg.set")
+    pol = _pol(cfg, "ponly")
+    assert pol.disabled                     # disabled, not a live allow-all
+    assert "REVIEW" in (pol.comment or "")
+    assert any("DISABLED" in m for _, _, m, _ in findings(cfg))
+
+
+def test_unresolvable_deny_broadened_failclosed():
+    # Doctrine: a DENY with an unresolvable app may broaden to ALL (fail-closed
+    # over-block is safe) and stays enabled, with a flag.
+    text = (
+        "set applications application onlyalg2 application-protocol dns\n"
+        "set security policies from-zone trust to-zone untrust policy pdeny "
+        "match source-address any\n"
+        "set security policies from-zone trust to-zone untrust policy pdeny "
+        "match destination-address any\n"
+        "set security policies from-zone trust to-zone untrust policy pdeny "
+        "match application onlyalg2\n"
+        "set security policies from-zone trust to-zone untrust policy pdeny "
+        "then deny\n")
+    cfg = juniper_srx.parse(text, "denyalg.set")
+    pol = _pol(cfg, "pdeny")
+    assert pol.action == "deny"
+    assert "ALL" in pol.services            # fail-closed over-block
+    assert not pol.disabled                 # a deny stays active
+    assert any("deny broadened" in m for _, _, m, _ in findings(cfg))
+
+
+def test_junos_radius_port_not_broadened():
+    # C1c regression: junos-radius is udp/1812 ONLY; udp/1813 is junos-radacct.
+    assert junos_apps.junos_app("junos-radius") == [("udp", "1812")]
+    assert junos_apps.junos_app("junos-radacct") == [("udp", "1813")]
+    assert junos_apps.junos_app("junos-dhcp-relay") == [("udp", "67")]

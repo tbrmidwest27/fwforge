@@ -44,16 +44,22 @@ JUNOS_APPS: dict[str, list[tuple[str, str]]] = {
     "junos-dns-udp": [("udp", "53")],
     "junos-dhcp-client": [("udp", "68")],
     "junos-dhcp-server": [("udp", "67")],
+    "junos-dhcp-relay": [("udp", "67")],   # server-side port (NOT 68)
     "junos-bootpc": [("udp", "68")],
     "junos-bootps": [("udp", "67")],
     "junos-ntp": [("udp", "123")],
     "junos-ldap": [("tcp", "389")],
     "junos-ntalk": [("udp", "518")],
+    "junos-lpr": [("tcp", "515")],
     # snmp / mgmt
     "junos-snmp": [("udp", "161")],
+    "junos-snmp-get": [("udp", "161")],       # SNMP get (ALG); std port 161
+    "junos-snmp-get-next": [("udp", "161")],  # SNMP get-next (ALG); std port 161
+    "junos-snmp-get-2": [("udp", "161")],     # SNMP get variant; std port 161
     "junos-snmp-agentx": [("tcp", "705")],
     "junos-syslog": [("udp", "514")],
-    "junos-radius": [("udp", "1812 1813")],
+    # junos-radius is udp/1812 ONLY; udp/1813 is junos-radacct (separate)
+    "junos-radius": [("udp", "1812")],
     "junos-radacct": [("udp", "1813")],
     "junos-tacacs": [("tcp", "49")],
     "junos-tacacs-ds": [("tcp", "65")],
@@ -77,6 +83,12 @@ JUNOS_APPS: dict[str, list[tuple[str, str]]] = {
     "junos-h323": [("tcp", "1720")],
     "junos-mgcp-ua": [("udp", "2427")],
     "junos-mgcp-ca": [("udp", "2727")],
+    # routing protocols (port-based)
+    "junos-bgp": [("tcp", "179")],
+    "junos-rip": [("udp", "520")],
+    # NB: junos-sccp / junos-rtsp deliberately NOT added — they are ALGs with
+    # multi/dynamic ports; a bare control port would silently narrow. Leave
+    # unresolved so they're flagged (consistent with the ms-rpc/traceroute ALGs).
     # vpn / tunneling
     "junos-ike": [("udp", "500")],
     "junos-ike-nat": [("udp", "4500")],
@@ -99,6 +111,17 @@ JUNOS_APPS: dict[str, list[tuple[str, str]]] = {
     "junos-whois": [("tcp", "43")],
     "junos-discard": [("tcp", "9")],
     "junos-chargen": [("tcp", "19")],
+    # DELIBERATELY OMITTED (no single correct port -> leave unresolved so the
+    # converter flags them, never guesses a broadening/narrowing port):
+    #   junos-ms-rpc-any            -> application-SET (ms-rpc-tcp/udp +
+    #                                  ms-rpc-uuid-any-tcp/udp); not one port
+    #   junos-ms-rpc-uuid-any-tcp   -> DCE-RPC matched by wildcard UUID over
+    #   junos-ms-rpc-uuid-any-udp      dynamically-negotiated ports; no fixed L4
+    #   junos-ms-rpc-epm            -> RPC endpoint mapper by UUID; no fixed L4
+    #   junos-traceroute            -> ALG, UDP range 33435-33450 (deprecated)
+    #   junos-archives / junos-space-core / junos-space-core-virt -> not a
+    #                                  standard built-in (likely custom; resolve
+    #                                  from the config's own applications{})
 }
 
 
