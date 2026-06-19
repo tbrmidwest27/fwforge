@@ -1280,3 +1280,53 @@ def test_junos_radius_port_not_broadened():
     assert junos_apps.junos_app("junos-radius") == [("udp", "1812")]
     assert junos_apps.junos_app("junos-radacct") == [("udp", "1813")]
     assert junos_apps.junos_app("junos-dhcp-relay") == [("udp", "67")]
+
+
+def test_predefined_alg_caveat():
+    # predefined junos-* ALGs resolve to their signaling port only; the dynamic
+    # data channel needs a FortiGate session-helper. Flag it (deduped) — even
+    # when the ALG is reached only as an application-SET member, not a direct
+    # policy application. A non-ALG predefined app must NOT be flagged.
+    text = (
+        "set applications application-set Mgmt application junos-ftp\n"
+        "set security policies from-zone a to-zone b policy p1 "
+        "match source-address any\n"
+        "set security policies from-zone a to-zone b policy p1 "
+        "match destination-address any\n"
+        "set security policies from-zone a to-zone b policy p1 "
+        "match application junos-sip\n"
+        "set security policies from-zone a to-zone b policy p1 "
+        "match application Mgmt\n"
+        "set security policies from-zone a to-zone b policy p1 "
+        "match application junos-https\n"
+        "set security policies from-zone a to-zone b policy p1 then permit\n"
+        "set security policies from-zone a to-zone b policy p2 "
+        "match source-address any\n"
+        "set security policies from-zone a to-zone b policy p2 "
+        "match destination-address any\n"
+        "set security policies from-zone a to-zone b policy p2 "
+        "match application junos-sip\n"
+        "set security policies from-zone a to-zone b policy p2 then permit\n")
+    cfg = juniper_srx.parse(text, "alg.set")
+    algs = [m for lvl, area, m, _ in findings(cfg)
+            if "predefined junos ALG" in m]
+    flagged = {m.split("'")[1] for m in algs}
+    assert "junos-sip" in flagged           # direct policy application
+    assert "junos-ftp" in flagged           # reached only via the app-set
+    assert "junos-https" not in flagged     # not an ALG
+    # deduped: junos-sip used in two policies -> one finding
+    assert sum("junos-sip" in m for m in algs) == 1
+
+
+def test_junos_algs_all_resolve():
+    # every name in JUNOS_ALGS must be a resolvable predefined app — the ALG
+    # caveat only fires after junos_app() returns ports, so a name absent from
+    # JUNOS_APPS would be dead config that overstates coverage.
+    for n in junos_apps.JUNOS_ALGS:
+        assert junos_apps.junos_app(n) is not None, f"{n} in ALGs but no ports"
+    # the resolvable MGCP gateway ALGs (dynamic RTP) must be covered
+    assert junos_apps.is_alg("junos-mgcp-ua")
+    assert junos_apps.is_alg("junos-mgcp-ca")
+    # multi/dynamic-port ALGs stay unresolved (disable path), NOT flagged here
+    assert not junos_apps.is_alg("junos-rtsp")
+    assert not junos_apps.is_alg("junos-ms-rpc")

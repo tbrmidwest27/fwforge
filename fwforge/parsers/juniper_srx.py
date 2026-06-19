@@ -791,6 +791,7 @@ class JunosParser:
         apps = self.tree.get("applications")
         self._app_specs: dict[str, list[tuple[str, str]] | None] = {}
         self._app_sets: dict[str, list[str]] = {}
+        self._alg_flagged: set[str] = set()  # predefined ALG caveat, deduped
         if apps is None:
             return
         for key, app in apps.find("application"):
@@ -861,7 +862,7 @@ class JunosParser:
         # "8000-8002" or "443" or "80" ; Junos uses '-' for ranges
         return spec.replace(" ", "")
 
-    def _resolve_app(self, name: str,
+    def _resolve_app(self, name: str, ref: SourceRef | None = None,
                      seen: frozenset = frozenset()
                      ) -> tuple[list[tuple[str, str]], list[str]]:
         """Resolve an application/application-set to (specs, unresolved):
@@ -878,12 +879,26 @@ class JunosParser:
             specs = []
             unres: list[str] = []
             for m in self._app_sets[name]:
-                s, u = self._resolve_app(m, seen | {name})
+                s, u = self._resolve_app(m, ref, seen | {name})
                 specs += s
                 unres += u
             return specs, unres
         j = junos_apps.junos_app(name)
-        return (j, []) if j else ([], [name])
+        if j:
+            # predefined junos-* ALG: resolves to its signaling port only —
+            # flag (deduped) so the dynamic data channel isn't silently lost.
+            # Done here (not in _service_names_for) so app-set MEMBERS are
+            # caught too, not just top-level policy applications.
+            if junos_apps.is_alg(name) and name not in self._alg_flagged:
+                self._alg_flagged.add(name)
+                self.note("info", "services",
+                          f"application '{name}' is a predefined junos ALG — "
+                          "converted as a port-only service (signaling port); "
+                          "FortiGate uses its own session-helper, so enable the "
+                          "matching ALG/voip-profile for the dynamic data "
+                          "channel to work", ref)
+            return j, []
+        return [], [name]
 
     def _service_names_for(self, apps: list[str], rule: str,
                            ref: SourceRef) -> tuple[list[str], list[str]]:
@@ -899,7 +914,7 @@ class JunosParser:
         for app in apps:
             if app == "any":
                 return ["ALL"], []
-            specs, unres = self._resolve_app(app)
+            specs, unres = self._resolve_app(app, ref)
             if specs:
                 out += [self._ensure_service(app, specs, ref)]
             unresolved += unres
