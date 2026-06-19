@@ -117,15 +117,21 @@
           {% for family, entries in platform_groups %}
           <optgroup label="{{ family }}">
             {% for p in entries %}
-            <option value="{{ p.code }}">{{ p.model }} &mdash;
+            <option value="{{ p.code }}"{% if meta.target_platform == p.code %}
+              selected{% endif %}>{{ p.model }} &mdash;
               {{ p.code }}{% if not p.verified %} *{% endif %}</option>
             {% endfor %}
           </optgroup>
           {% endfor %}
-          <option value="__custom__">custom code&hellip;</option>
+          <option value="__custom__"{% if meta.target_platform
+            and not target_platform_known %} selected{% endif %}>custom
+            code&hellip;</option>
         </select>
         <input type="text" name="target_platform_custom" id="tp-custom"
-               size="10" placeholder="e.g. FG7H1G" style="display:none">
+               size="10" placeholder="e.g. FG7H1G"
+               {% if meta.target_platform and not target_platform_known %}
+               value="{{ meta.target_platform }}"{% else %}
+               style="display:none"{% endif %}>
       </label>
       {% endif %}
       {% if meta.vendor == "fortios" %}
