@@ -436,42 +436,6 @@ document.querySelectorAll(".kpi[data-goto]").forEach(t => {
   };
 });
 
-// Populate the App-ID gaps tile from the findings (PAN only — it stays hidden
-// when there are no App-ID -> service-ALL fallbacks). Same scan the Gap
-// Analyzer uses, so the tile and the card always agree.
-(function () {
-  if (typeof scanAppIdGaps !== "function") return;
-  const hero = document.getElementById("appid-hero");   // present only for PAN
-  const tile = document.getElementById("kpi-appid");
-  const n = scanAppIdGaps().length;
-
-  if (n > 0) {
-    if (hero) initAiTab();          // fills detect text + reveals the CTA button
-    if (tile) {
-      document.getElementById("kpi-appid-n").textContent = n;
-      tile.classList.add("warn");
-      tile.style.display = "";
-      tile.style.cursor = "pointer";
-      tile.title = "Jump to the AI App-ID Optimizer";
-      tile.onclick = () => hero &&
-        hero.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  } else if (hero) {
-    // PAN conversion with no gaps -> all-clear success state (still prominent)
-    hero.classList.add("appid-hero-ok");
-    const h = document.getElementById("appid-hero-h");
-    if (h) h.textContent = "All App-IDs mapped to specific ports";
-    document.getElementById("ai-gaps-detect").innerHTML =
-      '<span class="ai-gap-ok">✓ No App-IDs fell back to '
-      + '<code>service ALL</code> — every application resolved to its real '
-      + 'ports.</span> ';
-    if (tile) {
-      document.getElementById("kpi-appid-n").textContent = "0";
-      tile.classList.add("ok");
-      tile.style.display = "";
-    }
-  }
-})();
 
 function filterFindings() {
   const q = document.getElementById("fsearch").value.toLowerCase();
@@ -804,5 +768,43 @@ async function aiGaps() {
     btn.textContent = "✦ retry";
   }
 }
+
+// --- on load (runs LAST, after every const/let/function above is initialized,
+// so it can't trip the temporal-dead-zone) -------------------------------
+// Populate the App-ID gaps tile + hero from the findings (PAN only). Same scan
+// the Gap Analyzer uses, so the tile and the card always agree.
+(function () {
+  if (typeof scanAppIdGaps !== "function") return;
+  const hero = document.getElementById("appid-hero");   // present only for PAN
+  const tile = document.getElementById("kpi-appid");
+  const n = scanAppIdGaps().length;
+
+  if (n > 0) {
+    if (hero) initAiTab();          // fills detect text + reveals the CTA button
+    if (tile) {
+      document.getElementById("kpi-appid-n").textContent = n;
+      tile.classList.add("warn");
+      tile.style.display = "";
+      tile.style.cursor = "pointer";
+      tile.title = "Jump to the AI App-ID Optimizer";
+      tile.onclick = () => hero &&
+        hero.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  } else if (hero) {
+    // PAN conversion with no gaps -> all-clear success state (still prominent)
+    hero.classList.add("appid-hero-ok");
+    const h = document.getElementById("appid-hero-h");
+    if (h) h.textContent = "All App-IDs mapped to specific ports";
+    document.getElementById("ai-gaps-detect").innerHTML =
+      '<span class="ai-gap-ok">✓ No App-IDs fell back to '
+      + '<code>service ALL</code> — every application resolved to its real '
+      + 'ports.</span> ';
+    if (tile) {
+      document.getElementById("kpi-appid-n").textContent = "0";
+      tile.classList.add("ok");
+      tile.style.display = "";
+    }
+  }
+})();
 </script>
 {% endblock %}
