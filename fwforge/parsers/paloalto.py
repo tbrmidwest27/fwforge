@@ -57,6 +57,23 @@ PREDEFINED_SERVICES = {
     "service-https": ("tcp", "443"),
 }
 
+# ISO 3166-1 alpha-2 codes — PAN rules may reference a predefined region
+# (country) directly; on FortiOS that becomes a geography-type address object
+# (`set type geography / set country XX`). Used to tell a real country ref
+# apart from a stray/typo'd object name.
+_ISO3166_A2 = frozenset(
+    "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI "
+    "BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN "
+    "CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK "
+    "FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM "
+    "HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN "
+    "KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK "
+    "ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP "
+    "NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW "
+    "SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF "
+    "TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI "
+    "VN VU WF WS YE YT ZA ZM ZW".split())
+
 # FortiOS zones group layer-3 interfaces only; PAN's other zone modes have no
 # zone-level equivalent. Each value points at the real FortiOS target so a
 # flagged zone tells the user where to wire it up by hand.
@@ -69,6 +86,14 @@ _NONL3_ZONE_HINT = {
 # PAN weekly schedule day keys in evaluation order
 _PAN_DAYS = ["monday", "tuesday", "wednesday", "thursday",
              "friday", "saturday", "sunday"]
+
+
+def _ippool_name(name: str) -> str:
+    """FortiOS ippool name from a PAN NAT-rule name. PAN rule names routinely
+    contain spaces/quotes ('Rule 138 Nat-ID 7-1') which make the ippool fail to
+    commit on load (next -> error). Keep only name-safe chars, clamp to 63."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name).strip("_") or "pool"
+    return f"ippool-{safe}"[:63]
 
 
 def detect(text: str) -> float:
@@ -288,6 +313,9 @@ class PaloParser:
         self._import_vrs: set[str] | None = None
         self._pre_rules: list = []
         self._post_rules: list = []
+        # PAN tunnel-interface name (tunnel.N) -> converted FortiOS phase1
+        # interface name, so zone members referencing the tunnel get remapped
+        self._tun_if_map: dict[str, str] = {}
         if text.lstrip().startswith("<"):
             tree = _tree_from_xml(text)
         else:
@@ -564,6 +592,11 @@ class PaloParser:
         self.parse_vpn(device.get("network", {}))
         self._detect_globalprotect(device)
         self.report_unconverted_sections(device, vsys, rulebase)
+        # remap zone tunnel members to their converted phase1 interface, and
+        # close dangling address references (inline IPs / country refs) so the
+        # emitted zones/policies/groups don't reference undefined objects (-3)
+        self._remap_zone_tunnels()
+        self._objectify_address_refs()
         if not self._want_vsys:
             self.report_xml_coverage()
         self.cfg.meta["findings"] = self._findings
@@ -737,10 +770,15 @@ class PaloParser:
             # FortiOS phase1-interface; point zone / route refs at that name
             # so they resolve, and mark it a tunnel so it is neither emitted
             # as a physical port nor flagged as an unmapped port.
-            tun_if = self.cfg.interface_by_name(tif) if tif else None
-            if tun_if is not None:
-                tun_if.target_name = tun_name
-                tun_if.kind = "tunnel"
+            if isinstance(tif, str) and tif:
+                # record the mapping even when no IR interface exists for the
+                # PAN tunnel (zone members are plain name strings) — a post-pass
+                # remaps zone references to the phase1 name.
+                self._tun_if_map[tif] = tun_name
+                tun_if = self.cfg.interface_by_name(tif)
+                if tun_if is not None:
+                    tun_if.target_name = tun_name
+                    tun_if.kind = "tunnel"
 
     def _imported(self, name: str) -> bool:
         """Should the parser ENTER this device-level interface for the
@@ -1011,6 +1049,115 @@ class PaloParser:
             members = _as_list(node.get("static"))
             self.cfg.addr_groups.append(AddressGroup(
                 name=name, members=members, source=ref))
+
+    def _make_literal_address(self, token: str, ref) -> bool:
+        """If `token` is a literal IP / CIDR / range / ISO country code, create
+        the matching FortiOS address object (named after the token so existing
+        references resolve) and return True; else False."""
+        for fam, hostlen in ((ipaddress.IPv4Network, 32),
+                             (ipaddress.IPv6Network, 128)):
+            try:
+                net = fam(token if "/" in token else f"{token}/{hostlen}",
+                          strict=False)
+            except ValueError:
+                continue
+            if net.prefixlen == hostlen:
+                self.cfg.addresses.append(Address(
+                    name=token, type="host", value=str(net.network_address),
+                    comment="auto-created: inline address in a policy/group",
+                    source=ref))
+            else:
+                self.cfg.addresses.append(Address(
+                    name=token, type="subnet", value=str(net),
+                    comment="auto-created: inline subnet in a policy/group",
+                    source=ref))
+            return True
+        if "-" in token:
+            lo, _, hi = token.partition("-")
+            try:
+                ipaddress.ip_address(lo.strip())
+                ipaddress.ip_address(hi.strip())
+            except ValueError:
+                pass
+            else:
+                self.cfg.addresses.append(Address(
+                    name=token, type="range",
+                    value=f"{lo.strip()}-{hi.strip()}",
+                    comment="auto-created: inline range in a policy/group",
+                    source=ref))
+                return True
+        if len(token) == 2 and token.upper() in _ISO3166_A2:
+            self.cfg.addresses.append(Address(
+                name=token, type="geography", value=token.upper(),
+                comment="auto-created: PAN region/country reference",
+                source=ref))
+            # a 2-letter ref is treated as a COUNTRY — surface it, since a
+            # coincidental 2-letter object name would expand to a whole country
+            self.note("warn", "addresses",
+                      f"reference '{token}' is undefined and matches ISO "
+                      f"country '{token.upper()}' — converted to a geography "
+                      "address (matches all of that country); confirm it was a "
+                      "region ref, not a misspelled object name", ref)
+            return True
+        return False
+
+    def _remap_zone_tunnels(self) -> None:
+        """A PAN tunnel-interface (tunnel.N) in a zone is realized on FortiOS
+        as the converted IPsec phase1-interface (e.g. vpn-<tunnel>). Rewrite
+        zone members to that name so the zone doesn't reference a non-existent
+        'tunnel.N' interface (set interface -> -3)."""
+        if not self._tun_if_map:
+            return
+        for z in self.cfg.zones:
+            new: list[str] = []
+            for m in z.members:
+                mapped = self._tun_if_map.get(m, m)
+                if mapped not in new:
+                    new.append(mapped)
+                if mapped != m:
+                    self.note("info", "zones",
+                              f"zone '{z.name}': tunnel interface '{m}' -> "
+                              f"converted IPsec interface '{mapped}'", z.source)
+            z.members = new
+
+    def _objectify_address_refs(self) -> None:
+        """Every policy srcaddr/dstaddr and address-group member must name a
+        DEFINED FortiOS address object — a bare IP/CIDR/range or a country code
+        passed through verbatim makes FortiOS reject the line (set srcaddr ->
+        -3). PAN allows inline IPs and predefined region (country) refs in
+        rules, so synthesize the missing objects here, or loudly flag a name
+        that is neither defined nor a literal."""
+        defined = {a.name for a in self.cfg.addresses} \
+            | {g.name for g in self.cfg.addr_groups} \
+            | {v.name for v in self.cfg.vips}  # VIPs share the addr namespace
+        keep = {"all", "any", "none", ""}
+        flagged: set[str] = set()
+
+        def ensure(token: str, ctx: str, ref) -> str:
+            if token == "any":
+                return "all"
+            if token in keep or token in defined:
+                return token
+            if self._make_literal_address(token, ref):
+                defined.add(token)
+                return token
+            if token not in flagged:
+                flagged.add(token)
+                self.note("warn", "addresses",
+                          f"{ctx} references '{token}', which is not a defined "
+                          "address/group nor a literal IP/CIDR/range/country — "
+                          "FortiOS will reject it (set -> -3); define it or "
+                          "remove the reference", ref)
+            return token
+
+        for p in self.cfg.policies:
+            p.src_addrs = [ensure(t, f"policy '{p.name}' srcaddr", p.source)
+                           for t in p.src_addrs]
+            p.dst_addrs = [ensure(t, f"policy '{p.name}' dstaddr", p.source)
+                           for t in p.dst_addrs]
+        for g in self.cfg.addr_groups:
+            g.members = [ensure(t, f"address-group '{g.name}'", g.source)
+                         for t in g.members]
 
     def parse_regions(self, regions_node) -> None:
         """Parse vsys <region> user-defined region entries.
@@ -2422,7 +2569,7 @@ class PaloParser:
                                 parts = rng[0].split("-")
                                 pool_start, pool_end = parts[0], parts[-1]
                         if pool_start:
-                            pname = f"ippool-{name}"[:63]
+                            pname = _ippool_name(name)
                             self.cfg.ippools.append(IpPool(
                                 name=pname, start=pool_start, end=pool_end,
                                 pool_type="overload",
@@ -2510,7 +2657,7 @@ class PaloParser:
                                 parts = rng[0].split("-")
                                 pool_start, pool_end = parts[0], parts[-1]
                         if pool_start:
-                            pname = f"ippool-{name}"[:63]
+                            pname = _ippool_name(name)
                             ptype = ("overload" if pool_start != pool_end
                                      else "one-to-one")
                             self.cfg.ippools.append(IpPool(

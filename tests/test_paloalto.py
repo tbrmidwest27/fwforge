@@ -25,6 +25,77 @@ def _policy(cfg, name):
     return next(p for p in cfg.policies if p.name == name)
 
 
+def test_inline_address_refs_objectified():
+    # PAN rules may use literal IPs and predefined region (country) refs that
+    # aren't defined address objects. They must become real FortiOS address
+    # objects, else `set srcaddr "10.0.0.5"` / `"KP"` is rejected (-3).
+    cfg = paloalto.parse(
+        "set address LAN ip-netmask 10.1.0.0/16\n"
+        "set rulebase security rules R1 from trust\n"
+        "set rulebase security rules R1 to untrust\n"
+        "set rulebase security rules R1 source 10.175.130.83\n"
+        "set rulebase security rules R1 destination 10.65.236.0/24\n"
+        "set rulebase security rules R1 application any\n"
+        "set rulebase security rules R1 service application-default\n"
+        "set rulebase security rules R1 action allow\n"
+        "set rulebase security rules R2 from trust\n"
+        "set rulebase security rules R2 to untrust\n"
+        "set rulebase security rules R2 source LAN\n"
+        "set rulebase security rules R2 destination KP\n"
+        "set rulebase security rules R2 application any\n"
+        "set rulebase security rules R2 service application-default\n"
+        "set rulebase security rules R2 action deny\n",
+        "inline.set")
+    by = {a.name: a for a in cfg.addresses}
+    # literal host + subnet became real address objects, named after the literal
+    assert by["10.175.130.83"].type == "host"
+    assert by["10.175.130.83"].value == "10.175.130.83"
+    assert by["10.65.236.0/24"].type == "subnet"
+    # country ref became a geography object
+    assert by["KP"].type == "geography" and by["KP"].value == "KP"
+    # the policies now reference those defined names (so no -3 on load)
+    r1, r2 = _policy(cfg, "R1"), _policy(cfg, "R2")
+    assert r1.src_addrs == ["10.175.130.83"]
+    assert r1.dst_addrs == ["10.65.236.0/24"]
+    assert r2.dst_addrs == ["KP"]
+    # a non-literal undefined ref is flagged, not silently shipped
+    cfg2 = paloalto.parse(
+        "set rulebase security rules X from a\n"
+        "set rulebase security rules X to b\n"
+        "set rulebase security rules X source NOPE-OBJ\n"
+        "set rulebase security rules X destination any\n"
+        "set rulebase security rules X application any\n"
+        "set rulebase security rules X service application-default\n"
+        "set rulebase security rules X action allow\n",
+        "bad.set")
+    assert any("NOPE-OBJ" in m and "reject" in m
+               for _, _, m, _ in findings(cfg2))
+
+
+def test_zone_tunnel_remapped_to_phase1():
+    # A zone referencing a PAN tunnel-interface (tunnel.N) must be rewritten to
+    # the converted IPsec phase1-interface name, else the zone references a
+    # non-existent interface (set interface -> -3).
+    from fwforge.model import Zone
+    p = paloalto.PaloParser("", "z.set")
+    p.cfg.zones.append(
+        Zone(name="IPSEC_VPN", members=["tunnel.1", "ethernet1/1"]))
+    p._tun_if_map = {"tunnel.1": "vpn-Jabil_Preva"}
+    p._remap_zone_tunnels()
+    members = p.cfg.zones[0].members
+    assert "tunnel.1" not in members
+    assert "vpn-Jabil_Preva" in members and "ethernet1/1" in members
+
+
+def test_ippool_name_sanitized():
+    from fwforge.parsers.paloalto import _ippool_name
+    # PAN NAT-rule names with spaces/quotes must not leak into the ippool name
+    # (FortiOS rejects the object on commit). Only name-safe chars survive.
+    n = _ippool_name("Rule 138 Nat-ID 7-1")
+    assert n == "ippool-Rule_138_Nat-ID_7-1"
+    assert " " not in n and "'" not in n
+
+
 def test_detection_both_formats():
     for fname in ("pa_sample.xml", "pa_sample.set"):
         vendor, conf = detect_vendor(

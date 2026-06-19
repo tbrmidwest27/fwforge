@@ -267,6 +267,18 @@ class Emitter:
         self.out: list[str] = []
         self._emitted_zones: set[str] = set()  # populated by zones()
         self._truncated: list[tuple[str, str]] = []  # (original, truncated)
+        self._valid_svc_cache: set[str] | None = None
+
+    def _valid_services(self) -> set[str]:
+        """Service names FortiOS will accept in a `set service` / `set member`:
+        defined custom services, defined service groups, and the FortiOS
+        built-ins. Referencing anything else is rejected on load (-3)."""
+        if self._valid_svc_cache is None:
+            self._valid_svc_cache = (
+                {s.name for s in self.cfg.services}
+                | {g.name for g in self.cfg.svc_groups}
+                | FORTIOS_PREDEFINED_SERVICES | {"ALL"})
+        return self._valid_svc_cache
 
     @property
     def _max_name(self) -> int:
@@ -704,14 +716,40 @@ class Emitter:
     def svc_groups(self):
         if not self.cfg.svc_groups:
             return
+        # every member must be a defined custom service, another group, or a
+        # real FortiOS built-in — anything else (e.g. a bogus built-in name an
+        # App-ID mapping invented, like "IPMI") makes FortiOS reject the whole
+        # `set member` line (-3). Drop + flag, mirroring the zone guard.
+        valid = self._valid_services()
         self.line()
         self.line("config firewall service group")
         for g in _group_dependency_order(self.cfg.svc_groups, self.report,
                                           "services"):
             self.line(f"    edit {_q(g.name)}")
-            if g.members:
+            kept = [m for m in g.members if m in valid]
+            bad = [m for m in g.members if m not in valid]
+            if kept:
+                if bad:
+                    self.report.add(
+                        "warn", "services",
+                        f"service group '{g.name}': dropped member(s) "
+                        f"{', '.join(bad)} — not a defined service or FortiOS "
+                        "built-in (FortiOS would reject the group, -3). Define "
+                        "them or fix the App-ID mapping that produced the name.",
+                        g.source)
                 self.line("        set member "
-                          + " ".join(_q(m) for m in g.members))
+                          + " ".join(_q(m) for m in kept))
+            elif g.members:
+                # had members but ALL were invalid -> placeholder ALL would
+                # broaden any ACCEPT policy using this group to every service.
+                self.report.add(
+                    "warn", "services",
+                    f"service group '{g.name}': ALL members "
+                    f"({', '.join(bad)}) are undefined/non-built-in — emitted "
+                    "with placeholder 'ALL', which BROADENS any accept policy "
+                    "using this group to every service. Define the members or "
+                    "remove the group/policy.", g.source)
+                self.line('        set member "ALL"')
             else:
                 self.report.add(
                     "warn", "services",
@@ -1433,8 +1471,21 @@ class Emitter:
             else:
                 sched_name = p.schedule or "always"
             self.line(f"        set schedule {_q(sched_name)}")
+            # a service ref must be a defined service/group or a built-in, else
+            # FortiOS rejects the whole policy (-3) — same guard as svc_groups
+            psvc = [s for s in (p.services or ["ALL"])
+                    if s in self._valid_services()]
+            pbad = [s for s in (p.services or []) if s not in psvc]
+            if pbad:
+                self.report.add(
+                    "warn", "services",
+                    f"policy '{p.name or i}': dropped service(s) "
+                    f"{', '.join(pbad)} — not a defined service or FortiOS "
+                    "built-in (would reject the policy, -3)"
+                    + ("; no valid service left, set to ALL which BROADENS the "
+                       "policy" if not psvc else ""), p.source)
             self.line("        set service "
-                      + " ".join(_q(s) for s in (p.services or ["ALL"])))
+                      + " ".join(_q(s) for s in (psvc or ["ALL"])))
             self.line("        set logtraffic "
                       + ("all" if p.log else "disable"))
             # UTM only fires on accept-action policies; silently skip on deny
