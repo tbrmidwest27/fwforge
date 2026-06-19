@@ -344,6 +344,30 @@ security {
     assert byname["ge-0/0/1.0"].description == "local wins"
 
 
+def test_nested_apply_groups_policy_log_honored():
+    # A NESTED apply-groups (here `security policies { apply-groups policy-log }`)
+    # must be expanded even when a top-level apply-groups also exists — the old
+    # short-circuit only checked top-level and silently dropped the nested one,
+    # losing the `then log` the group injects into every policy. Set-format so
+    # the wildcard from-zone/to-zone/policy merge is exercised.
+    text = """set apply-groups "${node}"
+set groups policy-log security policies from-zone <*> to-zone <*> policy <*> then log session-init
+set groups policy-log security policies from-zone <*> to-zone <*> policy <*> then log session-close
+set security policies apply-groups policy-log
+set security policies from-zone trust to-zone untrust policy logged match source-address any
+set security policies from-zone trust to-zone untrust policy logged match destination-address any
+set security policies from-zone trust to-zone untrust policy logged match application any
+set security policies from-zone trust to-zone untrust policy logged then permit
+"""
+    cfg = juniper_srx.parse(text, "nested-ag.set")
+    # the policy had NO own `then log`; the group's wildcard log must reach it
+    assert _pol(cfg, "logged").log is True
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("apply-groups expanded" in m and "policy-log" in m for m in msgs)
+    # ${node} has no literal group definition -> reported skipped, not silent
+    assert any("${node}" in m and "skipped" in m for m in msgs)
+
+
 def test_host_inbound_traffic_allowaccess():
     text = """interfaces {
     ge-0/0/0 {
