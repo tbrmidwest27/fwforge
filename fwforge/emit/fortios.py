@@ -1246,6 +1246,8 @@ class Emitter:
                         f"BGP neighbor {n.ip}: no remote-as — FortiOS "
                         "requires it; set it manually before this loads",
                         n.source)
+                if n.local_as:
+                    self.line(f"            set local-as {n.local_as}")
                 if n.description:
                     self.line(f"            set description "
                               f"{_q(n.description[:63])}")

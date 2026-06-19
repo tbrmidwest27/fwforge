@@ -292,6 +292,7 @@ class BgpNeighbor:
     remote_as: str = ""
     description: str | None = None
     has_password: bool = False  # source had auth; key not carried over
+    local_as: str = ""  # per-neighbor local-as override (≠ the global AS)
     source: SourceRef | None = None
 
 

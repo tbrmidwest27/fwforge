@@ -1608,6 +1608,24 @@ class JunosParser:
         exports: list[str] = []
         for toks in bgp.leaf_all("export"):
             exports += toks
+        # `local-as` (bgp/group/neighbor, most-specific wins) makes a peer
+        # present an AS other than the global autonomous-system. It only
+        # matters when it DIFFERS from the global AS; carried to FortiOS
+        # `set local-as` per neighbor. Dropping a differing one would make the
+        # session present the wrong AS and the peer would reject it.
+        # `local-as` may carry sub-options (`local-as 64513 private`) — keep
+        # only the bare ASN; FortiOS `set local-as` takes a single integer, and
+        # the sub-options (private/no-prepend/alias/replace-as) aren't carried.
+        def _local_as(node: JNode) -> str:
+            v = node.leaf("local-as")
+            return v[0] if v else ""
+
+        bgp_local = _local_as(bgp)
+        overrides: list[tuple[str, str]] = []  # (neighbor-ip, local-as)
+
+        def _override(value: str) -> str:
+            return value if value and value != local_as else ""
+
         for gkey, grp in bgp.find("group"):
             gname = gkey[1] if len(gkey) > 1 else "group"
             gtype = grp.leaf_str("type")
@@ -1616,20 +1634,27 @@ class JunosParser:
                 g_as = local_as
             g_auth = bool(grp.leaf_str("authentication-key"))
             g_descr = grp.leaf_str("description")
+            g_local = _local_as(grp) or bgp_local
             for toks in grp.leaf_all("export"):
                 exports += toks
             # bare `neighbor 10.0.0.2;` leaves
             for toks in grp.leaf_all("neighbor"):
                 if toks:
+                    nla = _override(g_local)
+                    if nla:
+                        overrides.append((toks[0], nla))
                     cfg.neighbors.append(BgpNeighbor(
                         ip=toks[0], remote_as=g_as,
                         description=g_descr or gname,
-                        has_password=g_auth,
+                        has_password=g_auth, local_as=nla,
                         source=self.ref(grp, f"bgp group {gname}")))
             # `neighbor 10.0.0.2 { peer-as ...; }` containers
             for nkey, nb in grp.find("neighbor"):
                 if len(nkey) < 2:
                     continue
+                nla = _override(_local_as(nb) or g_local)
+                if nla:
+                    overrides.append((nkey[1], nla))
                 cfg.neighbors.append(BgpNeighbor(
                     ip=nkey[1],
                     remote_as=nb.leaf_str("peer-as") or g_as,
@@ -1637,7 +1662,16 @@ class JunosParser:
                     or g_descr or gname,
                     has_password=g_auth
                     or bool(nb.leaf_str("authentication-key")),
+                    local_as=nla,
                     source=self.ref(nb, f"bgp neighbor {nkey[1]}")))
+        if overrides:
+            self.note("info", "routing",
+                      "BGP local-as override(s) (neighbor presents an AS other "
+                      f"than the global {local_as or '?'}): "
+                      + ", ".join(f"{ip}->{la}" for ip, la in overrides)
+                      + " — converted to per-neighbor 'set local-as'; "
+                      "Junos local-as sub-options (private/no-prepend/"
+                      "alias/replace-as) are NOT carried, verify", ref)
         if exports:
             self.note("warn", "routing",
                       "BGP export policies "
