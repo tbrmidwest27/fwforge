@@ -236,6 +236,21 @@ def _parse_hc(text: str):
         "health-check must be 'none' or '<ping|http|dns> <server>'")
 
 
+def _converted_counts(cfg) -> dict:
+    """Per-VDOM-summed counts of what the conversion produced — for the
+    result-page outcome tiles. Mirrors the plan-page tally (uses the same
+    vsys_cfgs scopes), but read off the FINAL converted config."""
+    out = {"policies": 0, "addresses": 0, "services": 0, "nat_vips": 0}
+    if cfg is None:
+        return out
+    for _name, vc in (cfg.meta.get("vsys_cfgs") or [(None, cfg)]):
+        out["policies"] += len(vc.policies)
+        out["addresses"] += len(vc.addresses)
+        out["services"] += len(vc.services)
+        out["nat_vips"] += len(vc.nats) + len(vc.vips)
+    return out
+
+
 def _form_indexes(form, prefix: str) -> list[int]:
     """Row indexes present in the form (gap-tolerant: rows can be removed
     from the middle of the builder)."""
@@ -757,6 +772,9 @@ def create_app() -> Flask:
                 "warnings": report.count("warn"),
                 "notes": report.count("info"),
             },
+            # what actually converted (per-VDOM summed) — surfaced as result
+            # tiles so the outcome, not just errors/warnings, is front and center
+            "converted": _converted_counts(result.cfg),
             "meta": {k: v for k, v in report.meta.items()
                      if k not in ("tool", "source", "mode")},
             "findings": _grouped_findings(report),

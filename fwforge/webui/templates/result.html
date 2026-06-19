@@ -11,17 +11,51 @@
 
 {% block content %}
 <div class="kpis">
-  <div class="kpi err"><div class="n">{{ r.counts.errors }}</div><div class="l">errors</div></div>
-  <div class="kpi warn"><div class="n">{{ r.counts.warnings }}</div><div class="l">warnings</div></div>
-  <div class="kpi"><div class="n">{{ r.counts.notes }}</div><div class="l">notes</div></div>
+  <div class="kpi err" data-goto="findings" data-level="err"><div class="n">{{ r.counts.errors }}</div><div class="l">errors</div></div>
+  <div class="kpi warn" data-goto="findings" data-level="warn"><div class="n">{{ r.counts.warnings }}</div><div class="l">warnings</div></div>
+  <div class="kpi" data-goto="findings" data-level="info"><div class="n">{{ r.counts.notes }}</div><div class="l">notes</div></div>
   {% if r.mode == "migrate" %}
-  <div class="kpi"><div class="n">{{ r.sections }}</div><div class="l">sections kept</div></div>
-  <div class="kpi ok"><div class="n">{{ r.diff_changed }}</div><div class="l">lines changed</div></div>
+  <div class="kpi" data-goto="output"><div class="n">{{ r.sections }}</div><div class="l">sections kept</div></div>
+  <div class="kpi ok" data-goto="changes"><div class="n">{{ r.diff_changed }}</div><div class="l">lines changed</div></div>
   {% else %}
-  <div class="kpi"><div class="n">{{ r.unparsed }}</div><div class="l">unconverted lines</div></div>
+  <div class="kpi ok" data-goto="output"><div class="n">{{ r.converted.policies }}</div><div class="l">policies</div></div>
+  <div class="kpi ok" data-goto="output"><div class="n">{{ r.converted.addresses }}</div><div class="l">addresses</div></div>
+  <div class="kpi ok" data-goto="output"><div class="n">{{ r.converted.services }}</div><div class="l">services</div></div>
+  <div class="kpi ok" data-goto="output"><div class="n">{{ r.converted.nat_vips }}</div><div class="l">NAT / VIPs</div></div>
+  <div class="kpi" id="kpi-appid" style="display:none"><div class="n" id="kpi-appid-n">0</div><div class="l">App-ID gaps</div></div>
+  <div class="kpi" data-goto="findings" data-level=""><div class="n">{{ r.unparsed }}</div><div class="l">unconverted lines</div></div>
   {% endif %}
-  <div class="kpi"><div class="n">{{ r.out_size }}</div><div class="l">output lines</div></div>
+  <div class="kpi" data-goto="output"><div class="n">{{ r.out_size }}</div><div class="l">output lines</div></div>
 </div>
+
+{% if meta.vendor == "paloalto" %}
+{# Hero: the AI App-ID Optimizer — the single most differentiating feature, so
+   it sits above everything (tab-independent) and is ALWAYS shown for PAN. JS
+   sets the state on load: gaps-to-fill (CTA) or an all-clear success note. #}
+<div class="appid-hero" id="appid-hero">
+  <div class="appid-hero-icon" aria-hidden="true">✦</div>
+  <div class="appid-hero-main">
+    <div class="appid-hero-kicker">AI App-ID Optimizer</div>
+    <h2 class="appid-hero-h" id="appid-hero-h">App-ID → port conversion</h2>
+    <p class="appid-hero-sub">
+      <span id="ai-gaps-detect">Scanning findings for unmapped App-IDs…</span>
+      Claude researches each unmapped App-ID's real ports + FortiGuard category
+      and writes them to <code>~/.fwforge/pan_apps.json</code> — then re-run the
+      conversion (no restart) and the policies tighten automatically.</p>
+    <div id="ai-gaps-card">
+      <div class="appid-hero-actions">
+        <button id="ai-gaps-btn" class="btn appid-hero-cta" style="display:none"
+                onclick="aiGaps()">✦ Research &amp; fill gaps with AI</button>
+        <button id="ai-sum-hero-btn" class="btn ghost appid-hero-cta"
+                onclick="aiSummary('hero')">✦ Explain this conversion</button>
+      </div>
+      <div id="ai-gaps-out" style="margin-top:.8rem"></div>
+      <div id="ai-sum-hero-out" class="ai-out"
+           style="display:none;margin-top:.8rem"></div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 {% if r.unmapped %}
 <div class="banner err">
@@ -108,6 +142,13 @@
     </select>
     <span class="muted" id="fcount"></span>
   </div>
+  <div class="findings-note">
+    <strong>These are review items, not failures.</strong> fwforge surfaces
+    <em>every</em> thing that isn't a clean 1:1 conversion — interfaces to map,
+    PAN-OS defaults to confirm, anything it refuses to drop silently — so you
+    know exactly what to check. <span class="muted">Errors block loading;
+    warnings &amp; notes are things to review and sign off.</span>
+  </div>
   {% for level, title in [("error", "Errors — must fix"),
                           ("warn", "Warnings — review"),
                           ("info", "Notes")] %}
@@ -134,8 +175,14 @@
 
 <!-- ============ Optimize ============ -->
 <div class="tabpane" id="pane-optimize">
-  <div id="opt-empty" class="muted" style="display:none">
-    No policy optimization findings — the policy set looks clean.
+  <div id="opt-empty" class="opt-empty-card" style="display:none">
+    <div class="opt-empty-icon" aria-hidden="true">✓</div>
+    <div>
+      <strong>No policy-optimization issues found.</strong><br>
+      <span class="muted">No security bypasses, dead or shadowed rules,
+      unreachable accepts, or collapse candidates — the converted policy set is
+      already clean. (This analysis runs on the converted FortiOS policies.)</span>
+    </div>
   </div>
   <div id="opt-bar" class="opt-bar" style="display:none"></div>
 
@@ -233,25 +280,9 @@
     <p class="muted">Ask Claude to write a plain-English summary of this
       conversion suitable for a handoff document.</p>
     <button id="ai-sum-tab-btn" class="btn ghost small"
-            onclick="aiSummary(true)">✦ Generate narrative</button>
+            onclick="aiSummary('tab')">✦ Generate narrative</button>
     <div id="ai-sum-tab-out" class="ai-out" style="margin-top:.7rem"></div>
   </div>
-
-  {% if r.mode == "cross" %}
-  <div class="card" id="ai-gaps-card">
-    <h2>App-ID Gap Analyzer</h2>
-    <p class="muted">Finds PAN App-IDs from this conversion that fell back to
-      <code>service ALL</code> (overly permissive), researches their correct
-      ports and FortiGuard category with Claude, then writes the results to
-      <code>~/.fwforge/pan_apps.json</code> so the next conversion is tighter.
-      <br><strong>New App-IDs apply immediately — just re-run the conversion after filling gaps (no restart needed).</strong></p>
-    <div id="ai-gaps-detect" class="muted" style="margin:.4rem 0 .6rem;font-size:.83rem">
-      Scanning findings for unmapped App-IDs…</div>
-    <button id="ai-gaps-btn" class="btn ghost small" style="display:none"
-            onclick="aiGaps()">✦ Research &amp; fill gaps</button>
-    <div id="ai-gaps-out" style="margin-top:.7rem"></div>
-  </div>
-  {% endif %}
 </div>
 
 <style>
@@ -279,6 +310,62 @@
 }
 .ai-gap-ok { color: var(--ok); font-weight: 600; }
 .ai-gap-err { color: var(--err); font-weight: 600; }
+
+/* ---- AI App-ID Optimizer hero (the headline feature on this page) ---- */
+.appid-hero {
+  display: flex; gap: 1rem; align-items: flex-start;
+  background: linear-gradient(135deg, var(--infobg), var(--card));
+  border: 1px solid var(--brand); border-left: 5px solid var(--brand);
+  border-radius: 12px; padding: 1.1rem 1.3rem; margin: .2rem 0 1.3rem;
+  box-shadow: 0 2px 16px rgba(38,103,152,.16);
+}
+.appid-hero-icon {
+  flex-shrink: 0; width: 2.5rem; height: 2.5rem; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.7rem; color: var(--brand); background: #fff;
+  border: 1px solid var(--brand); box-shadow: 0 0 0 5px rgba(38,103,152,.10);
+}
+.appid-hero-main { flex: 1; min-width: 0; }
+.appid-hero-kicker {
+  text-transform: uppercase; letter-spacing: .09em; font-size: .7rem;
+  font-weight: 800; color: var(--brand); margin-bottom: .15rem;
+}
+.appid-hero-h { margin: 0 0 .35rem; font-size: 1.18rem; font-weight: 800; }
+.appid-hero-sub {
+  color: var(--mut); font-size: .86rem; line-height: 1.6; margin: 0 0 .85rem;
+}
+.appid-hero-cta { font-size: .92rem; font-weight: 700; padding: .55rem 1.15rem; }
+/* all-clear success variant */
+.appid-hero-ok { border-color: var(--ok); border-left-color: var(--ok);
+  box-shadow: 0 2px 16px rgba(46,160,67,.14); }
+.appid-hero-ok .appid-hero-icon { color: var(--ok); border-color: var(--ok);
+  box-shadow: 0 0 0 5px rgba(46,160,67,.10); }
+.appid-hero-ok .appid-hero-kicker { color: var(--ok); }
+
+/* clickable KPI tiles -> deep-link to the detail they summarize */
+.kpi[data-goto], #kpi-appid { cursor: pointer;
+  transition: border-color .12s, box-shadow .12s, transform .05s; }
+.kpi[data-goto]:hover, #kpi-appid:hover {
+  border-color: var(--brand); box-shadow: 0 2px 10px rgba(38,103,152,.16); }
+.kpi[data-goto]:active, #kpi-appid:active { transform: translateY(1px); }
+.appid-hero-actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+
+/* findings reframe note + optimize empty-state card */
+.findings-note {
+  background: var(--infobg); border-left: 3px solid var(--brand);
+  border-radius: 0 7px 7px 0; padding: .6rem .85rem; margin: 0 0 1rem;
+  font-size: .85rem; line-height: 1.55; color: var(--ink);
+}
+.opt-empty-card {
+  display: flex; gap: .85rem; align-items: center;
+  background: var(--infobg); border: 1px solid var(--line);
+  border-radius: 10px; padding: 1rem 1.2rem; font-size: .92rem; line-height: 1.55;
+}
+.opt-empty-icon {
+  flex-shrink: 0; width: 2.1rem; height: 2.1rem; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.2rem; font-weight: 800; color: #fff; background: var(--ok);
+}
 .opt-bar { display:flex; flex-wrap:wrap; gap:.6rem; margin-bottom:1.1rem;
   font-size:.88rem; font-weight:600; align-items:center; }
 .opt-bar span { padding:.2rem .6rem; border-radius:99px; }
@@ -331,6 +418,60 @@ if (ACTIVE && ACTIVE !== "summary") {
   const b = document.querySelector(`#rtabs button[data-pane="${ACTIVE}"]`);
   if (b) b.onclick();
 }
+
+// KPI tiles deep-link to the detail they summarize (errors/warnings/notes ->
+// the Findings tab filtered to that level; object/output counts -> Output;
+// migrate's "lines changed" -> Changes). The App-ID tile has its own handler.
+document.querySelectorAll(".kpi[data-goto]").forEach(t => {
+  t.onclick = () => {
+    const btn = document.querySelector(
+      `#rtabs button[data-pane="${t.dataset.goto}"]`);
+    if (btn) btn.click();
+    if ("level" in t.dataset) {
+      const sel = document.getElementById("flevel");
+      if (sel) { sel.value = t.dataset.level; filterFindings(); }
+    }
+    const tabs = document.getElementById("rtabs");
+    if (tabs) tabs.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+});
+
+// Populate the App-ID gaps tile from the findings (PAN only — it stays hidden
+// when there are no App-ID -> service-ALL fallbacks). Same scan the Gap
+// Analyzer uses, so the tile and the card always agree.
+(function () {
+  if (typeof scanAppIdGaps !== "function") return;
+  const hero = document.getElementById("appid-hero");   // present only for PAN
+  const tile = document.getElementById("kpi-appid");
+  const n = scanAppIdGaps().length;
+
+  if (n > 0) {
+    if (hero) initAiTab();          // fills detect text + reveals the CTA button
+    if (tile) {
+      document.getElementById("kpi-appid-n").textContent = n;
+      tile.classList.add("warn");
+      tile.style.display = "";
+      tile.style.cursor = "pointer";
+      tile.title = "Jump to the AI App-ID Optimizer";
+      tile.onclick = () => hero &&
+        hero.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  } else if (hero) {
+    // PAN conversion with no gaps -> all-clear success state (still prominent)
+    hero.classList.add("appid-hero-ok");
+    const h = document.getElementById("appid-hero-h");
+    if (h) h.textContent = "All App-IDs mapped to specific ports";
+    document.getElementById("ai-gaps-detect").innerHTML =
+      '<span class="ai-gap-ok">✓ No App-IDs fell back to '
+      + '<code>service ALL</code> — every application resolved to its real '
+      + 'ports.</span> ';
+    if (tile) {
+      document.getElementById("kpi-appid-n").textContent = "0";
+      tile.classList.add("ok");
+      tile.style.display = "";
+    }
+  }
+})();
 
 function filterFindings() {
   const q = document.getElementById("fsearch").value.toLowerCase();
@@ -532,13 +673,17 @@ function initOptTab() {
 
 /* ---- Feature 3: Conversion Summary ---- */
 let summaryDone = false;
-async function aiSummary(fromTab) {
-  const btn  = fromTab ? document.getElementById("ai-sum-tab-btn")
-                       : document.getElementById("ai-sum-btn");
-  const out  = fromTab ? document.getElementById("ai-sum-tab-out")
-                       : document.getElementById("ai-sum-out");
+const AI_SUM_BTNS = ["ai-sum-btn", "ai-sum-tab-btn", "ai-sum-hero-btn"];
+const AI_SUM_OUTS = ["ai-sum-out", "ai-sum-tab-out", "ai-sum-hero-out"];
+async function aiSummary(src) {
+  // src: 'hero' | 'tab' | undefined (the Summary-card button)
+  const TARGETS = { hero: ["ai-sum-hero-btn", "ai-sum-hero-out"],
+                    tab:  ["ai-sum-tab-btn", "ai-sum-tab-out"] };
+  const [btnId, outId] = TARGETS[src] || ["ai-sum-btn", "ai-sum-out"];
+  const btn = document.getElementById(btnId);
+  const out = document.getElementById(outId);
   if (!btn || !out) return;
-  if (summaryDone && fromTab) { out.style.display = ""; return; }
+  if (summaryDone && src) { out.style.display = ""; return; }
   btn.disabled = true;
   btn.textContent = "Asking Claude…";
   out.style.display = "";
@@ -550,12 +695,12 @@ async function aiSummary(fromTab) {
     btn.textContent = "✦ regenerate";
     btn.disabled = false;
     summaryDone = true;
-    // sync both buttons/outputs if both exist
-    ["ai-sum-btn","ai-sum-tab-btn"].forEach(id => {
+    // sync every narrative button/output that exists on the page
+    AI_SUM_BTNS.forEach(id => {
       const b2 = document.getElementById(id);
       if (b2) { b2.textContent = "✦ regenerate"; b2.disabled = false; }
     });
-    ["ai-sum-out","ai-sum-tab-out"].forEach(id => {
+    AI_SUM_OUTS.forEach(id => {
       const o2 = document.getElementById(id);
       if (o2 && o2 !== out) { o2.textContent = d.text;
                                o2.className = "ai-out";
@@ -592,6 +737,16 @@ async function aiExplain(btn) {
 
 /* ---- Feature 1: App-ID Gap Analyzer ---- */
 let gapsInitDone = false;
+// Single source of truth for "which findings look like PAN App-ID -> service
+// ALL fallbacks" — used by both the App-ID Gap Analyzer and the App-ID tile.
+function scanAppIdGaps() {
+  return [...document.querySelectorAll("#pane-findings li")].filter(li => {
+    const h = li.dataset.hay || "";
+    return h.includes("service all") || h.includes("unmapped")
+        || (h.includes("app") && h.includes("service"));
+  });
+}
+
 function initAiTab() {
   if (gapsInitDone) return;
   gapsInitDone = true;
@@ -599,13 +754,7 @@ function initAiTab() {
   const gapsBtn = document.getElementById("ai-gaps-btn");
   if (!detect) return;  // migrate mode — no gaps card
 
-  // Scan finding DOM for likely App-ID fallbacks
-  const hits = [...document.querySelectorAll("#pane-findings li")]
-    .filter(li => {
-      const h = li.dataset.hay || "";
-      return h.includes("service all") || h.includes("unmapped")
-          || (h.includes("app") && h.includes("service"));
-    });
+  const hits = scanAppIdGaps();
 
   if (hits.length === 0) {
     detect.textContent = "No unmapped App-ID findings detected — no gaps to fill.";
