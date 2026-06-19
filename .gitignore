@@ -16,5 +16,9 @@ vd2_demo/
 ssl_demo/
 sdwan_demo/
 
+# local working dirs for real/sanitized customer configs under test — never commit
+srx_work/
+sample_configs/
+
 # machine-local Claude Code settings (per-user permissions) — not shared
 .claude/settings.local.json
