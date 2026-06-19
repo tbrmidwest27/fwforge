@@ -180,12 +180,20 @@ def sanitize_interfaces(cfg: FirewallConfig, report) -> dict[str, str]:
     renames: dict[str, str] = {}
     for i in todo:
         old = i.mapped
+        # parent_too_long: the VLAN name only had to be *truncated* when the
+        # parent's mapped name was longer than the room left after the
+        # ".vlan-id" suffix. When the parent already maps to a short name the
+        # rename is clean (e.g. parent ethernet1/6 -> AGG2 gives AGG2.1027),
+        # so the "shorten the parent" hint would be redundant/misleading.
+        parent_too_long = False
         if i.kind == "vlan" and i.vlan_id is not None:
             parent = cfg.interface_by_name(i.parent) if i.parent else None
             head_src = parent.mapped if parent else (i.parent or "vlan")
             suffix = f".{i.vlan_id}"
-            head = SAFE.sub("_", head_src)[:max(1, INTF_MAX - len(suffix))]
-            head = head.strip("_.-") or "vlan"
+            room = max(1, INTF_MAX - len(suffix))
+            head_full = SAFE.sub("_", head_src)
+            parent_too_long = len(head_full) > room
+            head = head_full[:room].strip("_.-") or "vlan"
             preferred = f"{head}{suffix}"
         else:
             preferred = old
@@ -193,13 +201,22 @@ def sanitize_interfaces(cfg: FirewallConfig, report) -> dict[str, str]:
         taken.add(new)
         i.target_name = new
         renames[old] = new
-        hint = (" — map its parent port to a short name (e.g. 'port6') for "
-                "cleaner VLAN names" if i.kind == "vlan" else "")
-        report.add(
-            "warn", "interfaces",
-            f"interface '{old}' exceeds FortiOS's {INTF_MAX}-char limit; "
-            f"renamed to '{new}'{hint}",
-            getattr(i, "source", None))
+        if i.kind == "vlan" and parent_too_long:
+            # the parent name itself is long — nudge the user to shorten it
+            report.add(
+                "warn", "interfaces",
+                f"interface '{old}' ({len(old)} chars) exceeds FortiOS's "
+                f"{INTF_MAX}-char limit; renamed to '{new}' — map its parent "
+                "port to a short name (e.g. 'port6') for cleaner VLAN names",
+                getattr(i, "source", None))
+        else:
+            # clean auto-rename (parent already short, or a created
+            # aggregate/loopback) — informational, no action needed
+            report.add(
+                "info" if i.kind == "vlan" else "warn", "interfaces",
+                f"interface '{old}' ({len(old)} chars) exceeds FortiOS's "
+                f"{INTF_MAX}-char limit; renamed to '{new}'",
+                getattr(i, "source", None))
 
     if renames:
         for zone in cfg.zones:

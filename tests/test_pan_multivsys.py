@@ -621,20 +621,32 @@ def test_long_vlan_name_derives_from_short_parent():
     assert _iface_edit_names(out) == ["port6.1027", "port6.1033"]
     assert "ethernet1/6.1027" not in out          # nothing dangles on the old name
     assert 'set interface "port6.1027" "port6.1033"' in out  # zone followed
-    assert any(f.area == "interfaces" and f.level == "warn"
-               and "15-char" in f.message for f in result.report.findings)
+    # parent already maps to a short name -> the auto-rename is clean, so it's
+    # an informational note with NO misleading "shorten the parent" hint
+    # (regression: this used to be a warn telling you to do what you'd done)
+    renames = [f for f in result.report.findings
+               if f.area == "interfaces" and "15-char" in f.message]
+    assert renames
+    assert all(f.level == "info" for f in renames)
+    assert all("map its parent" not in f.message for f in renames)
     assert not ft.parse_config(out, "o").warnings  # valid, balanced output
 
 
 def test_long_vlan_name_clamped_even_with_long_parent():
     # the user's case: a long parent name (`ethernet1-6`) + 4-digit VLAN
     # would still be 16 chars — must clamp under 15, keeping the VLAN id
-    out = pipeline.run_cross(PAN_LONG_VLAN, "paloalto", "p.xml",
-                             {"ethernet1/6": "ethernet1-6"}).out_text
+    result = pipeline.run_cross(PAN_LONG_VLAN, "paloalto", "p.xml",
+                                {"ethernet1/6": "ethernet1-6"})
+    out = result.out_text
     names = _iface_edit_names(out)
     assert names and all(len(n) <= 15 for n in names)
     assert all(n.endswith(".1027") or n.endswith(".1033") for n in names)
     assert "ethernet1/6.1027" not in out
+    # here the parent name itself is too long -> warn AND keep the "shorten
+    # the parent" hint (this is the case where the advice is actually useful)
+    hints = [f for f in result.report.findings
+             if f.area == "interfaces" and "map its parent" in f.message]
+    assert hints and all(f.level == "warn" for f in hints)
 
 
 def test_short_vlan_name_left_unchanged():
