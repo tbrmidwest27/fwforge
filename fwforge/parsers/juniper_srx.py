@@ -355,8 +355,11 @@ def _descend(node: JNode, key: tuple, lineno: int) -> JNode:
 
 def _expand_groups(root: JNode, reporter) -> None:
     """Merge `groups { NAME { ... } }` into the tree wherever
-    `apply-groups NAME` appears. v1 handles top-level apply-groups and
-    direct group bodies; wildcard interface groups (`<*>`) are flagged."""
+    `apply-groups NAME` appears, at ANY depth — Junos inherits a group's
+    content rooted at the level the `apply-groups` statement sits at, so a
+    nested `apply-groups` (e.g. `security policies { apply-groups policy-log; }`)
+    must be honored, not just top-level ones. Wildcard `<*>` keys in a group
+    merge into matching existing siblings (Junos semantics: never create)."""
     groups_node = root.get("groups")
     if groups_node is None:
         return
@@ -364,38 +367,78 @@ def _expand_groups(root: JNode, reporter) -> None:
     for key, node in groups_node.containers:
         if len(key) == 1:
             groups[key[0]] = node
-    applied = [g for toks in root.leaf_all("apply-groups") for g in toks]
-    if not applied:
-        # apply-groups can be nested; v1 only auto-applies top-level
-        nested = _has_nested_apply_groups(root)
-        if nested:
-            reporter("warn", "groups",
-                     "apply-groups used inside nested stanzas — only "
-                     "top-level groups auto-expanded; verify inherited "
-                     "config converted")
-        return
-    merged = 0
-    for gname in applied:
-        g = groups.get(gname)
-        if g is None:
-            reporter("warn", "groups",
-                     f"apply-groups '{gname}' has no matching group "
-                     "definition — skipped")
-            continue
-        _merge_into(root, g)
-        merged += 1
-    if merged:
+
+    # collect every `apply-groups` occurrence with its path from root, so a
+    # group is merged at the SAME hierarchy level it is referenced from.
+    occurrences: list[tuple[JNode, tuple, list[str]]] = []
+
+    def _walk(node: JNode, path: tuple) -> None:
+        names = [g for toks in node.leaf_all("apply-groups") for g in toks]
+        if names:
+            occurrences.append((node, path, names))
+        for key, child in node.containers:
+            if not path and key == ("groups",):
+                continue  # the group DEFINITIONS are not live config
+            _walk(child, path + (key,))
+
+    _walk(root, ())
+
+    expanded: list[str] = []
+    referenced: set[str] = set()
+    for node, path, names in occurrences:
+        where = " ".join(t for k in path for t in k) or "top-level"
+        for gname in names:
+            referenced.add(gname)
+            g = groups.get(gname)
+            if g is None:
+                reporter("warn", "groups",
+                         f"apply-groups '{gname}' (at {where}) has no matching "
+                         "group definition — skipped (e.g. ${node} resolves "
+                         "per chassis-cluster member; enumerate what it carries)")
+                continue
+            sub = _group_at_path(g, path)
+            if sub is None:
+                reporter("info", "groups",
+                         f"apply-groups '{gname}' referenced at '{where}' but "
+                         "the group defines nothing at that level — nothing "
+                         "inherited here")
+                continue
+            _merge_into(node, sub)
+            expanded.append(f"{gname}@{where}")
+    if expanded:
         reporter("info", "groups",
-                 f"apply-groups expanded {merged} top-level group(s): "
-                 f"{', '.join(applied)} (wildcard <*> keys merged into "
-                 "matching existing stanzas, Junos-style)")
+                 f"apply-groups expanded {len(expanded)} reference(s): "
+                 f"{', '.join(expanded)} (nested apply-groups honored; "
+                 "wildcard <*> keys merged into matching existing stanzas, "
+                 "Junos-style)")
+    # a group body may itself carry apply-groups; v1 does not recurse into
+    # merged-in content for a second expansion pass — flag if that arises,
+    # but only for groups actually applied (an unreferenced group is dead
+    # config and changes nothing, so warning on it is just noise).
+    for gname in referenced:
+        g = groups.get(gname)
+        if g is not None and _has_apply_groups(g):
+            reporter("warn", "groups",
+                     f"group '{gname}' itself uses apply-groups — nested "
+                     "group-in-group inheritance not recursively expanded; "
+                     "verify inherited config converted")
 
 
-def _has_nested_apply_groups(node: JNode, depth: int = 0) -> bool:
-    if depth and node.has_leaf("apply-groups"):
+def _group_at_path(g: JNode, path: tuple) -> JNode | None:
+    """Navigate a group body by the path (tuple of key-tuples) at which an
+    `apply-groups` was referenced; return the matching subtree or None."""
+    node = g
+    for key in path:
+        node = node.get(*key)
+        if node is None:
+            return None
+    return node
+
+
+def _has_apply_groups(node: JNode) -> bool:
+    if node.has_leaf("apply-groups"):
         return True
-    return any(_has_nested_apply_groups(c, depth + 1)
-               for _k, c in node.containers)
+    return any(_has_apply_groups(c) for _k, c in node.containers)
 
 
 # keywords that legally repeat (a stanza may set several) — apply-groups
