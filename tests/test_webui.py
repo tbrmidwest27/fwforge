@@ -212,6 +212,30 @@ def test_cross_convert_reports_unmapped(client):
     assert 'set srcintf "wan1"' in conf
 
 
+def test_rerun_replays_last_conversion(client):
+    """/rerun re-runs convert() with the exact settings of the last run
+    (stored as last_form) — the result page's 're-run now' button after the
+    App-ID gap analyzer adds apps. No form body is resubmitted."""
+    jid = _load(client, "asa_sample.cfg")
+    form = {"fortios": "7.4",
+            "map_src": ["outside", "inside"],
+            "map_dst": ["wan1", "internal1"]}
+    client.post(f"/job/{jid}/convert", data=form, follow_redirects=True)
+    assert 'set srcintf "wan1"' in client.get(f"/job/{jid}/dl/conf").data.decode()
+
+    # re-run with an empty body: it must replay the saved mapping
+    resp = client.post(f"/job/{jid}/rerun", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].rstrip("/").endswith("result")
+    assert 'set srcintf "wan1"' in client.get(f"/job/{jid}/dl/conf").data.decode()
+
+    # a job never converted has no saved settings -> graceful redirect back
+    jid2 = _load(client, "asa_sample.cfg")
+    resp = client.post(f"/job/{jid2}/rerun", follow_redirects=False)
+    assert resp.status_code == 302
+    assert f"/job/{jid2}" in resp.headers["Location"]
+
+
 def test_plan_error_round_trips(client):
     jid = _load(client, "fortios_refactor.conf")
     form = {

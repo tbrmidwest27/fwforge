@@ -593,8 +593,11 @@ async function aiGaps() {
         + `Apps: ${d.apps.map(a => `<code>${escHtml(a)}</code>`).join(", ")}\n\n`
         + `Path: <code>${escHtml(d.path)}</code>\n\n`
         + (d.reloaded ? `<span class="ai-gap-ok">Active now — no restart needed.</span> ` : ``)
-        + `Just re-run the conversion to see tighter service objects instead `
-        + `of <code>service ALL</code>.</div>`;
+        + `Re-run the conversion to see tighter service objects instead `
+        + `of <code>service ALL</code>.`
+        + `<form method="post" action="/job/{{ jid }}/rerun" style="margin:.7rem 0 0">`
+        + `<button class="btn small" type="submit">↻ Re-run conversion now</button>`
+        + `</form></div>`;
       btn.textContent = `✓ ${d.count} app${d.count>1?"s":""} filled`;
     } else if (d.raw) {
       out.innerHTML =

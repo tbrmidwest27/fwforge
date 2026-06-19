@@ -16,6 +16,8 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from werkzeug.datastructures import MultiDict
+
 from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
 
@@ -582,6 +584,11 @@ def create_app() -> Flask:
     @app.post("/job/<jid>/convert")
     def convert(jid):
         meta = _job(jid)
+        # remember the exact submitted settings so the result page can re-run
+        # this conversion in place (e.g. after the App-ID gap analyzer adds
+        # apps) without walking back through the wizard
+        meta["last_form"] = request.form.to_dict(flat=False)
+        _save_job(jid)
         jdir = JOBS_DIR / jid
         text = _source_path(jdir).read_text(encoding="utf-8")
         # blank = same as source (migrate) / 7.4 (cross, set below)
@@ -758,6 +765,26 @@ def create_app() -> Flask:
         }
         _save_job(jid)
         return redirect(url_for("job_result", jid=jid))
+
+    @app.post("/job/<jid>/rerun")
+    def rerun(jid):
+        """Re-run the conversion with the exact settings of the last run —
+        used by the result page after the App-ID gap analyzer adds apps."""
+        meta = _job(jid)
+        saved = meta.get("last_form")
+        if not saved:
+            return redirect(url_for(
+                "job", jid=jid,
+                error="run the conversion once before re-running"))
+        # rebuild the submitted form, preserving multi-valued fields
+        # (pol_keep, interface maps, members), then replay it through
+        # convert() — which reads only request.form — in a fresh context
+        form = MultiDict()
+        for key, vals in saved.items():
+            for v in (vals if isinstance(vals, list) else [vals]):
+                form.add(key, v)
+        with app.test_request_context(method="POST", data=form):
+            return convert(jid)
 
     @app.get("/job/<jid>/result")
     def job_result(jid):
