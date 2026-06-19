@@ -244,7 +244,7 @@
       <code>service ALL</code> (overly permissive), researches their correct
       ports and FortiGuard category with Claude, then writes the results to
       <code>~/.fwforge/pan_apps.json</code> so the next conversion is tighter.
-      <br><strong>Restart the GUI and re-run the conversion after filling gaps.</strong></p>
+      <br><strong>New App-IDs apply immediately — just re-run the conversion after filling gaps (no restart needed).</strong></p>
     <div id="ai-gaps-detect" class="muted" style="margin:.4rem 0 .6rem;font-size:.83rem">
       Scanning findings for unmapped App-IDs…</div>
     <button id="ai-gaps-btn" class="btn ghost small" style="display:none"
@@ -592,8 +592,9 @@ async function aiGaps() {
         + (d.count > 1 ? "s" : "") + ` to pan_apps.json</span>\n`
         + `Apps: ${d.apps.map(a => `<code>${escHtml(a)}</code>`).join(", ")}\n\n`
         + `Path: <code>${escHtml(d.path)}</code>\n\n`
-        + `Restart the GUI and re-run the conversion to see tighter service `
-        + `objects instead of <code>service ALL</code>.</div>`;
+        + (d.reloaded ? `<span class="ai-gap-ok">Active now — no restart needed.</span> ` : ``)
+        + `Just re-run the conversion to see tighter service objects instead `
+        + `of <code>service ALL</code>.</div>`;
       btn.textContent = `✓ ${d.count} app${d.count>1?"s":""} filled`;
     } else if (d.raw) {
       out.innerHTML =

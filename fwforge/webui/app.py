@@ -862,9 +862,14 @@ def create_app() -> Flask:
                 entries, raw = research_app_gaps(all_f, vendor)
                 if entries:
                     count, path = merge_to_user_db(entries)
+                    # hot-reload the App-ID tables so the new entries take
+                    # effect for the next conversion without restarting fwforge
+                    from ..parsers import pan_appid
+                    _, user_total = pan_appid.reload()
                     return {"ok": True, "count": count,
                             "apps": list(entries.keys()),
-                            "path": path, "raw": raw}
+                            "path": path, "raw": raw,
+                            "reloaded": True, "app_db_user": user_total}
                 return {"ok": True, "count": 0, "apps": [], "raw": raw,
                         "text": raw or "No unmapped App-IDs found in findings."}
 

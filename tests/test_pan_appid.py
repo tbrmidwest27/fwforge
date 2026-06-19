@@ -477,6 +477,30 @@ def test_db_counts():
     assert user >= 0
 
 
+def test_reload_picks_up_user_file(tmp_path):
+    """reload() applies a freshly-written user override without a restart so the
+    GUI's App-ID gap analyzer takes effect in-process. Restores real DB after."""
+    fake = "zzz-reload-probe"
+    assert fake not in pan_appid.DEFAULT_PORTS  # sanity: not a real app
+    user_file = tmp_path / "pan_apps.json"
+    user_file.write_text(json.dumps({"apps": {fake: {
+        "ports": [{"proto": "tcp", "ports": "9999"}],
+        "fortiguard_category": "Business"}}}), encoding="utf-8")
+    orig = pan_appid._USER_FILE
+    try:
+        pan_appid._USER_FILE = user_file
+        bundled, user = pan_appid.reload()
+        assert bundled > 100 and user >= 1
+        # the new app is live in every derived table, no import/restart
+        assert pan_appid.DEFAULT_PORTS[fake] == [("tcp", "9999")]
+        assert pan_appid.APP_TO_CAT[fake] == "Business"
+        assert pan_appid._resolve(fake) is not None
+    finally:
+        pan_appid._USER_FILE = orig
+        pan_appid.reload()  # restore the real in-memory DB for other tests
+    assert fake not in pan_appid.DEFAULT_PORTS  # cleanup verified
+
+
 def test_decryption_detection():
     """SSL decryption rules emit exactly one warn finding with area='decryption'."""
     p = paloalto.PaloParser(DECRYPT_CFG, "test.xml")

@@ -114,41 +114,74 @@ def db_counts() -> tuple[int, int]:
     return bundled_n, user_n
 
 # ---------------------------------------------------------------------------
-# Backward-compat module-level dicts (derived from _DB at import time).
-# External code that accesses these directly continues to work.
+# Backward-compat module-level dicts (derived from _DB). They are MUTATED IN
+# PLACE by _rebuild_tables() — never reassigned — so code that imported them
+# by reference keeps working, and reload() can refresh them in a running
+# process (no restart needed after the GUI merges new App-IDs).
 # ---------------------------------------------------------------------------
-TRANSPORT: set[str] = {k for k, v in _DB.items() if v.get("transport")}
+TRANSPORT: set[str] = set()
+APP_TO_CAT: dict[str, str] = {}
+DEFAULT_PORTS: dict[str, list[tuple[str, str]]] = {}
+APP_TO_BUILTIN: dict[str, list[str]] = {}
+PAN_SIG_ALIAS: dict[str, list[str]] = {}
 
-APP_TO_CAT: dict[str, str] = {
-    k: v["fortiguard_category"]
-    for k, v in _DB.items()
-    if v.get("fortiguard_category") and not v.get("transport")
-}
 
-DEFAULT_PORTS: dict[str, list[tuple[str, str]]] = {
-    k: [(p["proto"], p["ports"]) for p in v.get("ports", []) if p.get("ports") != ""]
-    for k, v in _DB.items()
-    if v.get("ports") and not all(p.get("ports") == "" for p in v.get("ports", []))
-}
-# icmp entries have empty ports string — keep them as-is (proto=icmp, ports="")
-for _k, _v in _DB.items():
-    _ports = _v.get("ports", [])
-    if _ports and any(p.get("proto") == "icmp" for p in _ports):
-        DEFAULT_PORTS[_k] = [
-            (p["proto"], p["ports"]) for p in _ports
-        ]
+def _rebuild_tables() -> None:
+    """Rebuild every derived lookup table from _DB, mutating them in place."""
+    TRANSPORT.clear()
+    TRANSPORT.update(k for k, v in _DB.items() if v.get("transport"))
 
-APP_TO_BUILTIN: dict[str, list[str]] = {
-    k: v["builtin_services"]
-    for k, v in _DB.items()
-    if v.get("builtin_services")
-}
+    APP_TO_CAT.clear()
+    APP_TO_CAT.update({
+        k: v["fortiguard_category"]
+        for k, v in _DB.items()
+        if v.get("fortiguard_category") and not v.get("transport")
+    })
 
-PAN_SIG_ALIAS: dict[str, list[str]] = {
-    k: v["sig_aliases"]
-    for k, v in _DB.items()
-    if v.get("sig_aliases")
-}
+    DEFAULT_PORTS.clear()
+    DEFAULT_PORTS.update({
+        k: [(p["proto"], p["ports"]) for p in v.get("ports", []) if p.get("ports") != ""]
+        for k, v in _DB.items()
+        if v.get("ports") and not all(p.get("ports") == "" for p in v.get("ports", []))
+    })
+    # icmp entries have empty ports string — keep them as-is (proto=icmp, ports="")
+    for _k, _v in _DB.items():
+        _ports = _v.get("ports", [])
+        if _ports and any(p.get("proto") == "icmp" for p in _ports):
+            DEFAULT_PORTS[_k] = [(p["proto"], p["ports"]) for p in _ports]
+
+    APP_TO_BUILTIN.clear()
+    APP_TO_BUILTIN.update({
+        k: v["builtin_services"]
+        for k, v in _DB.items()
+        if v.get("builtin_services")
+    })
+
+    PAN_SIG_ALIAS.clear()
+    PAN_SIG_ALIAS.update({
+        k: v["sig_aliases"]
+        for k, v in _DB.items()
+        if v.get("sig_aliases")
+    })
+
+
+_rebuild_tables()
+
+
+def reload() -> tuple[int, int]:
+    """Re-read the bundled + user App-ID DB and rebuild every in-memory table
+    so a freshly-merged ~/.fwforge/pan_apps.json takes effect WITHOUT a process
+    restart (e.g. right after the GUI's App-ID gap analyzer writes new entries).
+    Mutates the module globals in place so existing imports stay valid.
+    Returns the new (bundled_count, user_override_count)."""
+    new_db = _load_db()
+    _DB.clear()
+    _DB.update(new_db)
+    new_xwalk = _load_xwalk()
+    _XWALK.clear()
+    _XWALK.update(new_xwalk)
+    _rebuild_tables()
+    return db_counts()
 
 
 # ---------------------------------------------------------------------------
