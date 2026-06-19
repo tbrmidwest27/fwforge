@@ -26,6 +26,28 @@ def test_nested_groups_emitted_in_dependency_order():
     assert out.index('edit "sg-child"') < out.index('edit "sg-parent"')
 
 
+def test_service_group_drops_undefined_member():
+    # A group member that is neither a defined custom service nor a real FortiOS
+    # built-in (e.g. a bogus "IPMI" an App-ID mapping invented) would make the
+    # whole `set member` line fail to load (-3). It must be dropped + flagged,
+    # the real members kept.
+    cfg = FirewallConfig(vendor="test")
+    cfg.services.append(Service(name="appdef-tcp-623", protocol="tcp",
+                                dst_ports="623"))
+    cfg.svc_groups.append(ServiceGroup(
+        name="appsvc-grp-1",
+        members=["HTTPS", "IPMI", "appdef-tcp-623", "SMB"]))
+    report = Report()
+    out = emit_fortios.emit(cfg, report)
+    member_line = next(l for l in out.splitlines()
+                       if l.strip().startswith("set member"))
+    assert '"IPMI"' not in member_line                 # bogus name dropped
+    assert '"HTTPS"' in member_line and '"SMB"' in member_line   # built-ins kept
+    assert '"appdef-tcp-623"' in member_line                     # custom kept
+    assert any("IPMI" in f.message and "dropped member" in f.message
+               for f in report.findings)
+
+
 def test_group_membership_cycle_is_safe():
     # A membership cycle must not recurse forever; every group is still emitted
     # exactly once and an error is reported.
