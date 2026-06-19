@@ -606,6 +606,7 @@ class JunosParser:
                 continue
             name = key[1]
             self._app_specs[name] = self._app_to_specs(app)
+            self._flag_app_caveats(name, app)
         for key, aset in apps.find("application-set"):
             if len(key) < 2:
                 continue
@@ -620,11 +621,32 @@ class JunosParser:
                 + [k[1] for k, _ in aset.find("application-set")
                    if len(k) > 1])
 
+    def _flag_app_caveats(self, name: str, app: JNode) -> None:
+        """Flag application semantics FortiOS can't carry on a port-only
+        service: an ALG (application-protocol) and a source-port constraint.
+        Info-level — the port still converts; this surfaces the lost nuance
+        so it's never silently dropped."""
+        nodes = [app] + [t for _k, t in app.find("term")]
+        if any(n.has_leaf("application-protocol") for n in nodes):
+            self.note("info", "services",
+                      f"application '{name}' is an ALG (application-protocol) "
+                      "— converted as a port-only service; FortiOS applies its "
+                      "own session-helper, attach an ALG/proxy profile if the "
+                      "dynamic data channel matters", self.ref(app, name))
+        if any(n.has_leaf("source-port") for n in nodes):
+            self.note("info", "services",
+                      f"application '{name}' constrains source-port — FortiOS "
+                      "custom services match on destination port only; the "
+                      "source-port restriction is not converted",
+                      self.ref(app, name))
+
     def _app_to_specs(self, app: JNode) -> list[tuple[str, str]] | None:
-        # an application can be a single term or a set of `term` blocks
+        # an application can be a single term or a set of `term` blocks;
+        # skip terms the source deactivated (inactive) — don't fold a
+        # disabled port back into the active service.
         terms = list(app.find("term"))
         specs: list[tuple[str, str]] = []
-        sources = [app] + [t for _k, t in terms]
+        sources = [app] + [t for _k, t in terms if not self._node_inactive(t)]
         for node in sources:
             proto = node.leaf_str("protocol").lower()
             if not proto:
@@ -649,47 +671,52 @@ class JunosParser:
 
     def _resolve_app(self, name: str,
                      seen: frozenset = frozenset()
-                     ) -> list[tuple[str, str]] | None:
+                     ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Resolve an application/application-set to (specs, unresolved):
+        the (proto, ports) that resolved, plus the names with no port data.
+        A partially-resolvable application-set returns the resolvable members'
+        specs AND the unresolvable member names — one unknown member no longer
+        collapses the whole set (which used to force the policy to ALL)."""
         if name in seen:  # cycle on THIS path only (not siblings)
-            return None
+            return [], []
         if name in self._app_specs:
-            return self._app_specs[name]
+            specs = self._app_specs[name]
+            return (specs, []) if specs else ([], [name])
         if name in self._app_sets:
-            merged: list[tuple[str, str]] = []
+            specs = []
+            unres: list[str] = []
             for m in self._app_sets[name]:
-                s = self._resolve_app(m, seen | {name})
-                if s is None:
-                    return None
-                merged += s
-            return merged or None
-        return junos_apps.junos_app(name)
+                s, u = self._resolve_app(m, seen | {name})
+                specs += s
+                unres += u
+            return specs, unres
+        j = junos_apps.junos_app(name)
+        return (j, []) if j else ([], [name])
 
     def _service_names_for(self, apps: list[str], rule: str,
-                           ref: SourceRef) -> list[str]:
-        """Resolve a policy's applications to FortiOS service names,
-        synthesizing custom services from ports."""
+                           ref: SourceRef) -> tuple[list[str], list[str]]:
+        """Resolve a policy's applications to (services, unresolved): the
+        FortiOS service names that resolved (synthesizing custom services from
+        ports) plus the app/member names with no port data. The CALLER decides
+        what unresolved means — a permit with NO resolved service is disabled,
+        never broadened to ALL (see _one_policy)."""
         if not apps or apps == ["any"]:
-            return ["ALL"]
+            return ["ALL"], []
         out: list[str] = []
         unresolved: list[str] = []
         for app in apps:
             if app == "any":
-                return ["ALL"]
-            specs = self._resolve_app(app)
-            if specs is None:
-                unresolved.append(app)
-                continue
-            out += [self._ensure_service(app, specs, ref)]
-        if unresolved:
-            self.note("warn", "services",
-                      f"policy '{rule}': application(s) "
-                      f"{', '.join(unresolved)} have no port definition "
-                      "(custom ALG or unknown junos-*) — service set to "
-                      "ALL for those; define them on the FortiGate", ref)
-            out.append("ALL")
-        # dedup, keep order
+                return ["ALL"], []
+            specs, unres = self._resolve_app(app)
+            if specs:
+                out += [self._ensure_service(app, specs, ref)]
+            unresolved += unres
+        # dedup both, keep order
         seen: set[str] = set()
-        return [s for s in out if not (s in seen or seen.add(s))]
+        out = [s for s in out if not (s in seen or seen.add(s))]
+        useen: set[str] = set()
+        unresolved = [u for u in unresolved if not (u in useen or useen.add(u))]
+        return out, unresolved
 
     def _ensure_service(self, name: str, specs: list[tuple[str, str]],
                         ref: SourceRef) -> str:
@@ -992,13 +1019,48 @@ class JunosParser:
             action = "deny"
         log = then.get("log") is not None or then.has_leaf("log")
         disabled = container_off or self._node_inactive(pol)
-        services = self._service_names_for(apps, name, ref)
+        services, unresolved = self._service_names_for(apps, name, ref)
         comment_bits = []
         descr = pol.leaf_str("description")
         if descr:
             comment_bits.append(descr)
         if glob:
             comment_bits.append("Junos global policy")
+        # The policy named application(s) but they resolved to nothing usable
+        # (unknown apps, OR an empty / self-referential application-set that
+        # yields no specs AND no names). A permit must NOT ship an enabled
+        # allow-all — the emitter renders empty services as ALL.
+        had_apps = bool(apps) and apps != ["any"]
+        if had_apps and (unresolved or not services):
+            names = ", ".join(unresolved) or "(empty/cyclic application-set)"
+            if action == "accept" and services:
+                # partial resolve: keep the resolved services (NARROWER than
+                # source = fail-closed) and flag the gap — never broaden to ALL
+                self.note("warn", "services",
+                          f"policy '{name}': application(s) {names} have no "
+                          "port definition (custom ALG/unknown junos-*) — NOT "
+                          "included; policy narrowed to the resolved service(s)"
+                          ", add the missing one(s) on the FortiGate", ref)
+            elif action == "accept":
+                # nothing resolved: disable rather than ship an allow-all permit
+                disabled = True
+                services = ["ALL"]
+                comment_bits.append(
+                    f"REVIEW: unresolved application(s) {names} — policy "
+                    "DISABLED (would otherwise permit ALL); define the "
+                    "FortiGate service(s) and re-enable")
+                self.note("warn", "services",
+                          f"policy '{name}': application(s) {names} have no "
+                          "port definition — policy emitted DISABLED for review"
+                          " (not broadened to ALL)", ref)
+            else:
+                # deny/reject: an over-broad deny is fail-closed; keep + flag
+                if "ALL" not in services:
+                    services.append("ALL")
+                self.note("warn", "services",
+                          f"policy '{name}': application(s) {names} have no "
+                          "port definition — deny broadened to ALL "
+                          "(fail-closed); verify", ref)
         tunnel_vpn = ""
         if then.get("permit") is not None:
             permit = then.get("permit")
