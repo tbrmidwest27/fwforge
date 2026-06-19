@@ -403,6 +403,98 @@ security {
                for m in msgs)
 
 
+def test_host_inbound_protocols_flagged():
+    # host-inbound-traffic `protocols` is the SECOND control-plane knob and was
+    # silently dropped. bgp/ospf are _PLAIN keywords -> they parse as child
+    # CONTAINERS under `protocols` (not leaves); vrrp/all parse as leaves. All
+    # shapes must be flagged. Set-format to exercise the container shape.
+    text = """set security zones security-zone edge interfaces reth0.44 host-inbound-traffic protocols bgp
+set security zones security-zone core interfaces reth0.50 host-inbound-traffic protocols all
+set security zones security-zone ha host-inbound-traffic protocols vrrp
+"""
+    cfg = juniper_srx.parse(text, "hip.set")
+    msgs = [m for _, _, m, _ in findings(cfg)]
+    assert any("reth0.44" in m and "protocols bgp" in m
+               and "allowed inbound to the RE" in m for m in msgs)
+    assert any("reth0.50" in m and "protocols all" in m
+               and "ALL routing/control-plane" in m for m in msgs)
+    # zone-level protocols (no interface) is emitted once at zone scope
+    assert any("zone ha" in m and "protocols vrrp" in m for m in msgs)
+
+
+_LO0_FILTER = """set firewall family inet filter PROTECT-RE term ssh from source-prefix-list MGMT
+set firewall family inet filter PROTECT-RE term ssh from protocol tcp
+set firewall family inet filter PROTECT-RE term ssh from destination-port ssh
+set firewall family inet filter PROTECT-RE term ssh then accept
+set firewall family inet filter PROTECT-RE term drop then discard
+"""
+
+
+def test_lo0_control_plane_filter_active():
+    text = _LO0_FILTER + "set interfaces lo0 unit 0 family inet filter input PROTECT-RE\n"
+    cfg = juniper_srx.parse(text, "lo0.set")
+    cp = [m for lvl, area, m, _ in findings(cfg) if area == "control-plane"]
+    assert any("PROTECT-RE" in m and "control-plane firewall" in m
+               and "local-in-policy" in m and "DEACTIVATED" not in m
+               for m in cp)
+
+
+def test_lo0_control_plane_filter_deactivated_not_reactivated():
+    # the binding is deactivated -> converting it would silently RE-ENABLE
+    # protection the admin turned off. Must report as not-converted, not as an
+    # active re-model. (Mirrors the real config: binding present then deactivated.)
+    text = (_LO0_FILTER
+            + "set interfaces lo0 unit 0 family inet filter input PROTECT-RE\n"
+            + "deactivate interfaces lo0 unit 0 family inet filter\n")
+    cfg = juniper_srx.parse(text, "lo0d.set")
+    cp = [m for lvl, area, m, _ in findings(cfg) if area == "control-plane"]
+    assert any("PROTECT-RE" in m and "DEACTIVATED" in m
+               and "NOT converted" in m for m in cp)
+    # and we must NOT also emit the active re-model finding for the same filter
+    assert not any("DEACTIVATED" not in m and "Re-model as:" in m for m in cp)
+
+
+def test_lo0_filter_per_binding_deactivate_not_dropped():
+    # a per-binding deactivate (the binding line itself, not the family) must
+    # still be reported (not silently dropped) AND honored as off.
+    text = (_LO0_FILTER
+            + "deactivate interfaces lo0 unit 0 family inet filter input PROTECT-RE\n")
+    cfg = juniper_srx.parse(text, "lo0pb.set")
+    cp = [m for lvl, area, m, _ in findings(cfg) if area == "control-plane"]
+    assert any("PROTECT-RE" in m and "DEACTIVATED" in m for m in cp)
+
+
+def test_lo0_filter_curly_deactivate_honored():
+    # curly `show configuration` stamps `inactive:` INSIDE the filter block, so
+    # the off-marker lives on the filter container, not the family node.
+    text = """firewall {
+    family inet {
+        filter PROTECT-RE {
+            term ssh {
+                from { protocol tcp; destination-port ssh; }
+                then accept;
+            }
+        }
+    }
+}
+interfaces {
+    lo0 {
+        unit 0 {
+            family inet {
+                inactive: filter {
+                    input PROTECT-RE;
+                }
+            }
+        }
+    }
+}
+"""
+    cfg = juniper_srx.parse(text, "lo0curly.conf")
+    cp = [m for lvl, area, m, _ in findings(cfg) if area == "control-plane"]
+    assert any("PROTECT-RE" in m and "DEACTIVATED" in m for m in cp)
+    assert not any("Re-model as:" in m for m in cp)  # never the active wording
+
+
 def test_logical_systems_flagged():
     text = (FIX / "srx_sample.conf").read_text(encoding="utf-8") + """
 logical-systems {
