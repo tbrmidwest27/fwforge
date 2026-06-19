@@ -123,6 +123,16 @@ def apply_ir(cfg: FirewallConfig, mapping: dict[str, str], report) -> list[str]:
     for itf in cfg.interfaces:
         if itf.name in mapping:
             itf.target_name = mapping[itf.name]
+        # A VLAN subinterface carries its layer-3 config but rides a PHYSICAL
+        # parent that the emitter references with `set interface <parent>`. If
+        # that parent is an IP-less port not referenced anywhere else (no zone,
+        # route, or VPN binding), it would never be collected for mapping —
+        # leaving the subinterface pointing at a source port name the target
+        # FortiGate doesn't have (set interface -> -3). Route the parent
+        # through mapped() so it lands in the portmap and gets rewritten.
+        # (Only VLANs emit a parent reference; loopbacks/tunnels do not.)
+        if itf.kind == "vlan" and itf.parent:
+            itf.parent = mapped(itf.parent)
     for zone in cfg.zones:
         zone.members = [mapped(m) for m in zone.members]
     for p1 in cfg.phase1s:
