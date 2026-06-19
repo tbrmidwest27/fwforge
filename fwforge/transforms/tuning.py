@@ -29,10 +29,13 @@ class TuningOptions:
     split_pairs: bool = False
     exclude: list[str] = field(default_factory=list)  # policy names to drop
     only: list[str] = field(default_factory=list)     # keep only these
+    disable: list[str] = field(default_factory=list)  # policy names -> disabled
+    reorder: list[tuple[str, str]] = field(default_factory=list)  # (move, before)
 
     def any(self) -> bool:
         return bool(self.prune or self.merge_dupes or self.split_pairs
-                    or self.exclude or self.only)
+                    or self.exclude or self.only or self.disable
+                    or self.reorder)
 
 
 def merge_duplicates(cfg: FirewallConfig, report) -> int:
@@ -176,15 +179,80 @@ def split_interface_pairs(cfg: FirewallConfig, report) -> int:
     return split
 
 
+def disable_policies(cfg: FirewallConfig, names, report) -> int:
+    """Force the named policies to disabled (e.g. dead/shadowed rules the user
+    chose to deactivate rather than delete). Only ever SETS disabled — never
+    re-enables a rule — so it can't broaden the policy set."""
+    want = set(names)
+    done = [p.name for p in cfg.policies
+            if p.name in want and not p.disabled]
+    for p in cfg.policies:
+        if p.name in want:
+            p.disabled = True
+    if done:
+        report.add("info", "tuning",
+                   f"disabled {len(done)} rule(s) on request: "
+                   + ", ".join(done))
+    missing = sorted(want - {p.name for p in cfg.policies})
+    if missing:
+        report.add("info", "tuning",
+                   "disable requested for rule(s) not found (no change): "
+                   + ", ".join(missing))
+    return len(done)
+
+
+def reorder_policies(cfg: FirewallConfig, pairs, report) -> int:
+    """Move each named policy to immediately before another — used to lift a
+    shadowed DENY above the ACCEPT that bypasses it. Only reorders existing
+    rules (no add/drop/modify), and only when the rule is currently BELOW its
+    target (so it's idempotent: a no-op once already fixed)."""
+    moved, missing = [], []
+    for spec in pairs:
+        if len(spec) != 2:
+            continue
+        move, before = spec
+        i_move = next((i for i, p in enumerate(cfg.policies)
+                       if p.name == move), None)
+        i_before = next((i for i, p in enumerate(cfg.policies)
+                         if p.name == before), None)
+        if i_move is None or i_before is None:
+            missing.append(f"'{move}' before '{before}'")
+            continue
+        if i_move <= i_before:
+            continue  # already at/above the target (idempotent)
+        pol = cfg.policies.pop(i_move)
+        i_before = next(i for i, p in enumerate(cfg.policies)
+                        if p.name == before)
+        cfg.policies.insert(i_before, pol)
+        moved.append(f"'{move}' above '{before}'")
+    if moved:
+        report.add("info", "tuning",
+                   f"reordered {len(moved)} rule(s) to fix order: "
+                   + "; ".join(moved))
+    if missing:
+        report.add("info", "tuning",
+                   "reorder requested but rule(s) not found (no change): "
+                   + "; ".join(missing))
+    return len(moved)
+
+
 def apply(cfg: FirewallConfig, opts: TuningOptions, report) -> dict:
-    stats = {"merged": 0, "pruned": 0, "filtered": 0, "split": 0}
+    stats = {"merged": 0, "pruned": 0, "filtered": 0, "split": 0,
+             "disabled": 0, "reordered": 0}
     if opts.merge_dupes:
         stats["merged"] = merge_duplicates(cfg, report)
     if opts.exclude or opts.only:
         stats["filtered"] = filter_policies(cfg, opts.exclude, opts.only,
                                             report)
+    # split BEFORE disable/reorder: the Optimize tab scrapes its rule names
+    # from the previous run's findings, which are post-split (e.g. 'Rule-1'),
+    # so the policy list must already be split when we match those names
     if opts.split_pairs:
         stats["split"] = split_interface_pairs(cfg, report)
+    if opts.disable:
+        stats["disabled"] = disable_policies(cfg, opts.disable, report)
+    if opts.reorder:
+        stats["reordered"] = reorder_policies(cfg, opts.reorder, report)
     if opts.prune:
         stats["pruned"] = _prune(cfg, report)
     return stats

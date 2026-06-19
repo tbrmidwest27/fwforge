@@ -345,11 +345,17 @@ def _tuning_from_form(form, meta) -> TuningOptions:
             if p["name"] and p["name"] not in kept \
                     and p["name"] not in exclude:
                 exclude.append(p["name"])
+    # actionable-finding fixes: disable dead rules / reorder a bypassed deny
+    # (carried as repeatable form fields so they replay through /rerun)
+    reorder = [tuple(s.split("|||", 1)) for s in form.getlist("reorder_policy")
+               if "|||" in s]
     return TuningOptions(
         prune=bool(form.get("t_prune")),
         merge_dupes=bool(form.get("t_merge")),
         split_pairs=bool(form.get("t_split")),
         exclude=exclude,
+        disable=form.getlist("disable_policy"),
+        reorder=reorder,
     )
 
 
@@ -783,6 +789,31 @@ def create_app() -> Flask:
         for key, vals in saved.items():
             for v in (vals if isinstance(vals, list) else [vals]):
                 form.add(key, v)
+        with app.test_request_context(method="POST", data=form):
+            return convert(jid)
+
+    @app.post("/job/<jid>/apply_fix")
+    def apply_fix(jid):
+        """Apply an actionable Optimize-tab fix — disable dead rules, or
+        reorder a bypassed DENY above the ACCEPT — on top of the last run's
+        settings, then re-convert. The fix fields are merged into last_form so
+        they persist (and accumulate) across further re-runs."""
+        meta = _job(jid)
+        saved = meta.get("last_form")
+        if not saved:
+            return redirect(url_for(
+                "job", jid=jid,
+                error="run the conversion once before applying a fix"))
+        form = MultiDict()
+        for k, vals in saved.items():
+            for v in (vals if isinstance(vals, list) else [vals]):
+                form.add(k, v)
+        for field_name in ("disable_policy", "reorder_policy"):
+            have = set(form.getlist(field_name))
+            for v in request.form.getlist(field_name):
+                if v and v not in have:
+                    form.add(field_name, v)
+                    have.add(v)
         with app.test_request_context(method="POST", data=form):
             return convert(jid)
 

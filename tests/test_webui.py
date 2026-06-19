@@ -236,6 +236,50 @@ def test_rerun_replays_last_conversion(client):
     assert f"/job/{jid2}" in resp.headers["Location"]
 
 
+def _convert_asa(client):
+    jid = _load(client, "asa_sample.cfg")
+    client.post(f"/job/{jid}/convert", follow_redirects=True, data={
+        "fortios": "7.4",
+        "map_src": ["outside", "inside", "dmz"],
+        "map_dst": ["wan1", "internal1", "dmz"]})
+    return jid
+
+
+def test_apply_fix_disables_named_policy(client):
+    """The Optimize tab's 'Disable these rules' button: /apply_fix disables the
+    named policies on top of the last run, persisting across further re-runs."""
+    import re
+    jid = _convert_asa(client)
+    conf = client.get(f"/job/{jid}/dl/conf").data.decode()
+    name = re.findall(r'set name "([^"]+)"', conf)[0]
+    before = conf.count("set status disable")
+    resp = client.post(f"/job/{jid}/apply_fix",
+                       data={"disable_policy": name}, follow_redirects=False)
+    assert resp.status_code == 302
+    assert client.get(f"/job/{jid}/dl/conf").data.decode().count(
+        "set status disable") == before + 1
+    # the fix persists: a plain re-run keeps the rule disabled
+    client.post(f"/job/{jid}/rerun", follow_redirects=False)
+    assert client.get(f"/job/{jid}/dl/conf").data.decode().count(
+        "set status disable") == before + 1
+
+
+def test_apply_fix_reorders_policies(client):
+    """The Optimize tab's 'Fix' button: /apply_fix moves a rule above another."""
+    import re
+    jid = _convert_asa(client)
+    names = re.findall(
+        r'set name "([^"]+)"',
+        client.get(f"/job/{jid}/dl/conf").data.decode())
+    a, b = names[0], names[1]              # a is emitted before b
+    client.post(f"/job/{jid}/apply_fix",
+                data={"reorder_policy": f"{b}|||{a}"}, follow_redirects=False)
+    after = re.findall(
+        r'set name "([^"]+)"',
+        client.get(f"/job/{jid}/dl/conf").data.decode())
+    assert after.index(b) < after.index(a)  # b lifted above a
+
+
 def test_plan_error_round_trips(client):
     jid = _load(client, "fortios_refactor.conf")
     form = {

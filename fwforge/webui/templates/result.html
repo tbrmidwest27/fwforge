@@ -147,7 +147,7 @@
       above the broader accept, or tighten the accept's scope.</p>
     <table class="opt-table">
       <thead><tr><th>Dead DENY rule</th><th>at</th>
-                 <th>bypassed by</th><th>at</th></tr></thead>
+                 <th>bypassed by</th><th>at</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -407,6 +407,22 @@ async function aiPost(body) {
 
 /* ---- Policy Optimizer Tab ---- */
 let optInitDone = false;
+function optApplyFix(fields) {
+  // POST the fix to apply_fix (full-page nav -> re-convert -> back to this
+  // result page). Values are set as element properties, never via innerHTML,
+  // so user-controlled policy names can't inject markup.
+  const f = document.createElement("form");
+  f.method = "post";
+  f.action = "/job/{{ jid }}/apply_fix";
+  fields.forEach(([n, v]) => {
+    const inp = document.createElement("input");
+    inp.type = "hidden"; inp.name = n; inp.value = v;
+    f.appendChild(inp);
+  });
+  document.body.appendChild(f);
+  f.submit();
+}
+
 function initOptTab() {
   if (optInitDone) return;
   optInitDone = true;
@@ -447,10 +463,23 @@ function initOptTab() {
     const sec = document.getElementById("opt-bypass-section");
     document.getElementById("opt-bypass-count").textContent = bypasses.length;
     const tb = sec.querySelector("tbody");
-    bypasses.forEach(b => tb.appendChild(mkRow([
-      `<code>${escHtml(b.dead)}</code>`, `#${escHtml(b.deadN)}`,
-      `<code>${escHtml(b.by)}</code>`, `#${escHtml(b.byN)}`
-    ])));
+    bypasses.forEach(b => {
+      const tr = mkRow([
+        `<code>${escHtml(b.dead)}</code>`, `#${escHtml(b.deadN)}`,
+        `<code>${escHtml(b.by)}</code>`, `#${escHtml(b.byN)}`, ""]);
+      const fix = document.createElement("button");
+      fix.type = "button"; fix.className = "btn small";
+      fix.textContent = "Fix";
+      fix.title = `Move DENY '${b.dead}' above ACCEPT '${b.by}'`;
+      fix.addEventListener("click", () => {
+        if (confirm(`Fix rule order: move DENY '${b.dead}' (#${b.deadN}) above `
+          + `ACCEPT '${b.by}' (#${b.byN}) so the deny takes effect, then `
+          + `re-run the conversion?`))
+          optApplyFix([["reorder_policy", b.dead + "|||" + b.by]]);
+      });
+      tr.lastElementChild.appendChild(fix);
+      tb.appendChild(tr);
+    });
     sec.style.display = "";
   }
   if (shadows.length) {
@@ -462,6 +491,16 @@ function initOptTab() {
       `<code>${escHtml(r.by)}</code>`, `#${escHtml(r.byN)}`,
       escHtml(r.act)
     ])));
+    const dis = document.createElement("button");
+    dis.type = "button"; dis.className = "btn small"; dis.style.marginTop = ".5rem";
+    dis.textContent = `Disable ${shadows.length>1 ? "these "+shadows.length+" rules" : "this rule"}`;
+    dis.addEventListener("click", () => {
+      if (confirm(`Disable ${shadows.length} dead rule(s)? They never match, so `
+        + `this is safe — each stays in the config as 'set status disable' for `
+        + `audit. Re-runs the conversion.`))
+        optApplyFix(shadows.map(r => ["disable_policy", r.dead]));
+    });
+    sec.appendChild(dis);
     sec.style.display = "";
   }
   if (unreachable.length) {
