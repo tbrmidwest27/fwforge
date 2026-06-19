@@ -624,22 +624,35 @@
   <input type="hidden" name="pol_present" value="1">
 
   <style>
-    /* ---- Policy Selection table ---- */
+    /* ---- Policy Selection table (FortiOS Firewall Policy look) ---- */
     .poltable-wrap { border:1px solid var(--line); border-radius:8px;
       overflow:auto; max-height:62vh; background:#fff;
       margin:.25rem 0 .2rem; }
-    .poltable-wrap table { margin:0; }
-    .poltable-wrap thead th { position:sticky; top:0; z-index:2;
-      box-shadow:inset 0 -1px 0 var(--line); white-space:nowrap; }
+    /* fixed layout: colgroup widths decide column size, so no single
+       column (e.g. "to") can blow the table out horizontally. */
+    .poltable-wrap table.poltable { margin:0; width:100%;
+      table-layout:fixed; }
+    .poltable thead th { position:sticky; top:0; z-index:2;
+      box-shadow:inset 0 -1px 0 var(--line); white-space:nowrap;
+      position:relative; text-align:left; font-size:.78rem;
+      text-transform:uppercase; letter-spacing:.02em; color:var(--mut);
+      user-select:none; overflow:hidden; text-overflow:ellipsis; }
+    .poltable td { vertical-align:top; }
     .poltable th.col-keep, .poltable td.col-keep {
-      text-align:center; width:1px; white-space:nowrap; }
+      text-align:center; white-space:nowrap; }
     .poltable td.col-keep input { width:1.05rem; height:1.05rem;
       accent-color:var(--brand); cursor:pointer; }
+    .poltable td.col-id { color:var(--mut); font-variant-numeric:tabular-nums;
+      text-align:right; padding-right:.6rem; }
     .poltable td.col-rule { font-weight:600; }
+    /* every text cell ellipsis-clamps to its column width; full value
+       lives in the title="" tooltip so nothing is lost. */
+    .poltable td.clamp { overflow:hidden; text-overflow:ellipsis;
+      white-space:nowrap; }
     .poltable td.addr { font-family:ui-monospace,SFMono-Regular,
       "SF Mono",Menlo,Consolas,monospace; font-size:.8rem;
-      color:var(--mut); max-width:18rem; }
-    .poltable td.zone { white-space:nowrap; }
+      color:var(--ink); }
+    .poltable td.zone { white-space:nowrap; color:var(--ink); }
     /* disabled source rules: muted + struck, but still checked/submittable */
     .poltable tr.pol-dis td.col-rule { text-decoration:line-through;
       text-decoration-color:var(--mut); }
@@ -649,6 +662,17 @@
       flex-wrap:wrap; margin:.2rem 0 .55rem; }
     .polhead .searchbar { margin:0; flex:1 1 auto; }
     .polhead .seltools { display:flex; gap:.4rem; align-items:center; }
+    /* drag-to-resize handle on the right edge of each header cell */
+    .poltable th .col-resizer { position:absolute; top:0; right:0;
+      width:7px; height:100%; cursor:col-resize; z-index:3;
+      touch-action:none; }
+    .poltable th .col-resizer::after { content:""; position:absolute;
+      top:18%; right:3px; height:64%; width:1px; background:var(--line); }
+    .poltable th .col-resizer:hover::after,
+    .poltable th.col-resizing .col-resizer::after { background:var(--brand);
+      width:2px; }
+    body.col-resizing, body.col-resizing * { cursor:col-resize !important;
+      user-select:none !important; }
   </style>
 
   <div class="polhead">
@@ -665,21 +689,45 @@
 
   <div class="poltable-wrap">
   <table id="poltable" class="poltable">
+    <colgroup>
+      <col style="width:46px">                       <!-- keep -->
+      <col style="width:52px">                       <!-- # / id -->
+      <col style="width:200px">                      <!-- name -->
+      {% if meta.get("vsys") %}<col style="width:90px">{% endif %}  <!-- vsys -->
+      <col style="width:120px">                      <!-- from -->
+      <col style="width:120px">                      <!-- to -->
+      <col style="width:180px">                      <!-- source -->
+      <col style="width:180px">                      <!-- destination -->
+      <col style="width:160px">                      <!-- service -->
+      <col style="width:90px">                       <!-- action -->
+    </colgroup>
     <thead>
-    <tr><th class="col-keep">keep</th><th>rule</th>{% if meta.get("vsys") %}<th>vsys</th>{% endif %}<th>from</th><th>to</th><th>source</th>
-        <th>destination</th><th>service</th><th>action</th></tr>
+    <tr>
+      <th class="col-keep">Keep</th>
+      <th>#</th>
+      <th>Name<span class="col-resizer" aria-hidden="true"></span></th>
+      {% if meta.get("vsys") %}<th>VDOM<span class="col-resizer" aria-hidden="true"></span></th>{% endif %}
+      <th>From<span class="col-resizer" aria-hidden="true"></span></th>
+      <th>To<span class="col-resizer" aria-hidden="true"></span></th>
+      <th>Source<span class="col-resizer" aria-hidden="true"></span></th>
+      <th>Destination<span class="col-resizer" aria-hidden="true"></span></th>
+      <th>Service<span class="col-resizer" aria-hidden="true"></span></th>
+      <th>Action</th>
+    </tr>
     </thead>
     <tbody>
     {% for p in meta.policies %}
     <tr data-hay="{{ (p.name ~ ' ' ~ p.get('vsys', '') ~ ' ' ~ p.src ~ ' ' ~ p.dst ~ ' ' ~ p.srcaddr ~ ' ' ~ p.dstaddr ~ ' ' ~ p.service)|lower }}"{% if p.disabled %} class="pol-dis"{% endif %}>
       <td class="col-keep"><input type="checkbox" name="pol_keep" value="{{ p.name }}" checked aria-label="keep {{ p.name }}"></td>
-      <td class="col-rule">{{ p.name }}
+      <td class="col-id">{{ loop.index }}</td>
+      <td class="col-rule clamp" title="{{ p.name }}">{{ p.name }}
         {% if p.disabled %}<span class="badge b-info">disabled</span>{% endif %}</td>
-      {% if meta.get("vsys") %}<td><span class="badge b-vdom">{{ p.get("vsys", "") }}</span></td>{% endif %}
-      <td class="zone">{{ p.src }}</td><td class="zone">{{ p.dst }}</td>
-      <td class="addr">{{ p.srcaddr }}</td>
-      <td class="addr">{{ p.dstaddr }}</td>
-      <td class="addr">{{ p.service }}</td>
+      {% if meta.get("vsys") %}<td class="clamp"><span class="badge b-vdom">{{ p.get("vsys", "") }}</span></td>{% endif %}
+      <td class="zone clamp" title="{{ p.src }}">{{ p.src }}</td>
+      <td class="zone clamp" title="{{ p.dst }}">{{ p.dst }}</td>
+      <td class="addr clamp" title="{{ p.srcaddr }}">{{ p.srcaddr }}</td>
+      <td class="addr clamp" title="{{ p.dstaddr }}">{{ p.dstaddr }}</td>
+      <td class="addr clamp" title="{{ p.service }}">{{ p.service }}</td>
       <td>{% if p.action == "accept" %}<span class="badge b-ok">accept</span>
         {% else %}<span class="badge b-err">deny</span>{% endif %}</td>
     </tr>
@@ -1714,5 +1762,51 @@ function setAllPolicies(on) {
       tr.querySelector("input[type=checkbox]").checked = on;
   });
 }
+
+/* ---- drag-to-resize policy columns (FortiOS-style), no libraries ---- */
+(function initPolicyColumnResize() {
+  const table = document.getElementById("poltable");
+  if (!table) return;
+  const cols = table.querySelectorAll("colgroup > col");
+  const MIN_W = 56;          // px; guard against degenerate widths
+  // session-only width memory (no server state)
+  const widths = {};
+  function colIndex(th) {
+    // index of this th among its sibling header cells == its <col> index
+    return Array.prototype.indexOf.call(th.parentNode.children, th);
+  }
+  table.querySelectorAll("thead th .col-resizer").forEach(handle => {
+    const th = handle.closest("th");
+    const idx = colIndex(th);
+    const col = cols[idx];
+    if (!col) return;
+    let startX = 0, startW = 0;
+
+    function onMove(e) {
+      const dx = e.clientX - startX;
+      const w = Math.max(MIN_W, startW + dx);
+      col.style.width = w + "px";
+      widths[idx] = w;
+    }
+    function onUp() {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("col-resizing");
+      th.classList.remove("col-resizing");
+    }
+    handle.addEventListener("pointerdown", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      startX = e.clientX;
+      startW = th.getBoundingClientRect().width;
+      document.body.classList.add("col-resizing");
+      th.classList.add("col-resizing");
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+    });
+    // a click on the handle must not bubble to header sort/select logic
+    handle.addEventListener("click", e => e.stopPropagation());
+  });
+})();
 </script>
 {% endblock %}
