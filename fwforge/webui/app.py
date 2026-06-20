@@ -27,6 +27,7 @@ from .. import schema as schema_mod
 from ..emit import fortimanager, package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
 from ..parsers.paloalto import PanoramaChoiceNeeded
+from ..transforms import names as names_mod
 from ..transforms import portmap, tree_refs, zones
 from ..transforms import plan as plan_mod
 from ..transforms.plan import (MigrationPlan, PlanError, SdwanMember,
@@ -262,11 +263,19 @@ def _form_indexes(form, prefix: str) -> list[int]:
 def _plan_from_form(form) -> MigrationPlan:
     plan = MigrationPlan()
     for src, dst in zip(form.getlist("map_src"), form.getlist("map_dst")):
-        src, dst = src.strip(), dst.strip()
-        if src and dst:
+        src, raw = src.strip(), dst.strip()
+        # honor the "do not map" sentinel BEFORE sanitizing — otherwise
+        # safe_ifname("__none__") -> "none" would rename the port to the
+        # reserved keyword instead of leaving it unmapped
+        if not src or not raw or raw == "__none__":
+            continue
+        dst = names_mod.safe_ifname(raw)
+        if dst:
             plan.portmap[src] = dst
     for src, dst in zip(form.getlist("vmap_src"), form.getlist("vmap_dst")):
-        src, dst = src.strip(), dst.strip()
+        # VDOM names share the interface char rule but cap at 11
+        src = src.strip()
+        dst = names_mod.safe_ifname(dst.strip(), maxlen=11)
         if src and dst and src != dst:
             plan.vdommap[src] = dst
     for i in _form_indexes(form, "zone_name"):
@@ -318,14 +327,15 @@ def _authoring_from_form(form):
     None when nothing was authored (preserves the base mapping behaviour)."""
     aggregates = []
     for i in range(64):
-        name = form.get(f"agg_name_{i}")
-        if name and name.strip():
+        name = names_mod.safe_ifname((form.get(f"agg_name_{i}") or "").strip())
+        if name:
             aggregates.append({
-                "name": name.strip(),
+                "name": name,
                 "lacp": form.get(f"agg_lacp_{i}", "active"),
-                "members": [m.strip() for m in
-                            form.get(f"agg_members_{i}", "").split(",")
-                            if m.strip()],
+                "members": [m for m in
+                            (names_mod.safe_ifname(p.strip()) for p in
+                             form.get(f"agg_members_{i}", "").split(","))
+                            if m],
             })
     vlan_parents = {}
     for src, parent in zip(form.getlist("vparent_src"),
@@ -345,7 +355,10 @@ def _mapping_from_form(form):
     mapping = {}
     for src, dst in zip(form.getlist("map_src"), form.getlist("map_dst")):
         src, dst = src.strip(), dst.strip()
-        if src and dst and dst != "__none__":
+        if not src or not dst or dst == "__none__":
+            continue  # blank / "do not map" — leave unmapped (sentinel intact)
+        dst = names_mod.safe_ifname(dst)
+        if dst:  # all-illegal input sanitizes to "" — drop it, don't store ""
             mapping[src] = dst
     return mapping
 

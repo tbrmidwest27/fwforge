@@ -666,6 +666,47 @@ def test_authoring_from_form_parsing():
     assert webui_app._authoring_from_form(MultiDict()) is None
 
 
+def test_map_to_names_sanitized_server_side():
+    # A typed "map to" / aggregate name with spaces or special chars must never
+    # reach the emitted CLI verbatim (it breaks the paste script). The server
+    # backstops the client-side guard: illegal chars -> '-', clamped to 15.
+    from werkzeug.datastructures import MultiDict
+    # interface map-to (cross-vendor mapping + migration plan)
+    form = MultiDict([
+        ("map_src", "ethernet1/1"), ("map_dst", "Uplink WAN!"),
+        ("map_src", "ethernet1/2"), ("map_dst", "port2"),
+        ("map_src", "ethernet1/3"), ("map_dst", "__none__")])
+    m = webui_app._mapping_from_form(form)
+    assert m["ethernet1/1"] == "Uplink-WAN"   # space + '!' -> '-', trailing trimmed
+    assert m["ethernet1/2"] == "port2"        # already legal: unchanged
+    assert "ethernet1/3" not in m             # "do not map" sentinel still honored
+    # aggregate name + member ports
+    af = MultiDict([
+        ("agg_name_0", "Core LAG #1"), ("agg_lacp_0", "active"),
+        ("agg_members_0", "x5, x6")])
+    a = webui_app._authoring_from_form(af)
+    assert a["aggregates"][0]["name"] == "Core-LAG--1"  # each illegal char -> '-'
+    assert a["aggregates"][0]["members"] == ["x5", "x6"]
+    # over-length name is clamped to the 15-char interface limit
+    long_form = MultiDict([("map_src", "e1"),
+                           ("map_dst", "averylonginterfacename")])
+    assert len(webui_app._mapping_from_form(long_form)["e1"]) == 15
+    # an all-illegal target sanitizes to "" -> dropped, never stored as ""
+    junk = MultiDict([("map_src", "e1"), ("map_dst", "!!!")])
+    assert webui_app._mapping_from_form(junk) == {}
+    # the migrate-path plan parser must ALSO honor "do not map" before
+    # sanitizing (else safe_ifname("__none__") -> reserved "none")
+    plan = webui_app._plan_from_form(MultiDict([
+        ("map_src", "port1"), ("map_dst", "__none__"),
+        ("map_src", "port2"), ("map_dst", "WAN Uplink")]))
+    assert "port1" not in plan.portmap          # left unmapped, not -> "none"
+    assert plan.portmap["port2"] == "WAN-Uplink"
+    # a reserved keyword target is never emitted verbatim
+    from fwforge.transforms import names as _names
+    assert _names.safe_ifname("none") == "none-if"
+    assert _names.safe_ifname("ALL") == "ALL-if"
+
+
 def test_mapping_from_form_skips_do_not_map():
     from werkzeug.datastructures import MultiDict
     form = MultiDict([
