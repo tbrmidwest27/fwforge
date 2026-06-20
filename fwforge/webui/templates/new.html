@@ -14,6 +14,47 @@
   "cisco-asa": "v-asa", "paloalto": "v-pan", "juniper-srx": "v-srx",
   "pfsense": "v-pf", "fortios": "v-forti"} %}
 
+{# Target FortiGate picker (model + FortiOS version), shared by both upload
+   forms. idp keeps the <datalist> id unique per form. The custom-code toggle
+   is form-relative (this.form) so the two copies don't clash. #}
+{% macro target_picker(idp) %}
+<details class="targetpick" style="margin:.2rem 0 .6rem">
+  <summary style="cursor:pointer; font-weight:600">Target FortiGate
+    <span class="muted" style="font-weight:400">— pick model &amp; FortiOS
+      version (optional)</span></summary>
+  <p class="grid-note" style="margin:.4rem 0">Declare what you're converting
+    <em>to</em>: the model preselects the interface map &amp; faceplate, the
+    version drives the version-delta scan. Change either later in the wizard;
+    skip if you upload a destination backup (it provides them).</p>
+  <p style="margin:.2rem 0"><label>Target model<br>
+    <select name="target_platform" style="max-width:100%"
+            onchange="this.form.querySelector('.tcustom').style.display
+                      = this.value === '__custom__' ? '' : 'none'">
+      <option value="">choose later in the wizard</option>
+      {% for family, entries in platform_groups %}
+      <optgroup label="{{ family }}">
+        {% for p in entries %}
+        <option value="{{ p.code }}">{{ p.model }} &mdash; {{ p.code }}{%
+          if not p.verified %} *{% endif %}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+      <option value="__custom__">custom code&hellip;</option>
+    </select>
+    <input type="text" name="target_platform_custom" class="tcustom" size="10"
+           placeholder="e.g. FG7H1G" style="display:none"></label></p>
+  <p style="margin:.2rem 0"><label>FortiOS version<br>
+    <input name="target_os" list="t-fos-{{ idp }}" size="10"
+           placeholder="e.g. 7.4.12 or 7.6 or 8.0">
+    <datalist id="t-fos-{{ idp }}">
+      {% for t in targets %}<option value="{{ t }}">{% endfor %}
+    </datalist></label></p>
+  <p class="grid-note" style="margin:.2rem 0">* code derived from the naming
+    scheme &mdash; confirm against a real backup of that model before
+    restoring.</p>
+</details>
+{% endmacro %}
+
 <p style="margin:.1rem 0 .9rem">
   <a class="backlink" href="{{ url_for('index') }}">&larr; choose a different
     source</a>
@@ -54,6 +95,7 @@
            style="margin-top:-2px;min-height:1.2em"></p>
         <p><label>Destination backup <span class="muted">(optional)</span></label><br>
           <input type="file" name="target_config"></p>
+        {{ target_picker("file") }}
         <button>Upload &amp; analyze</button>
       </form>
     </div>
@@ -68,6 +110,7 @@
         <p><label>Destination backup path <span class="muted">(optional)</span></label><br>
           <input type="text" name="target_path" style="width:100%"
                  placeholder="e.g. C:\backups\fortigate.conf"></p>
+        {{ target_picker("path") }}
         <button class="ghost">Load from path</button>
       </form>
     </div>

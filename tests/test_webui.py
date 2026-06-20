@@ -109,6 +109,52 @@ def test_target_platform_resolved_from_model_number(client):
     assert "FG7H1G" in page and "FortiGate 701G" in page
 
 
+def test_main_screen_target_picker(client):
+    # the New-conversion page offers a target model + OS-version picker
+    page = client.get("/new/paloalto").data.decode()
+    assert 'name="target_platform"' in page and 'name="target_os"' in page
+    assert "FG7H1G" in page          # model dropdown is populated
+    assert "8.0" in page             # version suggestions present
+
+    # picking a model + version up front carries into the job + the wizard
+    resp = client.post("/load", data={
+        "vendor": "paloalto",
+        "path": str(FIX / "pa_sample.xml"),
+        "target_platform": "701g",   # accepts a bare model number
+        "target_os": "7.4.12"},
+        follow_redirects=False)
+    jid = resp.headers["Location"].rstrip("/").split("/")[-1]
+    meta = webui_app.JOBS[jid]
+    assert meta["target_platform"] == "FG7H1G"   # resolved to the code
+    assert meta["target_os"] == "7.4.12"
+    # the wizard prefills the version and preselects the model
+    page = client.get(f"/job/{jid}").data.decode()
+    assert 'value="7.4.12"' in page
+    import re as _re
+    assert _re.search(r'value="FG7H1G"\s+selected', page)
+
+    # a CUSTOM/unknown code (not in the model table) must still survive into
+    # the wizard via the custom-code path — not silently dropped
+    resp = client.post("/load", data={
+        "vendor": "paloalto",
+        "path": str(FIX / "pa_sample.xml"),
+        "target_platform": "__custom__",
+        "target_platform_custom": "FG4K81X"},  # _CODE_RE-shaped, not in table
+        follow_redirects=False)
+    jid2 = resp.headers["Location"].rstrip("/").split("/")[-1]
+    assert webui_app.JOBS[jid2]["target_platform"] == "FG4K81X"
+    page2 = client.get(f"/job/{jid2}").data.decode()
+    assert _re.search(r'value="__custom__"\s+selected', page2)
+    assert 'value="FG4K81X"' in page2          # prefilled in the custom field
+
+    # garbage custom code is rejected back to /new, no orphaned job
+    resp = client.post("/load", data={
+        "vendor": "paloalto", "path": str(FIX / "pa_sample.xml"),
+        "target_platform": "__custom__", "target_platform_custom": "ZZZ"},
+        follow_redirects=False)
+    assert resp.status_code == 302 and "/new/paloalto" in resp.headers["Location"]
+
+
 def test_iface_details_in_analysis(client):
     jid = _load(client, "fortios_refactor.conf")
     det = {d["name"]: d for d in webui_app.JOBS[jid]["iface_details"]}

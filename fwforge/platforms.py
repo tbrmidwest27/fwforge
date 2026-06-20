@@ -120,6 +120,37 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform("FGVM64", "FortiGate VM64", "Virtual", False),
 )
 
+# -- FortiOS target versions ------------------------------------------------
+# The version "database" backing the target-OS picker. The version field is
+# free-text — any exact patch (e.g. "7.4.12") is accepted — so these are just
+# the dropdown SUGGESTIONS, newest train first. Keep current as Fortinet ships
+# trains; a scheduled job can refresh this from docs.fortinet.com (see the
+# fortigate skill). Train-level entries are always valid; the per-train default
+# patch is a best-effort hint only (verify against the actual target build).
+FORTIOS_TRAINS: tuple[str, ...] = ("8.0", "7.6", "7.4", "7.2", "7.0")
+
+# Latest known GA patch per active train, surfaced as extra datalist hints.
+# REFRESH PERIODICALLY — these go stale; the field accepts any unlisted value.
+FORTIOS_LATEST_PATCH: dict[str, str] = {
+    "8.0": "8.0.1",
+    "7.6": "7.6.3",
+    "7.4": "7.4.8",
+    "7.2": "7.2.11",
+}
+
+
+def version_suggestions() -> tuple[str, ...]:
+    """Ordered, de-duplicated version hints for the target-OS datalist:
+    each active train followed by its latest known patch."""
+    out: list[str] = []
+    for train in FORTIOS_TRAINS:
+        out.append(train)
+        patch = FORTIOS_LATEST_PATCH.get(train)
+        if patch and patch not in out:
+            out.append(patch)
+    return tuple(out)
+
+
 _FAMILY_ORDER = ("Desktop", "Mid-range", "High-end", "Virtual")
 
 # platform code -> product label, e.g. "FG6H1F" -> "FortiGate 601F"
