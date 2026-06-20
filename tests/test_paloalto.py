@@ -72,6 +72,127 @@ def test_inline_address_refs_objectified():
                for _, _, m, _ in findings(cfg2))
 
 
+def test_undefined_addr_ref_dropped_keeps_valid_members():
+    # A "ban countries" deny rule mixes valid ISO country refs with a bogus
+    # 2-letter ref ("CE" is not an ISO code). The bogus ref must be DROPPED
+    # (keeping it -> set dstaddr "CE" -> -3 rejects the whole policy), the
+    # valid country refs kept, and the policy must stay ENABLED since it still
+    # has real destinations. (Real-world: Jabil TIS Infosec-Deny-Ban_Countries.)
+    cfg = paloalto.parse(
+        "set rulebase security rules Ban from any\n"
+        "set rulebase security rules Ban to any\n"
+        "set rulebase security rules Ban source any\n"
+        "set rulebase security rules Ban destination [ CU CE IQ ]\n"
+        "set rulebase security rules Ban application any\n"
+        "set rulebase security rules Ban service application-default\n"
+        "set rulebase security rules Ban action deny\n",
+        "ban.set")
+    ban = _policy(cfg, "Ban")
+    assert "CE" not in ban.dst_addrs          # bogus ref dropped, not shipped
+    assert ban.dst_addrs == ["CU", "IQ"]      # valid country refs survive
+    assert ban.disabled is False              # still has real destinations
+    assert any("CE" in m and "DROPPED" in m
+               for _, _, m, _ in findings(cfg))
+
+
+def test_addr_ref_all_unresolvable_disables_policy():
+    # If EVERY address on a side is unresolvable, the emitter's empty-list
+    # default would silently broaden the match to "all". Disable instead so the
+    # config still loads and the loss is explicit (neq / unbacked-tunnel
+    # doctrine), never broadened.
+    cfg = paloalto.parse(
+        "set rulebase security rules X from any\n"
+        "set rulebase security rules X to any\n"
+        "set rulebase security rules X source any\n"
+        "set rulebase security rules X destination GHOST-OBJ\n"
+        "set rulebase security rules X application any\n"
+        "set rulebase security rules X service application-default\n"
+        "set rulebase security rules X action deny\n",
+        "ghost.set")
+    x = _policy(cfg, "X")
+    assert "GHOST-OBJ" not in x.dst_addrs and not x.dst_addrs
+    assert x.disabled is True
+    assert any("DISABLED" in m for _, _, m, _ in findings(cfg)
+               if "X" in m)
+
+
+def test_negated_addr_list_losing_member_is_disabled_not_broadened():
+    # A NEGATED source means "match everything EXCEPT these". Dropping an
+    # unresolvable member would silently change the match (an accept rule would
+    # then ALLOW the dropped address) — the exact rule-broadening this tool must
+    # never do. The rule must be DISABLED + flagged instead, even though the
+    # list is still non-empty (so the plain emptied-guard would miss it).
+    cfg = paloalto.parse(
+        "set address GOOD ip-netmask 10.9.0.0/16\n"
+        "set rulebase security rules N from any\n"
+        "set rulebase security rules N to any\n"
+        "set rulebase security rules N source any\n"
+        "set rulebase security rules N destination [ GOOD GHOST-OBJ ]\n"
+        "set rulebase security rules N negate-destination yes\n"
+        "set rulebase security rules N application any\n"
+        "set rulebase security rules N service application-default\n"
+        "set rulebase security rules N action allow\n",
+        "neg.set")
+    n = _policy(cfg, "N")
+    assert "GHOST-OBJ" not in n.dst_addrs       # bad ref dropped
+    assert n.dst_addrs == ["GOOD"]              # list still non-empty
+    assert n.disabled is True                   # but disabled, not broadened
+    assert any("NEGATED" in m for _, _, m, _ in findings(cfg) if "N" in m)
+
+
+def test_negated_ref_to_collapsed_group_is_disabled():
+    # A group whose only member is unresolvable collapses to 'none'. Referenced
+    # NORMALLY that matches nothing (safe), but a NEGATED reference to it means
+    # 'NOT none' = match EVERYTHING — wide open. Disable the negated policy.
+    cfg = paloalto.parse(
+        "set address-group EMPTYGRP static [ GHOST-MEMBER ]\n"
+        "set rulebase security rules Wide from any\n"
+        "set rulebase security rules Wide to any\n"
+        "set rulebase security rules Wide source EMPTYGRP\n"
+        "set rulebase security rules Wide negate-source yes\n"
+        "set rulebase security rules Wide destination any\n"
+        "set rulebase security rules Wide application any\n"
+        "set rulebase security rules Wide service application-default\n"
+        "set rulebase security rules Wide action allow\n",
+        "neggrp.set")
+    grp = next(g for g in cfg.addr_groups if g.name == "EMPTYGRP")
+    assert grp.members == ["none"]              # collapsed safely so it loads
+    wide = _policy(cfg, "Wide")
+    assert wide.disabled is True                # NOT none == everything: blocked
+    assert any("none" in m and "everything" in m.lower()
+               for _, _, m, _ in findings(cfg))
+
+
+def test_vlan_parent_collected_for_mapping_and_remapped():
+    # An IP-less physical port that exists ONLY as a VLAN subinterface's parent
+    # must be collected for interface mapping — otherwise the emitted VLAN keeps
+    # `set interface <source-port>` which the target FortiGate doesn't have
+    # (-3). (Real-world: Jabil TIS ethernet1/6, parent of ethernet1/6.699.)
+    from fwforge.model import FirewallConfig, Interface
+    from fwforge.report import Report
+    from fwforge.transforms import portmap
+
+    cfg = FirewallConfig()
+    cfg.interfaces.append(Interface(name="ethernet1/6", kind="physical"))
+    cfg.interfaces.append(Interface(
+        name="ethernet1/6.699", kind="vlan", vlan_id=699,
+        parent="ethernet1/6", ip="10.0.0.1/24"))
+
+    # unmapped: the parent shows up so the user can map it
+    unmapped = portmap.apply_ir(cfg, {}, Report())
+    assert "ethernet1/6" in unmapped
+
+    # mapped: the parent reference is rewritten to the target port
+    cfg2 = FirewallConfig()
+    cfg2.interfaces.append(Interface(name="ethernet1/6", kind="physical"))
+    vlan = Interface(name="ethernet1/6.699", kind="vlan", vlan_id=699,
+                     parent="ethernet1/6", ip="10.0.0.1/24")
+    cfg2.interfaces.append(vlan)
+    left = portmap.apply_ir(cfg2, {"ethernet1/6": "port6"}, Report())
+    assert "ethernet1/6" not in left
+    assert vlan.parent == "port6"
+
+
 def test_zone_tunnel_remapped_to_phase1():
     # A zone referencing a PAN tunnel-interface (tunnel.N) must be rewritten to
     # the converted IPsec phase1-interface name, else the zone references a
