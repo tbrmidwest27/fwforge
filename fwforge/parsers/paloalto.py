@@ -1131,9 +1131,15 @@ class PaloParser:
             | {g.name for g in self.cfg.addr_groups} \
             | {v.name for v in self.cfg.vips}  # VIPs share the addr namespace
         keep = {"all", "any", "none", ""}
-        flagged: set[str] = set()
+        # de-dup the verbose drop finding per (object+side, token) so each
+        # affected object is reported once for a given bad token — not once
+        # globally (which would hide drops in every object after the first).
+        flagged: set[tuple[str, str]] = set()
 
-        def ensure(token: str, ctx: str, ref) -> str:
+        def ensure(token: str, ctx: str, ref) -> str | None:
+            """Return the emittable token, or None if it is an unresolvable
+            reference that must be DROPPED (keeping it would make FortiOS reject
+            the whole object with -3)."""
             if token == "any":
                 return "all"
             if token in keep or token in defined:
@@ -1141,23 +1147,101 @@ class PaloParser:
             if self._make_literal_address(token, ref):
                 defined.add(token)
                 return token
-            if token not in flagged:
-                flagged.add(token)
+            if (ctx, token) not in flagged:
+                flagged.add((ctx, token))
                 self.note("warn", "addresses",
                           f"{ctx} references '{token}', which is not a defined "
                           "address/group nor a literal IP/CIDR/range/country — "
-                          "FortiOS will reject it (set -> -3); define it or "
-                          "remove the reference", ref)
-            return token
+                          "FortiOS would reject the whole object (set -> -3), so "
+                          f"the reference is DROPPED; define '{token}' and re-add "
+                          "it manually if it was intentional", ref)
+            return None
+
+        def resolve_list(tokens: list[str], ctx: str,
+                         ref) -> tuple[list[str], list[str]]:
+            """Map a token list through ensure(); return (kept, dropped). Order
+            preserved and de-duplicated on the kept side."""
+            out: list[str] = []
+            dropped: list[str] = []
+            for t in tokens:
+                v = ensure(t, ctx, ref)
+                if v is None:
+                    if t not in dropped:
+                        dropped.append(t)
+                elif v not in out:
+                    out.append(v)
+            return out, dropped
+
+        def disable(p, reason: str) -> None:
+            """Emit a policy DISABLED rather than load-broken or broadened.
+            A disabled DENY is a posture hole (its traffic now falls through to
+            later/implicit rules), so it is an ERROR; a disabled ACCEPT is
+            fail-closed, so a WARN."""
+            if p.disabled:
+                return
+            p.disabled = True
+            deny = p.action in ("deny", "drop")
+            tail = (" This DENY rule no longer blocks that traffic — it now "
+                    "falls through to later/implicit policies." if deny else "")
+            self.note("error" if deny else "warn", "policies",
+                      f"policy '{p.name}': {reason} — emitted DISABLED; fix the "
+                      f"references and re-enable manually.{tail}", p.source)
+
+        # Address-groups first, so a policy that references a group which
+        # collapsed to 'none' can be caught below (a NEGATED ref to a 'none'
+        # group means 'NOT none' = match everything — wide open).
+        collapsed: set[str] = set()
+        for g in self.cfg.addr_groups:
+            before = bool(g.members)
+            g.members, _ = resolve_list(
+                g.members, f"address-group '{g.name}'", g.source)
+            if before and not g.members:
+                # An empty addrgrp is itself rejected (-3); keep it loadable as
+                # an explicit 'none' placeholder so the group + its references
+                # survive, and flag that it needs manual repair.
+                g.members = ["none"]
+                collapsed.add(g.name)
+                self.note("warn", "addresses",
+                          f"address-group '{g.name}' lost all members to "
+                          "unresolvable references — set to 'none' so it still "
+                          "loads (matches nothing in a normal reference; a "
+                          "NEGATED reference to it would match EVERYTHING); "
+                          "rebuild it manually", g.source)
 
         for p in self.cfg.policies:
-            p.src_addrs = [ensure(t, f"policy '{p.name}' srcaddr", p.source)
-                           for t in p.src_addrs]
-            p.dst_addrs = [ensure(t, f"policy '{p.name}' dstaddr", p.source)
-                           for t in p.dst_addrs]
-        for g in self.cfg.addr_groups:
-            g.members = [ensure(t, f"address-group '{g.name}'", g.source)
-                         for t in g.members]
+            src_before, dst_before = bool(p.src_addrs), bool(p.dst_addrs)
+            p.src_addrs, src_dropped = resolve_list(
+                p.src_addrs, f"policy '{p.name}' srcaddr", p.source)
+            p.dst_addrs, dst_dropped = resolve_list(
+                p.dst_addrs, f"policy '{p.name}' dstaddr", p.source)
+            # A NEGATED list means "match everything EXCEPT these". Dropping a
+            # member changes that match set (the accept case BROADENS — the
+            # dropped address is now allowed), and a negated reference to a
+            # group that collapsed to 'none' inverts to "match everything".
+            # Never silently alter a negated rule — disable + flag.
+            neg_lost = ([t for t in src_dropped if p.src_negate]
+                        + [t for t in dst_dropped if p.dst_negate])
+            neg_none = ((p.src_negate
+                         and any(m in collapsed for m in p.src_addrs))
+                        or (p.dst_negate
+                            and any(m in collapsed for m in p.dst_addrs)))
+            # A whole side that had members but lost them ALL would emit as
+            # 'all' (the emitter's empty-list default) — silently broadening.
+            emptied = ((src_before and not p.src_addrs)
+                       or (dst_before and not p.dst_addrs))
+            if neg_lost:
+                disable(p, "a NEGATED source/destination address list lost "
+                        f"member(s) {', '.join(dict.fromkeys(neg_lost))} to "
+                        "unresolvable references (dropping them changes/broadens "
+                        "the negated match)")
+            elif neg_none:
+                disable(p, "a NEGATED source/destination references an "
+                        "address-group that lost all its members — 'NOT none' "
+                        "matches everything")
+            elif emptied:
+                disable(p, "all of its source or destination addresses were "
+                        "unresolvable references (the emitter would default the "
+                        "empty list to 'all', broadening the match)")
 
     def parse_regions(self, regions_node) -> None:
         """Parse vsys <region> user-defined region entries.
