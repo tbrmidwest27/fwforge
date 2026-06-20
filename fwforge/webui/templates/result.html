@@ -215,11 +215,14 @@
   <div id="opt-unreachable-section" style="display:none">
     <h2 class="opt-h2">Unreachable Accepts
       (<span id="opt-unreachable-count"></span>)</h2>
-    <p class="muted">An ACCEPT rule is blocked by an earlier DENY. If the deny is
-      intentional, this accept can be removed.</p>
+    <p class="muted">A specific ACCEPT rule is blocked by an earlier, broader
+      DENY. If the deny is intentional, remove the accept; if the accept is a
+      deliberate carve-out, lift it above the deny so it takes effect — the
+      <strong>Move above</strong> button does that (it widens what's allowed,
+      so confirm it's intended).</p>
     <table class="opt-table">
       <thead><tr><th>Dead ACCEPT rule</th><th>at</th>
-                 <th>blocked by</th><th>at</th></tr></thead>
+                 <th>blocked by</th><th>at</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -612,11 +615,53 @@ function initOptTab() {
     const sec = document.getElementById("opt-unreachable-section");
     document.getElementById("opt-unreachable-count").textContent = unreachable.length;
     const tb = sec.querySelector("tbody");
-    unreachable.forEach(u => tb.appendChild(mkRow([
-      `<code>${escHtml(u.dead)}</code>`, `#${escHtml(u.deadN)}`,
-      `<code>${escHtml(u.by)}</code>`, `#${escHtml(u.byN)}`
-    ])));
+    unreachable.forEach(u => {
+      const tr = mkRow([
+        `<code>${escHtml(u.dead)}</code>`, `#${escHtml(u.deadN)}`,
+        `<code>${escHtml(u.by)}</code>`, `#${escHtml(u.byN)}`, ""]);
+      const fix = document.createElement("button");
+      fix.type = "button"; fix.className = "btn small";
+      fix.textContent = "Move above";
+      fix.title = `Move ACCEPT '${u.dead}' above DENY '${u.by}'`;
+      fix.addEventListener("click", () => {
+        if (confirm(`Move the specific ACCEPT '${u.dead}' (#${u.deadN}) above `
+          + `the broader DENY '${u.by}' (#${u.byN}) so it takes effect, then `
+          + `re-run?\n\nThis WIDENS what is allowed — the accept will be `
+          + `evaluated before that deny (and any rule between them). The `
+          + `Optimize tab re-checks after the move; confirm the carve-out is `
+          + `intentional.`))
+          optApplyFix([["reorder_policy", u.dead + "|||" + u.by]]);
+      });
+      tr.lastElementChild.appendChild(fix);
+      tb.appendChild(tr);
+    });
     sec.style.display = "";
+  }
+
+  // One-click "fix all rule order": lift every shadowed specific rule above the
+  // broader rule hiding it (bypasses tighten; unreachable accepts widen). The
+  // confirm spells out both so the bulk action is informed, not blind.
+  const reorderable = bypasses.concat(unreachable);
+  if (reorderable.length) {
+    const all = document.createElement("button");
+    all.type = "button"; all.className = "btn";
+    all.style.marginLeft = ".5rem";
+    all.textContent = `Fix all rule order (${reorderable.length})`;
+    all.title = "Move every shadowed specific rule above the broader rule "
+      + "that hides it";
+    all.addEventListener("click", () => {
+      const tighten = bypasses.length, widen = unreachable.length;
+      const lines = [
+        `Move ${reorderable.length} specific rule(s) above the broader rules `
+        + `that currently shadow them, then re-run the conversion?`, ""];
+      if (tighten) lines.push(`• ${tighten} DENY rule(s) lifted above a broader `
+        + `ACCEPT — TIGHTENS (closes a bypass).`);
+      if (widen) lines.push(`• ${widen} ACCEPT rule(s) lifted above a broader `
+        + `DENY — WIDENS (carve-out); confirm these are intended.`);
+      if (confirm(lines.join("\n")))
+        optApplyFix(reorderable.map(r => ["reorder_policy", r.dead + "|||" + r.by]));
+    });
+    bar.appendChild(all);
   }
   if (collapses.length) {
     const sec = document.getElementById("opt-collapse-section");
