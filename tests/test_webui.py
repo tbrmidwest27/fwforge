@@ -280,6 +280,26 @@ def test_apply_fix_reorders_policies(client):
     assert after.index(b) < after.index(a)  # b lifted above a
 
 
+def test_apply_fix_batch_reorders_policies(client):
+    """The Optimize tab's 'Fix all rule order' button posts several
+    reorder_policy pairs at once — each must be applied."""
+    import re
+    jid = _convert_asa(client)
+    names = re.findall(
+        r'set name "([^"]+)"',
+        client.get(f"/job/{jid}/dl/conf").data.decode())
+    # lift two later rules above two earlier ones in a single apply_fix
+    a, b, c, d = names[0], names[1], names[2], names[3]
+    client.post(f"/job/{jid}/apply_fix",
+                data={"reorder_policy": [f"{c}|||{a}", f"{d}|||{b}"]},
+                follow_redirects=False)
+    after = re.findall(
+        r'set name "([^"]+)"',
+        client.get(f"/job/{jid}/dl/conf").data.decode())
+    assert after.index(c) < after.index(a)
+    assert after.index(d) < after.index(b)
+
+
 def test_plan_error_round_trips(client):
     jid = _load(client, "fortios_refactor.conf")
     form = {

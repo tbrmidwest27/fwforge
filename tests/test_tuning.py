@@ -148,3 +148,26 @@ def test_exclude_via_cli(tmp_path):
     conf = (tmp_path / "asa_sample.config-all.txt").read_text(encoding="utf-8")
     assert 'set name "OUTSIDE-IN-3"' not in conf
     assert 'set name "OUTSIDE-IN-1"' in conf
+
+
+def test_reorder_lifts_specific_above_broad():
+    # the Optimize tab's reorder: move a specific rule above the broader rule
+    # that shadows it. Only moves rules currently BELOW the target (idempotent).
+    cfg = FirewallConfig(vendor="test")
+    cfg.policies = [Policy(name=n) for n in ["broad", "x", "specific"]]
+    moved = tuning.reorder_policies(cfg, [("specific", "broad")], Report())
+    assert moved == 1
+    assert [p.name for p in cfg.policies] == ["specific", "broad", "x"]
+    # idempotent: already above -> no-op
+    assert tuning.reorder_policies(cfg, [("specific", "broad")], Report()) == 0
+
+
+def test_batch_reorder_preserves_relative_order_same_target():
+    # the "Fix all rule order" button can lift several specific rules above the
+    # SAME broader rule; their original relative order must be preserved (S1
+    # stays above S2), not inverted.
+    cfg = FirewallConfig(vendor="test")
+    cfg.policies = [Policy(name=n) for n in ["B", "x", "S1", "y", "S2"]]
+    tuning.reorder_policies(cfg, [("S1", "B"), ("S2", "B")], Report())
+    order = [p.name for p in cfg.policies]
+    assert order.index("S1") < order.index("S2") < order.index("B")
