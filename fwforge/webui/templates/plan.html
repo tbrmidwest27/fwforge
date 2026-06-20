@@ -117,15 +117,21 @@
           {% for family, entries in platform_groups %}
           <optgroup label="{{ family }}">
             {% for p in entries %}
-            <option value="{{ p.code }}">{{ p.model }} &mdash;
+            <option value="{{ p.code }}"{% if meta.target_platform == p.code %}
+              selected{% endif %}>{{ p.model }} &mdash;
               {{ p.code }}{% if not p.verified %} *{% endif %}</option>
             {% endfor %}
           </optgroup>
           {% endfor %}
-          <option value="__custom__">custom code&hellip;</option>
+          <option value="__custom__"{% if meta.target_platform
+            and not target_platform_known %} selected{% endif %}>custom
+            code&hellip;</option>
         </select>
         <input type="text" name="target_platform_custom" id="tp-custom"
-               size="10" placeholder="e.g. FG7H1G" style="display:none">
+               size="10" placeholder="e.g. FG7H1G"
+               {% if meta.target_platform and not target_platform_known %}
+               value="{{ meta.target_platform }}"{% else %}
+               style="display:none"{% endif %}>
       </label>
       {% endif %}
       {% if meta.vendor == "fortios" %}
@@ -574,8 +580,8 @@
       {% endif %}
       <td>{% if d and d.kind == "vlan" %}<input type="hidden" name="map_dst" value="{{ ifc }}"><input type="hidden" name="vparent_src" value="{{ ifc }}"><select name="vparent_dst" class="vparent" data-vsrc="{{ ifc }}" onchange="vparentChanged(this)"></select>{%
           elif d and d.type == "physical" %}<select name="map_dst" class="mdst" data-src="{{ ifc }}" style="width:100%"><option value="{{ ifc }}" selected>{{ ifc }}</option></select>{%
-          elif d and d.kind == "aggregate" %}<input type="text" name="map_dst" value="{{ ifc }}" list="tp-ports" maxlength="15" oninput="aggRenameFromMapDst(this)" title="this aggregate's name — edit to rename the LAG" style="width:100%">{%
-          else %}<input type="text" name="map_dst" value="{{ ifc }}" list="tp-ports" style="width:100%">{% endif %}</td>
+          elif d and d.kind == "aggregate" %}<input type="text" name="map_dst" value="{{ ifc }}" list="tp-ports" maxlength="15" oninput="sanIfName(this);aggRenameFromMapDst(this)" title="this aggregate's name — edit to rename the LAG (letters, digits, _ . - only)" style="width:100%">{%
+          else %}<input type="text" name="map_dst" value="{{ ifc }}" list="tp-ports" maxlength="15" oninput="sanIfName(this)" title="target interface name — letters, digits, _ . - only" style="width:100%">{% endif %}</td>
     </tr>
     {% endfor %}
     </tbody>
@@ -600,7 +606,7 @@
       <td><code>{{ v }}</code>
         <input type="hidden" name="vmap_src" value="{{ v }}"></td>
       <td><input type="text" name="vmap_dst" value="{{ v }}" maxlength="11"
-                 style="width:100%"></td>
+                 oninput="sanIfName(this)" style="width:100%"></td>
     </tr>
     {% endfor %}
   </table>
@@ -1256,7 +1262,7 @@ function removeAgg(id) {
 }
 function aggSetName(id, v) {
   const a = findAgg(id); if (!a) return;
-  const old = a.name; a.name = v.trim();
+  const old = a.name; a.name = safeIfName(v.trim());
   for (const k in VPARENT) if (VPARENT[k] === old) VPARENT[k] = a.name;
   refreshNestOptions(); refreshMembership();   // no re-render: keep focus
 }
@@ -1272,7 +1278,7 @@ function aggRenameFromMapDst(inp) {
   if (!srcEl) return;
   const a = AGGS.find(x => x.src === srcEl.value);
   if (!a) return;
-  const old = a.name; a.name = inp.value.trim();
+  const old = a.name; a.name = safeIfName(inp.value.trim());
   for (const k in VPARENT) if (VPARENT[k] === old) VPARENT[k] = a.name;
   refreshNestOptions(); refreshMembership();   // no full re-render: keep focus
 }
@@ -1403,6 +1409,21 @@ function aggLacpChanged(sel) {
 function safeIfName(s) {
   return String(s).replace(/[^A-Za-z0-9_.-]/g, "-") || "agg";
 }
+// Live-sanitize a rename field AS THE USER TYPES: a FortiOS interface / LAG
+// name allows only [A-Za-z0-9_.-] (no spaces, no special chars) — anything
+// else breaks the emitted CLI script. Replace illegal chars in place and clamp
+// to the field's maxlength, preserving the caret. The server re-applies the
+// same rule (names.safe_ifname) as a backstop.
+function sanIfName(inp) {
+  const max = parseInt(inp.getAttribute("maxlength") || "15", 10);
+  let v = inp.value.replace(/[^A-Za-z0-9_.-]/g, "-");
+  if (v.length > max) v = v.slice(0, max);
+  if (v !== inp.value) {
+    const at = inp.selectionStart;
+    inp.value = v;
+    try { inp.setSelectionRange(at, at); } catch (e) {}
+  }
+}
 // build the type cell for a promotable physical row: the physical/aggregate
 // toggle, plus (when aggregate) the LACP picker — same control a source LAG
 // shows, so a promoted row reads identically to ae1.
@@ -1441,7 +1462,7 @@ function ifTypeChanged(sel) {
                  members: seed, src: src, promoted: true});
     tyWrap.innerHTML = physTypeCell(src, true, "active");
     mapCell.innerHTML = `<input type="text" name="map_dst" value="${esc(name)}" `
-      + `list="tp-ports" maxlength="15" oninput="aggRenameFromMapDst(this)" `
+      + `list="tp-ports" maxlength="15" oninput="sanIfName(this);aggRenameFromMapDst(this)" `
       + `title="this aggregate's name — edit to rename the LAG" style="width:100%">`;
   } else {
     d.kind = "physical";
@@ -1500,7 +1521,7 @@ function memberCellHTML(a) {
 function newAggRowHTML(a) {
   const lacp = ["active", "passive", "static"].map(m =>
     `<option${m === a.lacp ? " selected" : ""}>${m}</option>`).join("");
-  return `<td><input type="text" value="${esc(a.name)}" maxlength="15" style="width:6rem" oninput="aggSetName(${a.id},this.value)"> `
+  return `<td><input type="text" value="${esc(a.name)}" maxlength="15" style="width:6rem" oninput="sanIfName(this);aggSetName(${a.id},this.value)" title="LAG name — letters, digits, _ . - only"> `
     + `<button type="button" class="cbtn" title="remove LAG" onclick="removeAgg(${a.id})" style="color:var(--mut)">&times;</button></td>`
     + `<td class="ty">802.3ad aggregate <label class="muted" style="font-size:.72rem">&middot; LACP <select onchange="aggSetLacp(${a.id},this.value)">${lacp}</select></label></td>`
     + `<td class="memcol"></td><td class="muted">&mdash;</td>`
@@ -1611,6 +1632,7 @@ function serializeAggs() {
       const dst = inp && inp.closest("tr").querySelector('[name="map_dst"]');
       if (dst && dst.value.trim()) name = dst.value.trim();
     }
+    name = safeIfName(name);  // final guard before submit (server re-checks)
     return `<input type="hidden" name="agg_name_${i}" value="${esc(name)}">`
       + `<input type="hidden" name="agg_lacp_${i}" value="${esc(a.lacp)}">`
       + `<input type="hidden" name="agg_members_${i}" value="${esc(aggMembers(a).join(","))}">`;

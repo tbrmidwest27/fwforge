@@ -27,6 +27,7 @@ from .. import schema as schema_mod
 from ..emit import fortimanager, package
 from ..parsers import CROSS_PARSERS, detect_vendor, fortios_tree
 from ..parsers.paloalto import PanoramaChoiceNeeded
+from ..transforms import names as names_mod
 from ..transforms import portmap, tree_refs, zones
 from ..transforms import plan as plan_mod
 from ..transforms.plan import (MigrationPlan, PlanError, SdwanMember,
@@ -36,7 +37,10 @@ from ..transforms.tuning import TuningOptions
 
 JOBS: dict[str, dict] = {}
 JOBS_DIR = Path.home() / ".fwforge" / "gui-jobs"
-FORTIOS_TARGETS = ["7.0", "7.2", "7.4", "7.6", "8.0"]
+# version-picker suggestions (trains + latest known patch per train); the
+# field itself is free-text so any exact build is accepted. Sourced from the
+# platforms "database" so a single place stays current.
+FORTIOS_TARGETS = list(platforms.version_suggestions())
 DIFF_RENDER_CAP = 600
 PREVIEW_CAP = 500
 POLICY_CAP = 800
@@ -262,11 +266,19 @@ def _form_indexes(form, prefix: str) -> list[int]:
 def _plan_from_form(form) -> MigrationPlan:
     plan = MigrationPlan()
     for src, dst in zip(form.getlist("map_src"), form.getlist("map_dst")):
-        src, dst = src.strip(), dst.strip()
-        if src and dst:
+        src, raw = src.strip(), dst.strip()
+        # honor the "do not map" sentinel BEFORE sanitizing — otherwise
+        # safe_ifname("__none__") -> "none" would rename the port to the
+        # reserved keyword instead of leaving it unmapped
+        if not src or not raw or raw == "__none__":
+            continue
+        dst = names_mod.safe_ifname(raw)
+        if dst:
             plan.portmap[src] = dst
     for src, dst in zip(form.getlist("vmap_src"), form.getlist("vmap_dst")):
-        src, dst = src.strip(), dst.strip()
+        # VDOM names share the interface char rule but cap at 11
+        src = src.strip()
+        dst = names_mod.safe_ifname(dst.strip(), maxlen=11)
         if src and dst and src != dst:
             plan.vdommap[src] = dst
     for i in _form_indexes(form, "zone_name"):
@@ -318,14 +330,15 @@ def _authoring_from_form(form):
     None when nothing was authored (preserves the base mapping behaviour)."""
     aggregates = []
     for i in range(64):
-        name = form.get(f"agg_name_{i}")
-        if name and name.strip():
+        name = names_mod.safe_ifname((form.get(f"agg_name_{i}") or "").strip())
+        if name:
             aggregates.append({
-                "name": name.strip(),
+                "name": name,
                 "lacp": form.get(f"agg_lacp_{i}", "active"),
-                "members": [m.strip() for m in
-                            form.get(f"agg_members_{i}", "").split(",")
-                            if m.strip()],
+                "members": [m for m in
+                            (names_mod.safe_ifname(p.strip()) for p in
+                             form.get(f"agg_members_{i}", "").split(","))
+                            if m],
             })
     vlan_parents = {}
     for src, parent in zip(form.getlist("vparent_src"),
@@ -345,7 +358,10 @@ def _mapping_from_form(form):
     mapping = {}
     for src, dst in zip(form.getlist("map_src"), form.getlist("map_dst")):
         src, dst = src.strip(), dst.strip()
-        if src and dst and dst != "__none__":
+        if not src or not dst or dst == "__none__":
+            continue  # blank / "do not map" — leave unmapped (sentinel intact)
+        dst = names_mod.safe_ifname(dst)
+        if dst:  # all-illegal input sanitizes to "" — drop it, don't store ""
             mapping[src] = dst
     return mapping
 
@@ -434,6 +450,8 @@ def create_app() -> Flask:
             abort(404)
         return render_template("new.html", vendor=vendor,
                                vendor_label=VENDOR_LABELS[vendor],
+                               targets=FORTIOS_TARGETS,
+                               platform_groups=platforms.GROUPS,
                                error=request.args.get("error", ""))
 
     @app.post("/detect")
@@ -496,6 +514,25 @@ def create_app() -> Flask:
         # underscore prefix: an upload named e.g. 'source.conf' must not
         # collide with the converted output written into the same dir
         (jdir / "_source.conf").write_text(text, encoding="utf-8")
+
+        # target FortiGate declared up front on the New-conversion screen
+        # (optional): the model preselects the wizard's mapping/faceplate and
+        # the OS version prefills the target-version field. A destination
+        # backup (below) is authoritative and overrides both.
+        tplat = request.form.get("target_platform", "").strip()
+        if tplat == "__custom__":
+            tplat = request.form.get("target_platform_custom", "").strip()
+        if tplat:
+            try:
+                tplat, _ = platforms.resolve(tplat)
+            except PlanError as e:
+                shutil.rmtree(jdir, ignore_errors=True)
+                return redirect(url_for("new", vendor=forced or meta["vendor"],
+                                        error=f"target model: {e}"))
+            meta["target_platform"] = tplat
+        tos = request.form.get("target_os", "").strip()
+        if tos:
+            meta["target_os"] = tos
 
         # optional destination reference backup: authoritative platform
         # code + real port inventory for the migration (reference only,
@@ -561,8 +598,11 @@ def create_app() -> Flask:
         if meta.get("target_version"):
             # a destination backup pins the target version
             src_train = ".".join(meta["target_version"].split(".")[:2])
-        default_target = (src_train if src_train in FORTIOS_TARGETS
-                          else "7.4")
+        # the OS version declared up front on the New-conversion screen wins;
+        # else default to the source train when we know it, else 7.4
+        default_target = (meta.get("target_os")
+                          or (src_train if src_train in FORTIOS_TARGETS
+                              else "7.4"))
         det = {d["name"]: d for d in meta.get("iface_details", [])}
         # positional port-guess maps (601F port1 -> 701G lan1, etc.) so
         # the target dropdowns default to a sensible mapping. Computed
@@ -582,6 +622,8 @@ def create_app() -> Flask:
             "plan.html", jid=jid, meta=meta, targets=FORTIOS_TARGETS,
             default_target=default_target, det=det,
             platform_groups=platforms.GROUPS,
+            target_platform_known=(meta.get("target_platform")
+                                   in platforms.MODEL_BY_CODE),
             port_inventory=platforms.PORT_INVENTORY,
             faceplates=platforms.FACEPLATES,
             platform_models=platforms.MODEL_BY_CODE,
