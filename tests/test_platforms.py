@@ -199,3 +199,142 @@ def test_guess_portmap_601f_to_701g():
 
 def test_guess_portmap_no_dest_is_empty():
     assert platforms.guess_portmap(["port1", "port2"], []) == {}
+
+
+# -- version-DB drift check -------------------------------------------------
+
+def test_ver_key_orders_patches_numerically():
+    # the whole reason for a numeric key: "7.4.12" < "7.4.8" as STRINGS
+    assert platforms._ver_key("7.4.12") > platforms._ver_key("7.4.8")
+    assert platforms._ver_key("8.0") > platforms._ver_key("7.6.99")
+
+
+def test_drift_none_when_db_is_current():
+    # feed back exactly what the DB already holds -> no drift
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    drift = platforms.version_db_drift(observed)
+    assert not drift.has_drift
+    assert drift.new_trains == ()
+    assert drift.patch_updates == ()
+
+
+def test_drift_detects_newer_patch():
+    current = platforms.FORTIOS_LATEST_PATCH["7.4"]
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    observed["7.4"] = "7.4.99"  # a future patch newer than whatever is seeded
+    drift = platforms.version_db_drift(observed)
+    assert drift.has_drift
+    assert ("7.4", current, "7.4.99") in drift.patch_updates
+
+
+def test_drift_ignores_older_or_equal_patch():
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    observed["7.4"] = "7.4.3"   # a downgrade must never be proposed
+    drift = platforms.version_db_drift(observed)
+    assert all(u[0] != "7.4" for u in drift.patch_updates)
+    assert not drift.has_drift
+
+
+def test_drift_detects_new_train():
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    observed["8.2"] = "8.2.0"
+    drift = platforms.version_db_drift(observed)
+    assert drift.has_drift
+    assert "8.2" in drift.new_trains
+    # the new train also shows up as a patch addition (current was missing)
+    assert ("8.2", "", "8.2.0") in drift.patch_updates
+
+
+def test_drift_new_trains_sorted_newest_first():
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    observed["8.2"] = "8.2.1"
+    observed["9.0"] = "9.0.0"
+    drift = platforms.version_db_drift(observed)
+    assert drift.new_trains == ("9.0", "8.2")
+
+
+def test_drift_retired_train_is_informational_not_actionable():
+    # a DB train that drops out of the observed set is a retirement candidate
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    observed.pop("7.2", None)
+    drift = platforms.version_db_drift(observed)
+    assert "7.2" in drift.retired_trains
+    # retirement alone does not trigger a refresh PR
+    assert not drift.has_drift
+
+
+def test_drift_patch_addition_for_hintless_train(monkeypatch):
+    # a DB train that currently has NO latest-patch hint gains one
+    monkeypatch.delitem(platforms.FORTIOS_LATEST_PATCH, "7.0", raising=False)
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    observed["7.0"] = "7.0.18"
+    drift = platforms.version_db_drift(observed)
+    assert ("7.0", "", "7.0.18") in drift.patch_updates
+    assert drift.has_drift
+
+
+def test_render_version_db_roundtrips_and_sorts():
+    src = platforms.render_version_db(
+        ("7.4", "8.0", "7.6"),
+        {"8.0": "8.0.2", "7.6": "7.6.7", "7.4": "7.4.12"})
+    # newest train first, in both the tuple and the dict
+    assert 'FORTIOS_TRAINS: tuple[str, ...] = ("8.0", "7.6", "7.4")' in src
+    assert src.index('"8.0": "8.0.2"') < src.index('"7.6": "7.6.7"')
+    assert src.index('"7.6": "7.6.7"') < src.index('"7.4": "7.4.12"')
+    # executing the rendered block reproduces usable Python objects
+    ns: dict = {}
+    exec(src, ns)
+    assert ns["FORTIOS_TRAINS"] == ("8.0", "7.6", "7.4")
+    assert ns["FORTIOS_LATEST_PATCH"]["7.4"] == "7.4.12"
+
+
+def test_render_version_db_omits_trains_without_a_patch():
+    src = platforms.render_version_db(("8.0", "7.0"), {"8.0": "8.0.2"})
+    assert '"8.0": "8.0.2"' in src
+    assert '"7.0"' in src.split("FORTIOS_LATEST_PATCH")[0]  # in the trains line
+    assert '"7.0":' not in src  # but not in the patch dict
+
+
+def test_render_version_db_single_train_stays_a_tuple():
+    # the 1-element trap: ("8.0") is a str, ("8.0",) is a tuple
+    src = platforms.render_version_db(("8.0",), {"8.0": "8.0.0"})
+    ns: dict = {}
+    exec(src, ns)
+    assert ns["FORTIOS_TRAINS"] == ("8.0",)
+    assert isinstance(ns["FORTIOS_TRAINS"], tuple)
+
+
+def test_render_version_db_current_db_roundtrips_exactly():
+    # rendering the live DB reproduces a block that rebuilds it identically
+    src = platforms.render_version_db(
+        platforms.FORTIOS_TRAINS, platforms.FORTIOS_LATEST_PATCH)
+    ns: dict = {}
+    exec(src, ns)
+    assert ns["FORTIOS_TRAINS"] == platforms.FORTIOS_TRAINS
+    assert ns["FORTIOS_LATEST_PATCH"] == platforms.FORTIOS_LATEST_PATCH
+
+
+def test_render_version_db_rejects_injection_tokens():
+    # a scraped token with a quote/newline must never reach emitted Python
+    with pytest.raises(ValueError):
+        platforms.render_version_db(('8.0"\nimport os',), {})
+    with pytest.raises(ValueError):
+        platforms.render_version_db(("8.0",), {"8.0": '8.0.0"; evil'})
+
+
+def test_drift_surfaces_malformed_tokens_without_flagging():
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    observed["bogus train"] = "not.a.version"   # garbled scrape entry
+    drift = platforms.version_db_drift(observed)
+    assert "bogus train=not.a.version" in drift.malformed
+    assert "bogus train" not in drift.new_trains   # filtered, not a new train
+    assert not drift.has_drift                      # malformed alone ≠ drift
+
+
+def test_drift_rejects_train_only_value_as_patch():
+    # a bare train string ("8.0") in the patch slot is not a GA patch
+    observed = dict(platforms.FORTIOS_LATEST_PATCH)
+    observed["8.0"] = "8.0"   # X.Y, not X.Y.Z
+    drift = platforms.version_db_drift(observed)
+    assert "8.0=8.0" in drift.malformed
+    assert all(u[0] != "8.0" for u in drift.patch_updates)

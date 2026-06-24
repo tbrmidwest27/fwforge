@@ -131,11 +131,15 @@ FORTIOS_TRAINS: tuple[str, ...] = ("8.0", "7.6", "7.4", "7.2", "7.0")
 
 # Latest known GA patch per active train, surfaced as extra datalist hints.
 # REFRESH PERIODICALLY — these go stale; the field accepts any unlisted value.
+# The version_db_drift() job below keeps this current off docs.fortinet.com.
+# Last refreshed 2026-06-24 against the release-notes version selector (the
+# prior 8.0.1 was a phantom — only 8.0.0 is published).
 FORTIOS_LATEST_PATCH: dict[str, str] = {
-    "8.0": "8.0.1",
-    "7.6": "7.6.3",
-    "7.4": "7.4.8",
-    "7.2": "7.2.11",
+    "8.0": "8.0.0",
+    "7.6": "7.6.7",
+    "7.4": "7.4.12",
+    "7.2": "7.2.13",
+    "7.0": "7.0.19",
 }
 
 
@@ -149,6 +153,117 @@ def version_suggestions() -> tuple[str, ...]:
         if patch and patch not in out:
             out.append(patch)
     return tuple(out)
+
+
+# -- scheduled version-DB drift check ---------------------------------------
+# A monthly job (see the fortigate skill) reads the GA patch list off the
+# docs.fortinet.com release-notes version selector, builds an
+# {train: latest_GA_patch} mapping, and calls version_db_drift() to decide
+# whether FORTIOS_TRAINS / FORTIOS_LATEST_PATCH above have gone stale. The
+# comparison is pure + offline so it is unit-testable; only the gathering of
+# `observed` touches the network. render_version_db() turns the agreed-upon
+# new state back into the exact source block to paste into a PR.
+
+
+# A train is "X.Y"; a GA patch is "X.Y.Z". These are the ONLY shapes the
+# version DB ever holds, and the gate that keeps scrape garbage from reaching
+# render_version_db() (which interpolates the tokens into emitted Python).
+_TRAIN_RE = re.compile(r"^\d+\.\d+$")
+_PATCH_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def _ver_key(v: str) -> tuple[int, ...]:
+    """Numeric sort key for a version/train string ('7.4.12' -> (7,4,12)),
+    so 7.4.12 sorts after 7.4.8 (a plain string compare gets this wrong)."""
+    return tuple(int(p) for p in re.findall(r"\d+", v))
+
+
+class VersionDrift(NamedTuple):
+    # trains Fortinet now ships that the DB doesn't list, newest first
+    new_trains: tuple[str, ...]
+    # (train, current_or_'', observed) where the observed GA patch is newer
+    # than FORTIOS_LATEST_PATCH (current '' = the train had no patch hint)
+    patch_updates: tuple[tuple[str, str, str], ...]
+    # DB trains absent from the observed set — candidates for EoS removal.
+    # Informational only (does NOT set has_drift): retiring a train is a
+    # deliberate human call, and a train can be missing just because the job
+    # couldn't pin its latest patch.
+    retired_trains: tuple[str, ...]
+    # observed "train=patch" entries rejected as non-version-shaped. Surfaced
+    # (never silently dropped) so a garbled scrape is a visible data-quality
+    # signal to the job, not a phantom version that sails into a PR.
+    malformed: tuple[str, ...]
+
+    @property
+    def has_drift(self) -> bool:
+        """True when something actionable (a new train or a newer patch)
+        warrants a refresh PR. Retirements/malformed alone are surfaced, not
+        flagged."""
+        return bool(self.new_trains or self.patch_updates)
+
+
+def version_db_drift(observed: dict[str, str]) -> VersionDrift:
+    """Diff an observed ``{train: latest_GA_patch}`` mapping (gathered from
+    the docs.fortinet.com release-notes index) against the hardcoded version
+    DB and report the drift a refresh PR should close.
+
+    Conservative by design: only surfaces *newer* patches and *new* trains —
+    never downgrades, never proposes dropping a train on its own, and never
+    lets a non-version-shaped token through (those go to ``malformed``).
+    """
+    malformed = tuple(sorted(
+        f"{t}={p}" for t, p in observed.items()
+        if not _TRAIN_RE.match(str(t)) or not _PATCH_RE.match(str(p))))
+    clean = {t: p for t, p in observed.items()
+             if _TRAIN_RE.match(str(t)) and _PATCH_RE.match(str(p))}
+
+    new_trains = tuple(sorted(
+        (t for t in clean if t not in FORTIOS_TRAINS),
+        key=_ver_key, reverse=True))
+
+    updates: list[tuple[str, str, str]] = []
+    for train, patch in clean.items():
+        current = FORTIOS_LATEST_PATCH.get(train, "")
+        if not current or _ver_key(patch) > _ver_key(current):
+            updates.append((train, current, patch))
+    patch_updates = tuple(sorted(updates, key=lambda u: _ver_key(u[0]),
+                                 reverse=True))
+
+    retired_trains = tuple(t for t in FORTIOS_TRAINS if t not in clean)
+    return VersionDrift(new_trains, patch_updates, retired_trains, malformed)
+
+
+def render_version_db(trains: tuple[str, ...],
+                      patches: dict[str, str]) -> str:
+    """Render the FORTIOS_TRAINS + FORTIOS_LATEST_PATCH source block for the
+    given new state — the ready-to-paste body of a refresh PR. Trains sort
+    newest first; patch entries follow, one per line, same order.
+
+    Refuses any non-version-shaped token: the output is meant to be pasted
+    into platforms.py, so a stray quote/newline in a scraped token must not
+    be interpolated into emitted Python.
+    """
+    ordered = tuple(sorted(set(trains), key=_ver_key, reverse=True))
+    for t in ordered:
+        if not _TRAIN_RE.match(str(t)):
+            raise ValueError(f"refusing to render non-version train: {t!r}")
+    for t, p in patches.items():
+        if not _PATCH_RE.match(str(p)):
+            raise ValueError(f"refusing to render non-version patch: {p!r}")
+    # a 1-tuple needs the trailing comma or it renders as a bare string
+    body = ", ".join(f'"{t}"' for t in ordered)
+    if len(ordered) == 1:
+        body += ","
+    lines = [
+        f"FORTIOS_TRAINS: tuple[str, ...] = ({body})",
+        "",
+        "FORTIOS_LATEST_PATCH: dict[str, str] = {",
+    ]
+    for t in ordered:
+        if patches.get(t):
+            lines.append(f'    "{t}": "{patches[t]}",')
+    lines.append("}")
+    return "\n".join(lines)
 
 
 _FAMILY_ORDER = ("Desktop", "Mid-range", "High-end", "Virtual")
