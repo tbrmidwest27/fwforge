@@ -146,6 +146,11 @@ class AsaParser:
         self._acl_policies: dict[str, list[Policy]] = {}
         self._access_groups: list[tuple[str, str, SourceRef]] = []
         self._findings: list[tuple[str, str, str, SourceRef | None]] = []
+        # --- security-level model (for implicit-permit reporting) ---
+        # nameif -> security-level (ASA default 0; "inside" defaults to 100)
+        self._sec_levels: dict[str, int] = {}
+        self._same_sec_inter = False  # same-security-traffic permit inter-interface
+        self._same_sec_intra = False  # ... permit intra-interface (hairpin)
         # --- VPN collection (assembled in finish_vpn) ---
         self._ike_policies: dict[int, list[dict]] = {1: [], 2: []}
         self._transform_sets: dict[str, list[str]] = {}  # ikev1
@@ -359,6 +364,12 @@ class AsaParser:
                 self.parse_access_group(toks, ref)
             elif head == "route" and len(toks) >= 5:
                 self.parse_route(toks, ref)
+            elif head == "same-security-traffic" and len(toks) >= 3 \
+                    and toks[1] == "permit":
+                if toks[2] == "inter-interface":
+                    self._same_sec_inter = True
+                elif toks[2] == "intra-interface":
+                    self._same_sec_intra = True
             elif stripped.startswith("nat ("):
                 self.note(
                     "error", "nat",
@@ -398,6 +409,7 @@ class AsaParser:
 
         self.finish_vpn()
         self.finish_acls()
+        self.report_security_levels()
         self.cfg.meta["findings"] = self._findings
         return self.cfg
 
@@ -412,6 +424,7 @@ class AsaParser:
         name = header.split(None, 1)[1]
         itf = Interface(name=name, source=self.src.ref(lineno, header))
         nameif = None
+        sec_level: int | None = None
         m = re.match(r"^(.*)\.(\d+)$", name)
         if m:
             itf.parent, itf.vlan_id = m.group(1), int(m.group(2))
@@ -436,6 +449,8 @@ class AsaParser:
                     self.note("warn", "interfaces",
                               f"bad ip address line: {raw.strip()}",
                               self.src.ref(ln, raw))
+            elif t[0] == "security-level" and len(t) > 1 and t[1].isdigit():
+                sec_level = int(t[1])
             elif t[0] in ("security-level", "management-only", "no", "speed",
                           "duplex"):
                 pass  # no FortiOS equivalent needed / cosmetic
@@ -444,6 +459,11 @@ class AsaParser:
         if nameif:
             itf.name = nameif
             itf.source.raw += f" (nameif {nameif})"
+            # ASA default security-level is 0, except a "inside"-named
+            # interface defaults to 100 when not set explicitly.
+            if sec_level is None:
+                sec_level = 100 if nameif == "inside" else 0
+            self._sec_levels[nameif] = sec_level
             self.cfg.interfaces.append(itf)
         else:
             self.note("info", "interfaces",
@@ -1353,6 +1373,63 @@ class AsaParser:
                       f"ACL '{acl}' ({len(pols)} ACEs) is not bound to any "
                       "interface via access-group — not converted "
                       "(may be VPN interesting-traffic or unused)", None)
+
+    def report_security_levels(self):
+        """Surface the ASA security-level implicit permit (higher->lower
+        security with no inbound ACL is allowed by default), which FortiOS —
+        being default-deny — does not reproduce.
+
+        Reporting only: nothing is emitted (no any->any policy is synthesized).
+        This turns a previously silent loss (security-level was discarded) into
+        a visible per-interface finding listing exactly which traffic the ASA
+        implicitly permitted, so an operator can author the explicit FortiOS
+        policies (or decide to auto-synthesize them in a later pass).
+        """
+        if not self._sec_levels:
+            return
+        # A global access-group governs the inbound direction of every
+        # interface that has no interface-specific ACL, so it supersedes the
+        # pure security-level implicit permit — don't double-report.
+        if any(ifc == "any" for _a, ifc, _r in self._access_groups):
+            self.note(
+                "info", "policies",
+                "a global access-group governs inter-interface traffic, "
+                "superseding the ASA security-level implicit permits "
+                "(converted via the global ACL) — confirm that ACL covers the "
+                "inter-interface flows the security-levels used to permit.",
+                None)
+            return
+        # An interface with an inbound access-list applied has its sourced
+        # traffic filtered by that ACL, not by the security-level default.
+        governed = {ifc for _a, ifc, _r in self._access_groups if ifc != "any"}
+        levels = self._sec_levels
+        for src in self.cfg.interfaces:
+            if not src.enabled or src.name not in levels \
+                    or src.name in governed:
+                continue
+            lvl = levels[src.name]
+            dests: list[tuple[str, int]] = []
+            for dst in self.cfg.interfaces:
+                if not dst.enabled or dst.name not in levels:
+                    continue
+                dlvl = levels[dst.name]
+                if dst.name == src.name:
+                    if self._same_sec_intra:
+                        dests.append((dst.name + " (hairpin)", dlvl))
+                elif dlvl < lvl or (dlvl == lvl and self._same_sec_inter):
+                    dests.append((dst.name, dlvl))
+            if not dests:
+                continue
+            listed = ", ".join(f"{n}(L{lv})" for n, lv in sorted(
+                dests, key=lambda d: (-d[1], d[0])))
+            self.note(
+                "warn", "policies",
+                f"interface '{src.name}' (security-level {lvl}) implicitly "
+                f"permits traffic to lower/equal-security interfaces "
+                f"[{listed}] on the ASA (no inbound access-list applied) — "
+                "NOT converted: FortiOS is default-deny. Add explicit firewall "
+                "policies for any of this implicitly-allowed traffic that must "
+                "flow.", src.source)
 
     def parse_route(self, toks: list[str], ref: SourceRef):
         try:

@@ -185,3 +185,98 @@ access-group T in interface outside
     svc = cfg.policies[0].services
     assert svc != ["ALL_ICMP"]             # echo-only, not all ICMP
     assert any("icmp_8" in s for s in svc)
+
+
+# -- security-level implicit-permit reporting -------------------------------
+
+def _iface(nameif, level=None, ip="10.0.0.1 255.255.255.0", num="0/0"):
+    lvl = f" security-level {level}\n" if level is not None else ""
+    return (f"interface GigabitEthernet{num}\n nameif {nameif}\n"
+            f"{lvl} ip address {ip}\n")
+
+
+def _permit_warns(cfg):
+    return [m for lvl, area, m, _ in cfg.meta["findings"]
+            if lvl == "warn" and area == "policies" and "implicitly permits" in m]
+
+
+def test_security_level_implicit_permit_flagged():
+    # three interfaces, NO access-groups -> implicit permit is live
+    text = (_iface("outside", 0, num="0/0")
+            + _iface("inside", 100, num="0/1")
+            + _iface("dmz", 50, num="0/2"))
+    cfg = cisco_asa.parse(text, "t.cfg")
+    warns = _permit_warns(cfg)
+    by_src = {}
+    for m in warns:
+        for nm in ("inside", "dmz", "outside"):
+            if f"interface '{nm}'" in m:
+                by_src[nm] = m
+    # inside (100) -> dmz(50) + outside(0); dmz (50) -> outside(0)
+    assert "inside" in by_src and "dmz(L50)" in by_src["inside"] \
+        and "outside(L0)" in by_src["inside"]
+    assert "dmz" in by_src and "outside(L0)" in by_src["dmz"]
+    # outside (lowest) implicitly permits nothing -> no finding
+    assert "outside" not in by_src
+
+
+def test_inbound_acl_suppresses_implicit_permit():
+    # an inbound access-group on 'inside' replaces its implicit permit
+    text = (_iface("outside", 0, num="0/0")
+            + _iface("inside", 100, num="0/1")
+            + _iface("dmz", 50, num="0/2")
+            + "access-group INSIDE_IN in interface inside\n")
+    cfg = cisco_asa.parse(text, "t.cfg")
+    warns = _permit_warns(cfg)
+    assert not any("interface 'inside'" in m for m in warns)  # governed
+    assert any("interface 'dmz'" in m for m in warns)         # still implicit
+
+
+def test_global_access_group_supersedes_security_levels():
+    text = (_iface("outside", 0, num="0/0")
+            + _iface("inside", 100, num="0/1")
+            + "access-group GLOBAL_ACL global\n")
+    cfg = cisco_asa.parse(text, "t.cfg")
+    assert not _permit_warns(cfg)  # no per-interface enumeration
+    assert any(lvl == "info" and "global access-group governs" in m
+               for lvl, _, m, _ in cfg.meta["findings"])
+
+
+def test_security_level_defaults_inside_100_outside_0():
+    # no explicit security-level: 'inside' defaults to 100, others to 0
+    text = _iface("outside", num="0/0") + _iface("inside", num="0/1")
+    cfg = cisco_asa.parse(text, "t.cfg")
+    warns = _permit_warns(cfg)
+    # inside(100) -> outside(0) flagged; outside(0) -> nothing
+    assert any("interface 'inside'" in m and "outside(L0)" in m for m in warns)
+    assert not any("interface 'outside'" in m for m in warns)
+
+
+def test_same_security_inter_interface_toggle():
+    text = (_iface("dmz1", 50, num="0/0") + _iface("dmz2", 50, num="0/1"))
+    # without the toggle, equal-level interfaces do NOT implicitly permit
+    assert not _permit_warns(cisco_asa.parse(text, "t.cfg"))
+    # with it, each equal-level interface permits the other
+    warns = _permit_warns(cisco_asa.parse(
+        text + "same-security-traffic permit inter-interface\n", "t.cfg"))
+    assert any("interface 'dmz1'" in m and "dmz2(L50)" in m for m in warns)
+    assert any("interface 'dmz2'" in m and "dmz1(L50)" in m for m in warns)
+
+
+def test_same_security_intra_interface_hairpin():
+    text = _iface("inside", 100, num="0/0")
+    # no hairpin permit without the toggle
+    assert not _permit_warns(cisco_asa.parse(text, "t.cfg"))
+    # with intra-interface, the interface implicitly permits U-turn traffic
+    warns = _permit_warns(cisco_asa.parse(
+        text + "same-security-traffic permit intra-interface\n", "t.cfg"))
+    assert any("interface 'inside'" in m and "inside (hairpin)" in m
+               for m in warns)
+
+
+def test_security_level_reporting_emits_no_policies():
+    # reporting-only: the implicit permit must NOT synthesize a policy
+    text = _iface("inside", 100, num="0/0") + _iface("outside", 0, num="0/1")
+    cfg = cisco_asa.parse(text, "t.cfg")
+    assert cfg.policies == []         # nothing emitted, only a finding
+    assert _permit_warns(cfg)
