@@ -256,6 +256,35 @@ A maintained open converter has no real competition.
       enable` + generated `central-snat-map` rules; VIPs become central
       DNAT; policies carry no per-policy NAT. CLI flag + GUI select.
 
+### v0.57.0 — shipped 2026-06-20 (TIS -3 fixes + GUI: name sanitize, target model/OS picker, policy reorder)
+Four PRs (#4–#7), each reviewed by code-reviewer + security-auditor +
+conversion-quality with regression tests; 511 tests. Driven by re-running the
+real Jabil TIS PAN config + Adam's tweaking notes.
+- **PAN -3-on-load fixes (#4):** unresolvable address references (e.g. a bogus
+  2-letter region "CE" that isn't a valid ISO country) are no longer emitted
+  verbatim — `_objectify_address_refs` DROPS them + warns, keeping valid
+  members; if a side empties, the policy is emitted DISABLED (deny→error,
+  accept→warn) rather than defaulting to "all". A NEGATED list that loses a
+  member, or a negated reference to an address-group collapsed to "none"
+  ("NOT none" = match everything), disables + flags instead of silently
+  broadening. IP-less physical VLAN-parent ports (TIS `ethernet1/6`, parent of
+  `ethernet1/6.699`) now flow into the portmap and get remapped, so the VLAN's
+  `set interface` resolves on the target.
+- **Interface rename sanitization (#5):** the interface "map to" and aggregate
+  name fields reject spaces/special chars (live client-side + a server-side
+  `names.safe_ifname` backstop) so a typed name can't break the paste script;
+  the "do not map" sentinel and empty/reserved results are handled safely.
+- **Target model + OS-version picker (#6):** the New-conversion screen lets you
+  declare the target FortiGate model + FortiOS version up front (preselects the
+  wizard map/faceplate, prefills the version-delta target). Backed by
+  `platforms.py` FORTIOS_TRAINS / FORTIOS_LATEST_PATCH / `version_suggestions()`.
+- **Policy reorder (#7):** the Optimize tab can lift a specific rule above the
+  broader rule shadowing it — per-row "Move above" on unreachable accepts +
+  a batch "Fix all rule order" (confirm separates tighten vs widen). Reuses
+  `tuning.reorder_policies` (preserves disabled state, idempotent).
+- App-ID creation was audited and verified correct (signature-level mapping
+  accurate vs the cached FortiGuard app DB) — no change needed.
+
 ### v0.52.2 — shipped 2026-06-16 (PAN WildFire → FortiOS FortiSandbox, folded into the AV profile)
 FortiOS submits files to FortiSandbox from *inside* the antivirus profile, so
 WildFire conversion couples to AV (verified on the 601F).
