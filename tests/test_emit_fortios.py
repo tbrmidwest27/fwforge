@@ -79,6 +79,32 @@ def test_empty_proposal_substitutes_default():
                for f in report.findings)
 
 
+def test_phase1_dhgrp_emitted_explicitly_when_source_has_none():
+    # FortiOS 8.0 changed the *omitted* phase1 dhgrp default (14 -> 20/21), so
+    # a source with no DH group must get an explicit 'set dhgrp' + a flag, not
+    # inherit a train-dependent default that may also mismatch the peer.
+    cfg = FirewallConfig(vendor="test")
+    cfg.phase1s.append(VpnPhase1(name="t1", interface="wan1",
+                                 remote_gw="203.0.113.1", psk="x"))
+    report = Report()
+    out = emit_fortios.emit(cfg, report)
+    assert "set dhgrp 14" in out
+    assert any(f.level == "warn" and "DH group" in f.message
+               for f in report.findings)
+
+
+def test_phase1_dhgrp_from_source_is_emitted_verbatim_without_flag():
+    cfg = FirewallConfig(vendor="test")
+    cfg.phase1s.append(VpnPhase1(name="t1", interface="wan1",
+                                 remote_gw="203.0.113.1", psk="x",
+                                 dhgrp=["20", "21"]))
+    report = Report()
+    out = emit_fortios.emit(cfg, report)
+    assert "set dhgrp 20 21" in out
+    assert "set dhgrp 14" not in out
+    assert not any("DH group" in f.message for f in report.findings)
+
+
 def test_redistribute_value_is_quoted_via_q():
     # the redistribute value must go through _q() (BGP and OSPF), not be
     # hand-interpolated into quotes -- a value with a quote/backslash would
