@@ -188,6 +188,13 @@ def _dependency_order(rows: list) -> list:
 # A safe, widely-interoperable IKE/IPsec proposal to substitute when the source
 # yielded none — never emit a bare `set proposal` (FortiOS rejects it).
 _DEFAULT_PROPOSAL = "aes256-sha256 aes128-sha256"
+# Emitted when the source carries no phase1 DH group, so the tunnel is
+# identical across FortiOS trains. FortiOS 8.0 changed the *omitted* phase1
+# dhgrp default from 14 to 20/21 (release notes Bug ID 1107163), so relying on
+# the implicit default makes the same config negotiate a different group on 8.0
+# than on 7.2-7.6 -- and possibly mismatch the source peer. 14 (MODP-2048) is
+# the pre-8.0 default and the most common IKE group; flagged for verification.
+_DEFAULT_DHGRP = "14"
 
 
 def _group_dependency_order(groups: list, report=None, area: str = "") -> list:
@@ -999,6 +1006,18 @@ class Emitter:
                     "the peer", p1.source)
             if p1.dhgrp:
                 self.line("        set dhgrp " + " ".join(p1.dhgrp))
+            else:
+                # don't inherit the implicit default -- it differs on 8.0
+                # (20/21) vs <=7.6 (14). Emit it explicitly + flag.
+                self.line("        set dhgrp " + _DEFAULT_DHGRP)
+                self.report.add(
+                    "warn", "vpn",
+                    f"phase1 '{p1.name}': no DH group parsed from source; "
+                    f"emitted explicit 'set dhgrp {_DEFAULT_DHGRP}' so the "
+                    "tunnel negotiates the same group on FortiOS 7.2-8.0 (8.0 "
+                    "changed the omitted default to 20/21) -- verify it matches "
+                    "the peer (14/MODP-2048 is an interoperable floor; consider "
+                    "a stronger group)", p1.source)
             self.line(f"        set remote-gw {p1.remote_gw}")
             self.line(f"        set psksecret {_q(p1.psk)}")
             if p1.psk_remote:
